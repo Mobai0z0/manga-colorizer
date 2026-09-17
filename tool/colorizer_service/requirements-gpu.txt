@@ -1,0 +1,3 @@
+# 可选 NVIDIA 环境；须安装此版本 ORT 所需的 CUDA/cuDNN。
+-r requirements-common.txt
+onnxruntime-gpu>=1.17,<2

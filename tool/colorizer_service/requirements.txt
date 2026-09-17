@@ -1,0 +1,3 @@
+# CPU 安装入口；不要与 onnxruntime-gpu 同装在一个环境。
+-r requirements-common.txt
+onnxruntime>=1.17,<2
