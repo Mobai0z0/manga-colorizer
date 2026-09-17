@@ -1,0 +1,20 @@
+manga-colorizer
+Copyright 2026 manga-colorizer contributors
+
+This product includes software developed as part of the manga-colorizer project.
+
+Third-party components:
+
+* manga-light-colorizer ONNX model weights (models/, NOT distributed with this
+  repository) — CC BY-NC-SA 4.0, Copyright sharky172.
+  https://huggingface.co/sharky172/manga-light-colorizer
+  These weights are downloaded separately by end users and remain under their
+  own license. This repository's code is Apache 2.0 and does not include,
+  derive from, or distribute those weights.
+
+* Dart packages (pub.dev): args, http, image, lints, shelf — each under its
+  own permissive license (see pubspec.lock).
+
+* Python packages: fastapi, uvicorn, numpy, onnxruntime, opencv-python-headless,
+  pillow, python-multipart — each under its own license (MIT/BSD/Apache unless
+  noted in the package itself).

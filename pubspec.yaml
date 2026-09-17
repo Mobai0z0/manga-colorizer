@@ -1,0 +1,11 @@
+name: manga_colorizer_workspace
+publish_to: none
+description: >-
+  Manga colorizer monorepo: pure-Dart colorization engine, HTTP backend service,
+  and CLI tools. Flutter app comes in a later phase.
+environment:
+  sdk: ^3.6.0
+workspace:
+  - packages/manga_colorizer_core
+  - packages/manga_colorizer_server
+  - packages/manga_colorizer_cli

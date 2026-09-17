@@ -1,0 +1,21 @@
+.dart_tool/
+build/
+*.iml
+.idea/
+*.log
+
+# 本地素材、权重、运行环境及代理配置不随社区源码分发
+models/
+out/
+out_rollback/
+.reasonix/
+DELIVERY/
+reasonix.toml
+.venv/
+__pycache__/
+*.pyc
+node_modules/
+dist/
+.env
+.env.*
+!.env.example

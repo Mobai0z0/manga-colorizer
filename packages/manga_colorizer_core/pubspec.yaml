@@ -1,0 +1,12 @@
+name: manga_colorizer_core
+description: Pure-Dart colorization engine for black-and-white manga line art (hint-based chroma diffusion + luminance tint mapping).
+version: 0.1.0
+publish_to: none
+resolution: workspace
+environment:
+  sdk: ^3.6.0
+dependencies:
+  image: ^4.2.0
+dev_dependencies:
+  lints: ^5.0.0
+  test: ^1.25.0

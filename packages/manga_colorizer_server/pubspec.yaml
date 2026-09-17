@@ -1,0 +1,16 @@
+name: manga_colorizer_server
+description: HTTP backend for the manga colorizer — shelf-based REST API over manga_colorizer_core.
+version: 0.1.0
+publish_to: none
+resolution: workspace
+environment:
+  sdk: ^3.6.0
+dependencies:
+  manga_colorizer_core:
+    path: ../manga_colorizer_core
+  shelf: ^1.4.1
+  shelf_router: ^1.1.4
+  shelf_static: ^1.1.2
+dev_dependencies:
+  lints: ^5.0.0
+  test: ^1.25.0
