@@ -1,0 +1,94 @@
+<!doctype html>
+<!-- MD3 风格基于 Material Design 3 令牌以原生 CSS 实现（非官方 @material/web 组件，零构建零运行时依赖）。
+     服务端：tool/colorizer_service/service.py（同源挂载本目录）。模型许可：CC BY-NC-SA 4.0。 -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Manga Colorizer · 漫画上色工作台</title>
+<link rel="stylesheet" href="app.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='42' fill='%2300696d'/><circle cx='50' cy='50' r='18' fill='%23ffb4ab'/></svg>">
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <div>
+      <h1>Manga Colorizer</h1>
+      <p class="topbar-sub">黑白漫画语义上色 · 社区预览</p>
+    </div>
+  </div>
+  <div class="topbar-status">
+    <span class="status-dot" id="status-dot" aria-hidden="true"></span>
+    <span id="status-text">检测服务…</span>
+  </div>
+</header>
+
+<main class="layout">
+  <section class="card" aria-labelledby="upload-title">
+    <h2 id="upload-title">上传原稿</h2>
+    <div id="dropzone" class="dropzone" tabindex="0" role="button"
+         aria-label="选择或拖入图片，支持 PNG、JPEG、WebP">
+      <svg viewBox="0 0 24 24" width="40" height="40" aria-hidden="true">
+        <path fill="currentColor" d="M19 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-5H3v5a3 3 0 0 0 3 3h12a3 3 0 0 0 3-3v-5h-2zM11 5.83 8.41 8.41 7 7l5-5 5 5-1.41 1.41L13 5.83V16h-2V5.83z"/>
+      </svg>
+      <p><strong>点击选择</strong> 或拖入漫画页</p>
+      <p class="dropzone-hint" id="limits-text">PNG / JPEG / WebP</p>
+      <input id="file-input" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+    </div>
+    <div id="file-chip" class="file-chip" hidden>
+      <span id="file-name"></span>
+      <span id="file-size" class="file-size"></span>
+      <button id="file-clear" class="icon-btn" aria-label="移除文件">×</button>
+    </div>
+
+    <fieldset class="mode-group">
+      <legend>上色模式</legend>
+      <label class="chip"><input type="radio" name="mode" value="auto" checked><span>全自动</span></label>
+      <label class="chip is-disabled" title="后端尚未支持"><input type="radio" name="mode" disabled><span>参考图</span></label>
+      <label class="chip is-disabled" title="后端尚未支持"><input type="radio" name="mode" disabled><span>提示点</span></label>
+    </fieldset>
+
+    <label class="license-check">
+      <input id="license-ok" type="checkbox">
+      <span>我了解默认后端使用 <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/" target="_blank" rel="noopener">CC BY-NC-SA 4.0</a> 模型，仅用于非商业用途</span>
+    </label>
+
+    <div class="actions">
+      <button id="submit" class="btn-filled" disabled>开始上色</button>
+      <button id="download" class="btn-tonal" hidden>下载结果</button>
+    </div>
+    <div id="progress" class="progress" hidden role="progressbar" aria-label="上色进度">
+      <div class="progress-bar"></div>
+    </div>
+    <p id="progress-text" class="progress-text" hidden>模型推理中，通常约 10 秒（CPU）…</p>
+  </section>
+
+  <section class="card card-result" aria-labelledby="result-title">
+    <div class="result-head">
+      <h2 id="result-title">结果</h2>
+      <div class="seg" id="compare-seg" hidden role="tablist" aria-label="切换视图">
+        <button class="seg-btn" data-view="original" role="tab" aria-selected="false">原图</button>
+        <button class="seg-btn is-active" data-view="result" role="tab" aria-selected="true">上色</button>
+      </div>
+    </div>
+    <div class="canvas-wrap">
+      <p id="placeholder" class="placeholder">上传漫画页并开始上色后，这里会显示结果。</p>
+      <img id="view-original" class="canvas-img" alt="原稿" hidden>
+      <img id="result-img" class="canvas-img" alt="上色结果" hidden>
+    </div>
+    <p id="result-meta" class="result-meta" hidden></p>
+  </section>
+</main>
+
+<footer class="footer">
+  <p>权重许可 CC BY-NC-SA 4.0 · 不随仓库分发，需自行下载 ·
+    <a href="https://huggingface.co/sharky172/manga-light-colorizer" target="_blank" rel="noopener">模型来源</a> ·
+    <a href="/api/v1/capabilities" target="_blank" rel="noopener">能力接口</a></p>
+</footer>
+
+<div id="snackbar" class="snackbar" role="status" aria-live="polite" hidden></div>
+<script src="app.js" defer></script>
+</body>
+</html>
