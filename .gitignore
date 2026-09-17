@@ -15,7 +15,8 @@ reasonix.toml
 __pycache__/
 *.pyc
 node_modules/
-dist/
+web/node_modules/
+web/.vite/
 .env
 .env.*
 !.env.example
