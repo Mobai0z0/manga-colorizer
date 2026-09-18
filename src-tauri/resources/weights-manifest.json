@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "version": "v6",
+  "updatedAt": "2026-09-18",
+  "baseDir": "manga-light-colorizer",
+  "source": {
+    "license": "CC-BY-NC-SA-4.0",
+    "url": "https://huggingface.co/sharky172/manga-light-colorizer",
+    "mirror": "https://hf-mirror.com/sharky172/manga-light-colorizer"
+  },
+  "files": [
+    {
+      "name": "v6_generator.onnx",
+      "size": 191335312,
+      "sha256": "48284fcf0b7a606270702630f559af88eecf95bc6cdec1ff8bce8663d12b4bb6",
+      "pathTemplate": "https://huggingface.co/sharky172/manga-light-colorizer/resolve/main/models/v6_generator.onnx",
+      "mirrorPathTemplate": "https://hf-mirror.com/sharky172/manga-light-colorizer/resolve/main/models/v6_generator.onnx"
+    },
+    {
+      "name": "v6_sam_encoder.onnx",
+      "size": 108983556,
+      "sha256": "97c4cad5814e1fb12c13d1b23d3969dd9e2fce92d818539fe7db575140333a34",
+      "pathTemplate": "https://huggingface.co/sharky172/manga-light-colorizer/resolve/main/models/v6_sam_encoder.onnx",
+      "mirrorPathTemplate": "https://hf-mirror.com/sharky172/manga-light-colorizer/resolve/main/models/v6_sam_encoder.onnx"
+    }
+  ]
+}

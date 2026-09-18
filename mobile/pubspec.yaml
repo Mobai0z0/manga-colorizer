@@ -1,0 +1,27 @@
+name: manga_colorizer_mobile
+description: Manga Colorizer Android app - embeds manga_colorizer_core (pure-Dart hint-based colorization).
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ^3.6.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  image_picker: ^1.1.2
+  share_plus: ^10.0.0
+  path_provider: ^2.1.4
+  manga_colorizer_core:
+    path: ../packages/manga_colorizer_core
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/sample_bw.png
+

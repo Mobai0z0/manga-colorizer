@@ -1,0 +1,43 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e5]:
+      - heading "Manga Colorizer" [level=1] [ref=e6]
+      - paragraph [ref=e7]: 黑白漫画语义上色 · 社区预览
+    - generic [ref=e8]: 服务未连接
+  - main [ref=e11]:
+    - region [ref=e12]:
+      - heading "上传原稿" [level=2] [ref=e13]
+      - button "选择或拖入图片，支持 PNG、JPEG、WebP" [ref=e14] [cursor=pointer]:
+        - paragraph [ref=e17]:
+          - strong [ref=e18]: 点击选择
+          - text: 或拖入漫画页
+        - paragraph [ref=e19]: PNG / JPEG / WebP
+      - group "上色模式" [ref=e20]:
+        - generic [ref=e22] [cursor=pointer]:
+          - radio "全自动" [checked]
+          - generic [ref=e23]: 全自动
+        - generic [ref=e24] [cursor=pointer]:
+          - radio "提示点"
+          - generic [ref=e25]: 提示点
+        - generic [ref=e26] [cursor=pointer]:
+          - radio "参考图"
+          - generic [ref=e27]: 参考图
+      - generic [ref=e28] [cursor=pointer]:
+        - checkbox "我了解默认后端使用 CC BY-NC-SA 4.0 模型，仅用于非商业用途" [ref=e29]
+        - generic [ref=e30]:
+          - text: 我了解默认后端使用
+          - link "CC BY-NC-SA 4.0" [ref=e31]:
+            - /url: https://creativecommons.org/licenses/by-nc-sa/4.0/
+          - text: 模型，仅用于非商业用途
+      - button "开始上色" [disabled] [ref=e33]
+    - region [ref=e34]:
+      - heading "画布" [level=2] [ref=e36]
+      - paragraph [ref=e38]: 上传漫画页并开始上色后，这里会显示结果。提示点模式下可直接在画布上点击放点。
+  - contentinfo [ref=e39]:
+    - paragraph [ref=e40]:
+      - text: 代码 Apache-2.0 · 权重许可 CC BY-NC-SA 4.0（不随仓库分发，需自行下载） ·
+      - link "模型来源" [ref=e41] [cursor=pointer]:
+        - /url: https://huggingface.co/sharky172/manga-light-colorizer
+      - text: ·
+      - link "能力接口" [ref=e42] [cursor=pointer]:
+        - /url: /api/v1/capabilities
