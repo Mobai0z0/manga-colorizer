@@ -53,6 +53,13 @@ pub fn sidecar_exe() -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.is_file())
 }
 
+fn chrono_date() -> String {
+    let d = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap_or_default();
+    format!("epoch-{}", d.as_secs() / 86400)
+}
+
 pub fn log_path() -> PathBuf {
     crate::downloader::app_data_dir().join("logs").join("sidecar.log")
 }
@@ -111,6 +118,19 @@ pub fn spawn(app: &AppHandle) -> Result<(), String> {
     if let Some(w) = web_dist_env() {
         cmd.env("COLORIZER_WEB_DIST", &w);
     }
+    // GPU auto (DirectML/CUDA) with CPU fallback
+    cmd.env("COLORIZER_DEVICE", "auto");
+    // outputs (gallery) live under appdata too
+    let out_dir = crate::downloader::app_data_dir().join("gallery");
+    let _ = std::fs::create_dir_all(&out_dir);
+    cmd.env("COLORIZER_OUTPUT_DIR", &out_dir);
+    // route python logging to a dated file as well
+    let log_dir = crate::downloader::app_data_dir().join("logs");
+    let _ = std::fs::create_dir_all(&log_dir);
+    cmd.env(
+        "COLORIZER_LOG_FILE",
+        log_dir.join(format!("app-{}.log", chrono_date())),
+    );
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -257,4 +277,7 @@ fn prompt_after_exit(app: AppHandle) {
         app.exit(0);
     }
 }
+
+
+
 

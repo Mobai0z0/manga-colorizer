@@ -18,6 +18,8 @@
 """
 from __future__ import annotations
 
+from collections import deque
+from datetime import datetime
 from io import BytesIO
 import json
 import logging
@@ -39,6 +41,32 @@ MODEL_DIR = Path(os.environ.get('COLORIZER_MODEL_DIR', str(ROOT / 'models' / 'ma
 GENERATOR = MODEL_DIR / 'v6_generator.onnx'
 SAM_ENCODER = MODEL_DIR / 'v6_sam_encoder.onnx'
 INFER_SIZE = 1024
+OUTPUT_DIR = Path(os.environ.get('COLORIZER_OUTPUT_DIR', str(ROOT / 'out' / 'gallery')))
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+GALLERY_LEDGER = OUTPUT_DIR / 'gallery.jsonl'
+LOG_RING = deque(maxlen=600)
+
+class _RingHandler(logging.Handler):
+    def emit(self, record):
+        try:
+            LOG_RING.append({'seq': getattr(_RingHandler, '_seq', 0) + 1,
+                             'ts': datetime.now().strftime('%m-%d %H:%M:%S'),
+                             'level': record.levelname, 'message': record.getMessage()})
+            _RingHandler._seq = LOG_RING[-1]['seq']
+        except Exception:
+            pass
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+logging.getLogger().addHandler(_RingHandler())
+_log_file = os.environ.get('COLORIZER_LOG_FILE')
+if _log_file:
+    try:
+        _fh = logging.FileHandler(_log_file, encoding='utf-8')
+        _fh.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
+        logging.getLogger().addHandler(_fh)
+    except Exception:
+        pass
+logging.getLogger().setLevel(logging.INFO)
 MAX_BYTES = 20 * 1024 * 1024
 MAX_PIXELS = 16_000_000
 DEVICE = os.environ.get('COLORIZER_DEVICE', 'cpu').lower()
@@ -55,7 +83,18 @@ def _pick_providers():
     available = ort.get_available_providers()
     if DEVICE == 'cuda' and 'CUDAExecutionProvider' not in available:
         raise RuntimeError('CUDAExecutionProvider 不可用，请安装 GPU 依赖或选择 cpu')
-    return [p for p in ['CUDAExecutionProvider', 'CPUExecutionProvider'] if p in available]
+    return [p for p in ['CUDAExecutionProvider', 'DmlExecutionProvider', 'CPUExecutionProvider'] if p in available]
+
+
+def _device_label(providers) -> str:
+    if isinstance(providers, dict):
+        providers = [p for lst in providers.values() for p in (lst or [])]
+    for p in providers or []:
+        if 'CUDA' in p:
+            return 'gpu-cuda'
+        if 'Dml' in p:
+            return 'gpu-directml'
+    return 'cpu'
 
 
 def _sessions():
@@ -70,6 +109,7 @@ def _sessions():
             if DEVICE == 'cuda' and any('CUDAExecutionProvider' not in p for p in actual.values()):
                 raise RuntimeError('CUDA 初始化失败，未允许回退；请检查 CUDA/cuDNN 依赖')
             _state.update(gen=gen, sam=sam, providers=actual)
+            logging.info('模型已加载: provider=%s device=%s', actual, _device_label(actual))
         return _state['gen'], _state['sam'], _state['providers']
 
 
@@ -210,16 +250,63 @@ def _encode_png(out_bgr: np.ndarray) -> Response:
     return Response(buf.tobytes(), media_type='image/png', headers={'Cache-Control': 'no-store'})
 
 
-def _process(data: bytes) -> Response:
+def _gallery_insert(*, source_name: str, mode: str, device: str, elapsed_s: float,
+                    src_bgr=None, out_png: bytes = None, error: str = None, out_path=None):
+    """Append one record to gallery.jsonl; save result/preview files. Never raises."""
+    try:
+        rec = {
+            'id': datetime.now().strftime('%Y%m%d%H%M%S') + f'_{int(elapsed_s*1000):04d}',
+            'time': datetime.now().isoformat(timespec='seconds'),
+            'mode': mode, 'device': device, 'elapsed_s': round(elapsed_s, 2),
+            'source_name': source_name, 'status': 'ok' if (out_png or out_path) else 'failed',
+        }
+        if error:
+            rec['error'] = error
+        if out_path:
+            rec['result_path'] = str(out_path)
+            rec['result_file'] = Path(out_path).name
+            try:
+                h, w = cv2.imread(str(out_path)).shape[:2]
+                rec['width'], rec['height'] = w, h
+            except Exception:
+                pass
+        if src_bgr is not None:
+            src_file = OUTPUT_DIR / (rec['id'] + '_src.png')
+            ok, buf = cv2.imencode('.png', src_bgr)
+            if ok:
+                src_file.write_bytes(buf.tobytes())
+                rec['source_file'] = src_file.name
+        with open(GALLERY_LEDGER, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + '\n')
+    except Exception:
+        logging.exception('gallery insert failed')
+
+
+def _process(data: bytes, source_name: str = 'image.png') -> Response:
     if not _inference_lock.acquire(blocking=False):
         return JSONResponse({'error': '模型忙碌，请稍后重试'}, status_code=429)
+    t0 = datetime.now()
     try:
         try:
             bgr = _decode(data)
         except ValueError as exc:
+            _gallery_insert(source_name=source_name, mode='auto', device='-', elapsed_s=0.0, error=str(exc))
             return JSONResponse({'error': str(exc)}, status_code=400)
         out = colorize(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY))
-        return _encode_png(out)
+        resp = _encode_png(out)
+        device = _device_label(_state['providers'])
+        elapsed = (datetime.now() - t0).total_seconds()
+        stamp = datetime.now().strftime('%Y%m%d%H%M%S')
+        out_path = OUTPUT_DIR / (stamp + '_auto.png')
+        try:
+            out_path.write_bytes(resp.body)
+        except Exception:
+            out_path = None
+        _gallery_insert(source_name=source_name, mode='auto', device=device, elapsed_s=elapsed,
+                        src_bgr=bgr, out_path=out_path)
+        logging.info('上色完成: %s mode=auto device=%s elapsed=%.1fs size=%dx%d',
+                     source_name, device, elapsed, bgr.shape[1], bgr.shape[0])
+        return resp
     except RuntimeError as exc:
         logging.exception('Model unavailable')
         return JSONResponse({'error': str(exc)}, status_code=503)
@@ -354,7 +441,8 @@ async def colorize_auto(image: UploadFile = File(...)):
         data = await image.read(MAX_BYTES + 1)
         if len(data) > MAX_BYTES:
             return JSONResponse({'error': '文件超过 20 MiB'}, status_code=413)
-        return await run_in_threadpool(_process, data)
+        name = image.filename or 'image.png'
+        return await run_in_threadpool(_process, data, name)
     finally:
         await image.close()
 
@@ -383,6 +471,74 @@ async def colorize_reference(image: UploadFile = File(...), reference: UploadFil
         await reference.close()
 
 
+# ---- 批量队列: 按提交顺序逐个处理, 单个失败不阻断 ----
+@app.post('/api/v1/batch')
+async def batch_colorize(files: list[UploadFile] = File(...)):
+    results = []
+    for uf in files[:32]:
+        name = uf.filename or 'image.png'
+        try:
+            data = await uf.read(MAX_BYTES + 1)
+        finally:
+            await uf.close()
+        if len(data) > MAX_BYTES:
+            results.append({'name': name, 'status': 'failed', 'error': '文件超过 20 MiB'})
+            continue
+        resp = await run_in_threadpool(_process, data, name)
+        if resp.status_code == 200:
+            results.append({'name': name, 'status': 'ok', 'bytes': len(resp.body)})
+        else:
+            try:
+                err = json.loads(resp.body.decode('utf-8')).get('error', '处理失败')
+            except Exception:
+                err = '处理失败'
+            results.append({'name': name, 'status': 'failed', 'error': err})
+    ok_n = sum(1 for r in results if r['status'] == 'ok')
+    logging.info('批量任务汇总: %d/%d 成功', ok_n, len(results))
+    return {'total': len(results), 'ok': ok_n, 'failed': len(results) - ok_n, 'results': results}
+
+
+@app.get('/api/v1/gallery')
+def gallery_list(limit: int = 200):
+    records = []
+    if GALLERY_LEDGER.is_file():
+        with open(GALLERY_LEDGER, encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        records.append(json.loads(line))
+                    except Exception:
+                        pass
+    return {'count': len(records), 'items': list(reversed(records[-limit:]))}
+
+
+@app.get('/api/v1/logs')
+def logs_tail(after: int = 0):
+    items = [x for x in LOG_RING if x['seq'] > after]
+    return {'items': items, 'next': items[-1]['seq'] if items else after}
+
+
+@app.get('/api/v1/device')
+def device_info():
+    providers = _state['providers']
+    return {'available': ort.get_available_providers(), 'active': providers,
+            'device': _device_label(providers), 'requested': DEVICE,
+            'output_dir': str(OUTPUT_DIR)}
+
+
+@app.get('/gallery/file/{name}')
+def gallery_file(name: str):
+    safe = Path(name).name
+    if safe != name or '..' in name:
+        return JSONResponse({'error': '非法路径'}, status_code=400)
+    path = OUTPUT_DIR / safe
+    if not path.is_file():
+        return JSONResponse({'error': '文件不存在'}, status_code=404)
+    return Response(path.read_bytes(), media_type='image/png',
+                    headers={'Cache-Control': 'max-age=3600'})
+
+
 # 同源静态前端：没有任意来源 CORS；开发时使用 Vite 的本机代理。
 web_dist = Path(os.environ.get('COLORIZER_WEB_DIST', str(ROOT / 'web' / 'dist')))
 if web_dist.is_dir():
@@ -395,4 +551,12 @@ if __name__ == '__main__':
     _ap.add_argument('--port', type=int, default=8788)
     _argv_port = _ap.parse_args().port
     uvicorn.run(app, host='127.0.0.1', port=_argv_port)
+
+
+
+
+
+
+
+
 
