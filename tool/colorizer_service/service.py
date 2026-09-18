@@ -384,10 +384,15 @@ async def colorize_reference(image: UploadFile = File(...), reference: UploadFil
 
 
 # 同源静态前端：没有任意来源 CORS；开发时使用 Vite 的本机代理。
-web_dist = ROOT / 'web' / 'dist'
+web_dist = Path(os.environ.get('COLORIZER_WEB_DIST', str(ROOT / 'web' / 'dist')))
 if web_dist.is_dir():
     app.mount('/', StaticFiles(directory=web_dist, html=True), name='web')
 
 if __name__ == '__main__':
     import uvicorn
-    uvicorn.run(app, host='127.0.0.1', port=8788)
+    import argparse
+    _ap = argparse.ArgumentParser()
+    _ap.add_argument('--port', type=int, default=8788)
+    _argv_port = _ap.parse_args().port
+    uvicorn.run(app, host='127.0.0.1', port=_argv_port)
+

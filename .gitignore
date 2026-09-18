@@ -20,3 +20,15 @@ web/.vite/
 .env
 .env.*
 !.env.example
+
+# desktop shell
+src-tauri/target/
+src-tauri/binaries/*.exe
+src-tauri/gen/
+build/
+
+# flutter mobile
+mobile/build/
+mobile/.dart_tool/
+mobile/android/.gradle/
+**/flutter_export_environment.sh
