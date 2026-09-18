@@ -9,7 +9,9 @@ models/
 out/
 out_rollback/
 .reasonix/
-DELIVERY/
+DELIVERY/*
+!DELIVERY/desktop-mobile-acceptance.md
+!DELIVERY/desktop-mobile-overview.html
 reasonix.toml
 .venv/
 __pycache__/
@@ -32,3 +34,4 @@ mobile/build/
 mobile/.dart_tool/
 mobile/android/.gradle/
 **/flutter_export_environment.sh
+
