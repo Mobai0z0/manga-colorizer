@@ -14,22 +14,15 @@
 <link rel="stylesheet" href="app.css">
 <link rel="stylesheet" href="app-shell.css">
 <link rel="stylesheet" href="app-ui.css">
-<link rel="icon" href="app-icon.svg" type="image/svg+xml">
+<link rel="icon" href="app-icon.png" type="image/png">
 </head>
 <body>
 <div class="app-shell">
 
   <!-- 桌面端：Navigation rail -->
   <nav class="navigation-rail" aria-label="主导航">
-    <span class="navigation-rail__brand" aria-hidden="true">
-      <svg viewBox="0 0 100 100" width="40" height="40">
-        <defs><linearGradient id="bm-g" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stop-color="#00838a"/><stop offset="1" stop-color="#00565c"/>
-        </linearGradient></defs>
-        <rect x="2" y="2" width="96" height="96" rx="26" fill="url(#bm-g)"/>
-        <path d="M25 27h50a9 9 0 0 1 9 9v27a9 9 0 0 1-9 9H58l-10 11-10-11H25a9 9 0 0 1-9-9V36a9 9 0 0 1 9-9z" fill="#fff"/>
-        <circle cx="37" cy="49" r="7.5" fill="#e53935"/><circle cx="55" cy="49" r="7.5" fill="#fdd835"/><circle cx="73" cy="49" r="7.5" fill="#1e88e5"/>
-      </svg>
+    <span class="navigation-rail__brand">
+      <img src="app-icon.png" alt="Manga Colorizer" width="40" height="40" style="border-radius:13px;display:block" title="Manga Colorizer">
     </span>
     <button class="fab" data-nav="colorize" aria-label="开始上色">
       <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path fill="currentColor" d="M7 14c-1.66 0-3 1.34-3 3 0 1.31-1.16 2-2 2 .92 1.22 2.49 2 4 2 2.21 0 4-1.79 4-4 0-1.66-1.34-3-3-3zm13.71-9.37-1.34-1.34a.996.996 0 0 0-1.41 0L9 12.25 11.75 15l8.96-8.96a.996.996 0 0 0 0-1.41z"/></svg>
@@ -66,15 +59,8 @@
     <!-- 顶栏 -->
     <header class="top-app-bar">
       <div class="top-app-bar__brand">
-        <span class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 100 100" width="42" height="42">
-            <defs><linearGradient id="bm-g2" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0" stop-color="#00838a"/><stop offset="1" stop-color="#00565c"/>
-            </linearGradient></defs>
-            <rect x="2" y="2" width="96" height="96" rx="26" fill="url(#bm-g2)"/>
-            <path d="M25 27h50a9 9 0 0 1 9 9v27a9 9 0 0 1-9 9H58l-10 11-10-11H25a9 9 0 0 1-9-9V36a9 9 0 0 1 9-9z" fill="#fff"/>
-            <circle cx="37" cy="49" r="7.5" fill="#e53935"/><circle cx="55" cy="49" r="7.5" fill="#fdd835"/><circle cx="73" cy="49" r="7.5" fill="#1e88e5"/>
-          </svg>
+        <span class="brand-mark">
+          <img src="app-icon.png" alt="Manga Colorizer" width="42" height="42" style="border-radius:13px;display:block" title="Manga Colorizer">
         </span>
         <div>
           <h1>Manga Colorizer</h1>
@@ -82,6 +68,9 @@
         </div>
       </div>
       <div style="flex:1"></div>
+      <button class="theme-toggle" id="theme-toggle" title="切换深浅主题" aria-label="切换深浅主题">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 0 1-4.4 2.26 5.403 5.403 0 0 1-3.14-9.8c-.44-.06-.9-.1-1.36-.1z"/></svg>
+      </span>
       <span class="m3-chip" id="dev-pill">设备检测中…</span>
       <span class="m3-chip" id="svc-pill">服务检测中…</span>
     </header>
@@ -128,6 +117,39 @@
         <h2>批量上色</h2>
         <p>按加入顺序逐个处理；完成品自动进入图库。单张 ≤ 20MiB，一次最多 32 张。</p>
       </div>
+      <!-- 设置面板：上色模式 / 处理器 / 免责声明 -->
+      <div class="settings-panel card" id="settings-panel">
+        <div class="set-row">
+          <span class="set-label">上色模式</span>
+          <div class="seg-group" role="radiogroup" aria-label="上色模式">
+            <label class="seg"><input type="radio" name="mode" value="auto"><span>全自动</span></label>
+            <label class="seg"><input type="radio" name="mode" value="hints"><span>提示点</span></label>
+            <label class="seg"><input type="radio" name="mode" value="reference"><span>参考图</span></label>
+          </div>
+        </div>
+        <div class="set-row" id="ref-row" hidden>
+          <span class="set-label">参考图</span>
+          <div class="ref-picker">
+            <button class="tonal-button" id="btn-ref-pick" type="button">选择参考图…</button>
+            <input type="file" id="ref-input" accept="image/png,image/jpeg,image/webp" hidden>
+            <span class="ref-name" id="ref-name">未选择</span>
+          </div>
+        </div>
+        <div class="set-row">
+          <span class="set-label">处理器</span>
+          <div class="seg-group" role="radiogroup" aria-label="处理器">
+            <label class="seg"><input type="radio" name="device" value="cpu"><span>CPU</span></label>
+            <label class="seg"><input type="radio" name="device" value="gpu"><span>GPU</span></label>
+            <span class="set-note" id="gpu-note" hidden></span>
+          </div>
+        </div>
+        <label class="disclaimer">
+          <input type="checkbox" id="disclaimer">
+          <span>我确认对处理内容拥有合法权利；上色结果仅供个人创作与预览，不用于商业发布（模型权重 CC BY-NC-SA 4.0）。</span>
+        </label>
+        <p class="set-hint" id="set-hint" hidden></p>
+      </div>
+
       <div class="queue-layout">
         <div class="card queue-card">
           <div class="drop" id="drop" role="button" tabindex="0" aria-label="添加图片">
@@ -217,3 +239,4 @@
 <script src="app-ui.js"></script>
 </body>
 </html>
+

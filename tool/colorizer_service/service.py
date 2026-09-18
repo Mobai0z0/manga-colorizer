@@ -28,7 +28,7 @@ from pathlib import Path
 import threading
 
 import cv2
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 import numpy as np
@@ -44,6 +44,24 @@ INFER_SIZE = 1024
 OUTPUT_DIR = Path(os.environ.get('COLORIZER_OUTPUT_DIR', str(ROOT / 'out' / 'gallery')))
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 GALLERY_LEDGER = OUTPUT_DIR / 'gallery.jsonl'
+SETTINGS_FILE = OUTPUT_DIR / 'settings.json'
+
+
+def _load_settings() -> dict:
+    try:
+        return json.loads(SETTINGS_FILE.read_text(encoding='utf-8'))
+    except Exception:
+        return {}
+
+
+def _save_settings(patch: dict) -> dict:
+    data = _load_settings()
+    data.update(patch)
+    try:
+        SETTINGS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+    except Exception:
+        logging.exception('save settings failed')
+    return data
 LOG_RING = deque(maxlen=600)
 
 class _RingHandler(logging.Handler):
@@ -73,12 +91,18 @@ DEVICE = os.environ.get('COLORIZER_DEVICE', 'cpu').lower()
 if DEVICE not in ('cpu', 'auto', 'cuda'):
     raise ValueError('COLORIZER_DEVICE must be cpu, auto or cuda')
 _state = {'gen': None, 'sam': None, 'providers': None}
+_runtime_device = {'value': None}
+
+
+def _gpu_available() -> bool:
+    return any('Dml' in p or 'CUDA' in p for p in ort.get_available_providers())
 _session_lock = threading.Lock()
 _inference_lock = threading.Lock()
 
 
 def _pick_providers():
-    if DEVICE == 'cpu':
+    chosen = _runtime_device.get('value') or DEVICE
+    if chosen == 'cpu':
         return ['CPUExecutionProvider']
     available = ort.get_available_providers()
     if DEVICE == 'cuda' and 'CUDAExecutionProvider' not in available:
@@ -522,9 +546,11 @@ def logs_tail(after: int = 0):
 @app.get('/api/v1/device')
 def device_info():
     providers = _state['providers']
+    st = _load_settings()
     return {'available': ort.get_available_providers(), 'active': providers,
             'device': _device_label(providers), 'requested': DEVICE,
-            'output_dir': str(OUTPUT_DIR)}
+            'gpu_available': _gpu_available(), 'runtime_device': _runtime_device.get('value'),
+            'output_dir': str(OUTPUT_DIR), 'settings': st}
 
 
 @app.get('/gallery/file/{name}')
@@ -539,7 +565,72 @@ def gallery_file(name: str):
                     headers={'Cache-Control': 'max-age=3600'})
 
 
+# ---- 设置: 模式 / 处理器 / 免责声明 (本地持久化 settings.json) ----
+@app.get('/api/v1/settings')
+def settings_get():
+    return _load_settings()
+
+
+@app.post('/api/v1/settings')
+async def settings_set(request: Request):
+    body = await request.json()
+    allowed = {'mode', 'device', 'disclaimer_accepted'}
+    patch = {k: v for k, v in (body or {}).items() if k in allowed}
+    if 'device' in patch:
+        if patch['device'] not in ('cpu', 'gpu', 'auto'):
+            return JSONResponse({'error': 'device 必须是 cpu/gpu/auto'}, status_code=400)
+        if patch['device'] == 'gpu' and not _gpu_available():
+            return JSONResponse({'error': '本机没有可用的 GPU Provider'}, status_code=400)
+    if 'mode' in patch and patch['mode'] not in ('auto', 'hints', 'reference'):
+        return JSONResponse({'error': 'mode 必须是 auto/hints/reference'}, status_code=400)
+    if 'disclaimer_accepted' in patch and not isinstance(patch['disclaimer_accepted'], bool):
+        return JSONResponse({'error': 'disclaimer_accepted 必须是布尔值'}, status_code=400)
+    old_dev = _runtime_device.get('value')
+    data = _save_settings(patch)
+    new_dev = data.get('device', 'auto')
+    mapped = {'gpu': 'auto', 'cpu': 'cpu'}.get(new_dev, DEVICE)
+    if mapped != old_dev:
+        _runtime_device['value'] = mapped
+        with _session_lock:
+            _state.update(gen=None, sam=None, providers=None)
+        logging.info('处理器切换: %s (将在下次任务生效)', mapped)
+    return data
+
+
+# ---- 设置: 模式 / 处理器 / 免责声明 (本地持久化 settings.json) ----
+@app.get('/api/v1/settings')
+def settings_get():
+    return _load_settings()
+
+
+@app.post('/api/v1/settings')
+async def settings_set(request: Request):
+    body = await request.json()
+    allowed = {'mode', 'device', 'disclaimer_accepted'}
+    patch = {k: v for k, v in (body or {}).items() if k in allowed}
+    if 'device' in patch:
+        if patch['device'] not in ('cpu', 'gpu', 'auto'):
+            return JSONResponse({'error': 'device 必须是 cpu/gpu/auto'}, status_code=400)
+        if patch['device'] == 'gpu' and not _gpu_available():
+            return JSONResponse({'error': '本机没有可用的 GPU Provider'}, status_code=400)
+    if 'mode' in patch and patch['mode'] not in ('auto', 'hints', 'reference'):
+        return JSONResponse({'error': 'mode 必须是 auto/hints/reference'}, status_code=400)
+    if 'disclaimer_accepted' in patch and not isinstance(patch['disclaimer_accepted'], bool):
+        return JSONResponse({'error': 'disclaimer_accepted 必须是布尔值'}, status_code=400)
+    old_dev = _runtime_device.get('value')
+    data = _save_settings(patch)
+    new_dev = data.get('device', 'auto')
+    mapped = {'gpu': 'auto', 'cpu': 'cpu'}.get(new_dev, DEVICE)
+    if mapped != old_dev:
+        _runtime_device['value'] = mapped
+        with _session_lock:
+            _state.update(gen=None, sam=None, providers=None)
+        logging.info('处理器切换: %s (将在下次任务生效)', mapped)
+    return data
+
+
 # 同源静态前端：没有任意来源 CORS；开发时使用 Vite 的本机代理。
+
 web_dist = Path(os.environ.get('COLORIZER_WEB_DIST', str(ROOT / 'web' / 'dist')))
 if web_dist.is_dir():
     app.mount('/', StaticFiles(directory=web_dist, html=True), name='web')
@@ -551,6 +642,9 @@ if __name__ == '__main__':
     _ap.add_argument('--port', type=int, default=8788)
     _argv_port = _ap.parse_args().port
     uvicorn.run(app, host='127.0.0.1', port=_argv_port)
+
+
+
 
 
 
