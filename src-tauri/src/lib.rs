@@ -111,6 +111,15 @@ fn cmd_service_port() -> u16 {
     sidecar_mgr::PORT
 }
 
+#[tauri::command]
+fn cmd_open_dir(path: String) -> Result<(), String> {
+    let p = PathBuf::from(&path);
+    if !p.is_dir() {
+        return Err(format!("dir not found: {}", path));
+    }
+    opener::open(&p)
+}
+
 mod opener {
     pub fn open(path: &std::path::Path) -> Result<(), String> {
         #[cfg(target_os = "windows")]
@@ -264,7 +273,7 @@ fn cmd_start_download(app: AppHandle, state: tauri::State<AppState>) -> Result<b
 
 fn reload_main_window(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
-        let url = Url::parse(&format!("http://127.0.0.1:{}/", sidecar_mgr::PORT)).expect("service url");
+        let url = Url::parse(&format!("http://127.0.0.1:{}/app-ui.html", sidecar_mgr::PORT)).expect("service url");
         let _ = win.navigate(url);
         let _ = win.show();
         let _ = win.set_focus();
@@ -325,8 +334,13 @@ pub fn run() {
             };
 
             if !ready {
-                // stay on the bundled shell page; frontend will show downloader UI
+                // first run: switch window to the boot/downloader page
                 let _ = handle.emit("boot-stage", "need-weights");
+                if let Some(win) = handle.get_webview_window("main") {
+                    if let Ok(url) = Url::parse("http://tauri.localhost/boot-shell.html") {
+                        let _ = win.navigate(url);
+                    }
+                }
             } else {
                 let _ = handle.emit("boot-stage", "starting-service");
                 let h2 = handle.clone();
@@ -350,7 +364,8 @@ pub fn run() {
             cmd_start_download,
             cmd_sidecar_status,
             cmd_sidecar_log_path,
-            cmd_service_port
+            cmd_service_port,
+            cmd_open_dir
         ])
         .on_page_load(|webview, payload| {
             if let tauri::webview::PageLoadEvent::Started = payload.event() {
@@ -366,6 +381,8 @@ pub fn run() {
             let _ = app;
         });
 }
+
+
 
 
 
