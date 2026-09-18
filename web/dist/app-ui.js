@@ -121,7 +121,9 @@
   });
   $('btn-cancel').addEventListener('click', () => { cancelFlag = true; $('btn-cancel').disabled = true; });
 
+  function isDisclaimerOk() { return $('disclaimer').checked; }
   $('btn-run').addEventListener('click', async () => {
+    if (!isDisclaimerOk()) return; // gated; hint handled by capture listener
     if (running || !queue.length) return;
     running = true; cancelFlag = false;
     renderQueue();
@@ -132,7 +134,16 @@
       try {
         const fd = new FormData();
         fd.append('image', it.file, it.file.name);
-        const r = await fetch('/colorize_auto', { method: 'POST', body: fd });
+        let endpoint = '/colorize_auto';
+        if (settings.mode === 'hints') {
+          endpoint = '/colorize_hints';
+          fd.append('hints', '[]');
+        } else if (settings.mode === 'reference') {
+          if (!refFile) throw new Error('参考图模式：请先选择参考图');
+          endpoint = '/colorize_reference';
+          fd.append('reference', refFile, refFile.name);
+        }
+        const r = await fetch(endpoint, { method: 'POST', body: fd });
         if (r.ok) { it.status = 'ok'; }
         else {
           let msg = 'HTTP ' + r.status;
@@ -221,8 +232,123 @@
   }
   function scrollConsole() { const box = $('console'); box.scrollTop = box.scrollHeight; }
 
+
+/* ---------- 设置面板：模式 / 处理器 / 免责声明 / 主题 ---------- */
+const SET_KEY = 'mc-settings-v1';
+const settings = Object.assign(
+  { mode: 'auto', device: 'auto', disclaimer_accepted: false, theme: null, refName: '' },
+  JSON.parse(localStorage.getItem(SET_KEY) || '{}')
+);
+
+function saveSettings(patch) {
+  Object.assign(settings, patch);
+  localStorage.setItem(SET_KEY, JSON.stringify(settings));
+  fetch('/api/v1/settings', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode: settings.mode, device: settings.device, disclaimer_accepted: settings.disclaimer_accepted }),
+  }).catch(() => {});
+}
+
+function applySettingsToUI() {
+  const modeInput = document.querySelector('input[name=mode][value="' + settings.mode + '"]');
+  if (modeInput) modeInput.checked = true;
+  toggleRefRow();
+  if (settings.refName) $('ref-name').textContent = settings.refName;
+  // device: default by machine ability after loadDevice() probes; explicit choice wins
+  if (settings.device && settings.device !== 'auto') {
+    const dInput = document.querySelector('input[name=device][value="' + settings.device + '"]');
+    if (dInput && !dInput.disabled) dInput.checked = true;
+  }
+  $('disclaimer').checked = !!settings.disclaimer_accepted;
+}
+
+function toggleRefRow() {
+  $('ref-row').hidden = settings.mode !== 'reference';
+}
+
+document.querySelectorAll('input[name=mode]').forEach((el) =>
+  el.addEventListener('change', () => { if (el.checked) { saveSettings({ mode: el.value }); toggleRefRow(); } }));
+
+document.querySelectorAll('input[name=device]').forEach((el) =>
+  el.addEventListener('change', () => { if (el.checked) {
+    saveSettings({ device: el.value });
+    const hint = $('set-hint');
+    hint.hidden = false;
+    hint.textContent = '处理器已切换为 ' + (el.value === 'gpu' ? 'GPU' : 'CPU') + '，将在下次处理时生效。';
+    setTimeout(() => { hint.hidden = true; }, 4000);
+  } }));
+
+/* reference image picker */
+let refFile = null;
+$('btn-ref-pick').addEventListener('click', () => $('ref-input').click());
+$('ref-input').addEventListener('change', () => {
+  const f = $('ref-input').files[0];
+  if (!f) return;
+  if (!/\.(png|jpe?g|webp)$/i.test(f.name)) { $('ref-name').textContent = '不支持的格式'; return; }
+  refFile = f;
+  $('ref-name').textContent = f.name + '（' + (f.size / 1048576).toFixed(1) + 'MB）';
+});
+
+/* disclaimer gate: block run when unchecked */
+const _origRun = $('btn-run');
+_origRun.addEventListener('click', () => {
+  if (!$('disclaimer').checked) {
+    const hint = $('set-hint');
+    hint.hidden = false;
+    hint.textContent = '请先勾选免责声明，再开始上色。';
+    $('settings-panel').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setTimeout(() => { hint.hidden = true; }, 4000);
+  }
+}, true); // capture: run before the queue handler
+
+/* GPU availability: gray out when no DML/CUDA provider */
+async function applyDeviceAbility() {
+  let d = null;
+  try { d = await (await fetch('/api/v1/device', { cache: 'no-store' })).json(); } catch { }
+  const gpuOk = !!(d && d.gpu_available);
+  const gpuInput = document.querySelector('input[name=device][value="gpu"]');
+  const note = $('gpu-note');
+  if (!gpuOk) {
+    gpuInput.disabled = true;
+    note.hidden = false;
+    note.textContent = '本机未检测到可用 GPU（DML/CUDA Provider 缺失）';
+  } else {
+    gpuInput.disabled = false;
+    note.hidden = true;
+    if (settings.device === 'auto' || !settings.device) {
+      settings.device = 'gpu';
+      localStorage.setItem(SET_KEY, JSON.stringify(settings));
+      gpuInput.checked = true;
+    }
+  }
+  applySettingsToUI();
+}
+
+/* theme toggle: dark/light, persisted; console follows tokens automatically */
+function applyTheme(theme) {
+  const root = document.documentElement;
+  if (theme === 'light') {
+    root.setAttribute('data-theme', 'light');
+    root.style.colorScheme = 'light';
+  } else if (theme === 'dark') {
+    root.setAttribute('data-theme', 'dark');
+    root.style.colorScheme = 'dark';
+  } else {
+    root.removeAttribute('data-theme');
+    root.style.colorScheme = '';
+  }
+}
+$('theme-toggle').addEventListener('click', () => {
+  const cur = settings.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  const next = cur === 'dark' ? 'light' : 'dark';
+  saveSettings({ theme: next });
+  applyTheme(next);
+});
+applyTheme(settings.theme);
+
+
   /* ---------- 启动 ---------- */
-  pollHealth(); loadDevice(); pollLogs();
+  pollHealth(); loadDevice(); pollLogs(); applyDeviceAbility();
   setInterval(pollHealth, 5000);
   setInterval(loadDevice, 15000);
   setInterval(pollLogs, 1200);

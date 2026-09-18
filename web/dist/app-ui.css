@@ -115,3 +115,63 @@
   box-shadow: var(--md-sys-elevation-3); background: var(--md-sys-color-surface-container-highest);
 }
 .lightbox__cap { color: #fff; font-size: .78rem; opacity: .9; text-align: center; }
+
+/* ---------- 设置面板：模式 / 处理器 / 免责声明 ---------- */
+.settings-panel { padding: 16px 20px; margin-bottom: 18px; display: flex; flex-direction: column; gap: 12px; }
+.set-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.set-label { font-size: .8rem; font-weight: 600; color: var(--md-sys-color-on-surface-variant); min-width: 58px; }
+.set-note { font-size: .72rem; color: var(--md-sys-color-error); }
+.set-hint { margin: 0; font-size: .76rem; color: var(--md-sys-color-primary); }
+
+.seg-group { display: flex; gap: 8px; flex-wrap: wrap; }
+.seg { position: relative; cursor: pointer; }
+.seg input { position: absolute; opacity: 0; pointer-events: none; }
+.seg span {
+  display: inline-block; padding: 7px 16px; border-radius: var(--md-sys-shape-corner-full);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  font-size: .78rem; font-weight: 600; color: var(--md-sys-color-on-surface-variant);
+  transition: background .15s, color .15s, border-color .15s;
+}
+.seg:hover span { border-color: var(--md-sys-color-outline); }
+.seg input:checked + span {
+  background: var(--md-sys-color-primary-container); color: var(--md-sys-color-on-primary-container);
+  border-color: transparent;
+}
+.seg input:focus-visible + span { outline: 3px solid var(--md-sys-color-primary); outline-offset: 2px; }
+.seg input:disabled + span { opacity: .38; cursor: not-allowed; }
+
+.ref-picker { display: flex; align-items: center; gap: 10px; }
+.ref-name { font-size: .76rem; color: var(--md-sys-color-on-surface-variant); max-width: 320px;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.disclaimer { display: flex; align-items: flex-start; gap: 10px; cursor: pointer;
+              padding: 10px 14px; border-radius: var(--md-sys-shape-corner-sm);
+              background: var(--md-sys-color-surface-container); }
+.disclaimer input { margin-top: 3px; width: 16px; height: 16px; accent-color: var(--md-sys-color-primary); cursor: pointer; }
+.disclaimer span { font-size: .74rem; color: var(--md-sys-color-on-surface-variant); line-height: 1.5; }
+
+.theme-toggle {
+  border: 1px solid var(--md-sys-color-outline-variant); background: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-on-surface-variant); width: 36px; height: 36px; border-radius: 50%;
+  cursor: pointer; display: grid; place-items: center; transition: background .15s;
+}
+.theme-toggle:hover { background: var(--md-sys-color-secondary-container); color: var(--md-sys-color-on-secondary-container); }
+
+/* ---------- 日志面板双主题：变量驱动，跟随 app.css 的 light/dark ---------- */
+.console {
+  font-family: "Cascadia Mono", Consolas, monospace; font-size: .72rem; line-height: 1.55;
+  background: var(--md-sys-color-surface-container);
+  color: var(--md-sys-color-on-surface);
+  border: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 60%, transparent);
+  border-radius: var(--md-sys-shape-corner-md); padding: 14px 16px;
+  height: calc(100dvh - 250px); min-height: 260px; overflow: auto;
+  scrollbar-color: var(--md-sys-color-outline-variant) transparent;
+  scrollbar-width: thin;
+}
+.log-line { display: flex; gap: 10px; padding: 1.5px 0; }
+.log-line .ts { color: var(--md-sys-color-on-surface-variant); opacity: .8; flex: none; }
+.log-line .lv { flex: none; width: 52px; font-weight: 600; }
+.log-line .lv.INFO { color: var(--md-sys-color-primary); }
+.log-line .lv.WARNING { color: var(--md-sys-color-tertiary); }
+.log-line .lv.ERROR { color: var(--md-sys-color-error); }
+.log-line .msg { word-break: break-all; color: var(--md-sys-color-on-surface); opacity: .92; }
