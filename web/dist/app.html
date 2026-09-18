@@ -1,0 +1,274 @@
+<!doctype html>
+<!-- Manga Colorizer APP 界面（手机端 / 电脑端自适应）。
+     组件命名对齐 M3 规范：top-app-bar / navigation-rail / navigation-bar /
+     fab / card / list / switch / filled-button / tonal-button，零构建零运行时依赖。
+     桌面（≥901px）显示 navigation-rail，手机（≤900px）显示底部 navigation-bar。
+     许可：仓库代码 Apache-2.0；模型权重 CC BY-NC-SA 4.0。 -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#00696d" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#101414" media="(prefers-color-scheme: dark)">
+<title>Manga Colorizer · APP</title>
+<link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="app-shell.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20100%20100'%3E%3Cdefs%3E%3ClinearGradient%20id='g'%20x1='0'%20y1='0'%20x2='1'%20y2='1'%3E%3Cstop%20offset='0'%20stop-color='%2300838a'/%3E%3Cstop%20offset='1'%20stop-color='%2300565c'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect%20x='2'%20y='2'%20width='96'%20height='96'%20rx='26'%20fill='url(%23g)'/%3E%3Cpath%20d='M25%2027h50a9%209%200%200%201%209%209v27a9%209%200%200%201-9%209H58l-10%2011-10-11H25a9%209%200%200%201-9-9V36a9%209%200%200%201%209-9z'%20fill='%23fff'/%3E%3Ccircle%20cx='37'%20cy='49'%20r='7.5'%20fill='%23e53935'/%3E%3Ccircle%20cx='55'%20cy='49'%20r='7.5'%20fill='%23fdd835'/%3E%3Ccircle%20cx='73'%20cy='49'%20r='7.5'%20fill='%231e88e5'/%3E%3C/svg%3E">
+</head>
+<body>
+<div class="app-shell">
+
+  <!-- 桌面端：Navigation rail -->
+  <nav class="navigation-rail" aria-label="主导航">
+    <span class="navigation-rail__brand" aria-hidden="true">
+      <svg viewBox="0 0 100 100" width="40" height="40">
+        <defs><linearGradient id="bm-g" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#00838a"/><stop offset="1" stop-color="#00565c"/>
+        </linearGradient></defs>
+        <rect x="2" y="2" width="96" height="96" rx="26" fill="url(#bm-g)"/>
+        <path d="M25 27h50a9 9 0 0 1 9 9v27a9 9 0 0 1-9 9H58l-10 11-10-11H25a9 9 0 0 1-9-9V36a9 9 0 0 1 9-9z" fill="#fff"/>
+        <circle cx="37" cy="49" r="7.5" fill="#e53935"/><circle cx="55" cy="49" r="7.5" fill="#fdd835"/><circle cx="73" cy="49" r="7.5" fill="#1e88e5"/>
+      </svg>
+    </span>
+    <button class="fab" data-nav="colorize" aria-label="开始上色">
+      <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path fill="currentColor" d="M7 14c-1.66 0-3 1.34-3 3 0 1.31-1.16 2-2 2 .92 1.22 2.49 2 4 2 2.21 0 4-1.79 4-4 0-1.66-1.34-3-3-3zm13.71-9.37-1.34-1.34a.996.996 0 0 0-1.41 0L9 12.25 11.75 15l8.96-8.96a.996.996 0 0 0 0-1.41z"/></svg>
+    </button>
+    <button class="navigation-rail__destination is-active" data-nav="home">
+      <span class="navigation-rail__icon">
+        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+      </span>
+      <span>首页</span>
+    </button>
+    <button class="navigation-rail__destination" data-nav="colorize">
+      <span class="navigation-rail__icon">
+        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M12 2C6.49 2 2 6.49 2 12s4.49 10 10 10c1.38 0 2.5-1.12 2.5-2.5 0-.61-.23-1.2-.64-1.67-.08-.1-.13-.21-.13-.33 0-.28.22-.5.5-.5H16c3.31 0 6-2.69 6-6 0-4.96-4.49-9-10-9zm5.5 11c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm-3-4c-.83 0-1.5-.67-1.5-1.5S13.67 6 14.5 6s1.5.67 1.5 1.5S15.33 9 14.5 9zM5 11.5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5S7.33 13 6.5 13 5 12.33 5 11.5zm6-4c0 .83-.67 1.5-1.5 1.5S8 8.33 8 7.5 8.67 6 9.5 6s1.5.67 1.5 1.5z"/></svg>
+      </span>
+      <span>上色</span>
+    </button>
+    <button class="navigation-rail__destination" data-nav="gallery">
+      <span class="navigation-rail__icon">
+        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+      </span>
+      <span>图库</span>
+    </button>
+    <button class="navigation-rail__destination" data-nav="settings">
+      <span class="navigation-rail__icon">
+        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 0 0-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+      </span>
+      <span>设置</span>
+    </button>
+    <span class="navigation-rail__spacer"></span>
+  </nav>
+
+  <div class="app-shell__content">
+    <!-- 顶栏 -->
+    <header class="top-app-bar">
+      <div class="top-app-bar__brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 100 100" width="42" height="42">
+            <defs><linearGradient id="bm-g2" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#00838a"/><stop offset="1" stop-color="#00565c"/>
+            </linearGradient></defs>
+            <rect x="2" y="2" width="96" height="96" rx="26" fill="url(#bm-g2)"/>
+            <path d="M25 27h50a9 9 0 0 1 9 9v27a9 9 0 0 1-9 9H58l-10 11-10-11H25a9 9 0 0 1-9-9V36a9 9 0 0 1 9-9z" fill="#fff"/>
+            <circle cx="37" cy="49" r="7.5" fill="#e53935"/><circle cx="55" cy="49" r="7.5" fill="#fdd835"/><circle cx="73" cy="49" r="7.5" fill="#1e88e5"/>
+          </svg>
+        </span>
+        <div>
+          <h1>Manga Colorizer</h1>
+          <p class="top-app-bar__sub">黑白漫画语义上色</p>
+        </div>
+      </div>
+    </header>
+
+    <!-- 首页 -->
+    <section class="screen" id="screen-home">
+      <div class="hero">
+        <h2>黑白漫画，一键上色</h2>
+        <p>深度模型语义配色：发 / 肤 / 瞳 / 背景自动上色，支持提示点精修与参考图色调迁移，亮度始终保真。</p>
+        <div class="actions">
+          <button class="filled-button" data-nav="colorize">开始上色</button>
+          <a class="tonal-button" href="index.html" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;text-decoration:none">打开完整工作台</a>
+        </div>
+      </div>
+      <ul class="list" style="margin-top:22px">
+        <li class="list-item">
+          <span class="list-item__icon"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M9.64 7.64c.23-.5.36-1.05.36-1.64 0-2.21-1.79-4-4-4S2 3.79 2 6s1.79 4 4 4c.59 0 1.14-.13 1.64-.36L10 12l-2.36 2.36C7.14 14.13 6.59 14 6 14c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4c0-.59-.13-1.14-.36-1.64L12 14l7 7h3v-1L9.64 7.64zM6 8c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm0 12c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm6-7.5c-.28 0-.5-.22-.5-.5s.22-.5.5-.5.5.22.5.5-.22.5-.5.5zM19 3l-6 6 2 2 7-7V3z"/></svg></span>
+          <div class="list-item__text">
+            <p class="list-item__headline">全自动语义上色</p>
+            <p class="list-item__supporting">SAM 语义引导 + generator，长图自动分块推理，无下采样损失</p>
+          </div>
+        </li>
+        <li class="list-item">
+          <span class="list-item__icon"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M12 2C6.49 2 2 6.49 2 12s4.49 10 10 10c1.38 0 2.5-1.12 2.5-2.5 0-.61-.23-1.2-.64-1.67-.08-.1-.13-.21-.13-.33 0-.28.22-.5.5-.5H16c3.31 0 6-2.69 6-6 0-4.96-4.49-9-10-9z"/></svg></span>
+          <div class="list-item__text">
+            <p class="list-item__headline">提示点精修</p>
+            <p class="list-item__supporting">画布点击落点指定区域颜色，双击删除，色度扩散只写 a/b 通道</p>
+          </div>
+        </li>
+        <li class="list-item">
+          <span class="list-item__icon"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg></span>
+          <div class="list-item__text">
+            <p class="list-item__headline">参考图色调迁移</p>
+            <p class="list-item__supporting">上传任意彩图，Reinhard Lab 主色迁移到原稿</p>
+          </div>
+        </li>
+      </ul>
+    </section>
+
+    <!-- 上色（内嵌完整工作台） -->
+    <section class="screen screen--frame" id="screen-colorize" hidden>
+      <iframe id="workbench-frame" class="screen-frame__embed" title="上色工作台"></iframe>
+    </section>
+
+    <!-- 图库 -->
+    <section class="screen" id="screen-gallery" hidden>
+      <div class="screen-head">
+        <h2>图库</h2>
+        <p>上色结果示例占位（本地示例图不随仓库分发，可在工作台生成后在此浏览）</p>
+      </div>
+      <div class="media-grid">
+        <div class="card media-card">
+          <span class="media-card__thumb media-card__thumb--ph" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="30" height="30"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+          </span>
+          <p class="media-card__label">示例 1<small>全自动 · 1280×760</small></p>
+        </div>
+        <div class="card media-card">
+          <span class="media-card__thumb media-card__thumb--ph" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="30" height="30"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+          </span>
+          <p class="media-card__label">示例 2<small>提示点 · 3 点</small></p>
+        </div>
+        <div class="card media-card">
+          <span class="media-card__thumb media-card__thumb--ph" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="30" height="30"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+          </span>
+          <p class="media-card__label">示例 3<small>参考图迁移</small></p>
+        </div>
+        <div class="card media-card">
+          <span class="media-card__thumb media-card__thumb--ph" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="30" height="30"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+          </span>
+          <p class="media-card__label">示例 4<small>长图分块 · 1280×7376</small></p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 设置 -->
+    <section class="screen" id="screen-settings" hidden>
+      <div class="screen-head">
+        <h2>设置</h2>
+        <p>示例项（演示 M3 Switch / List 组件，暂不持久化）</p>
+      </div>
+      <ul class="list">
+        <li class="list-item">
+          <span class="list-item__icon"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 0 1-4.4 2.26 5.403 5.403 0 0 1-3.14-9.8c-.44-.06-.9-.1-1.36-.1z"/></svg></span>
+          <div class="list-item__text">
+            <p class="list-item__headline">深色主题跟随系统</p>
+            <p class="list-item__supporting">关闭后始终使用浅色主题</p>
+          </div>
+          <label class="switch"><input type="checkbox" checked aria-label="深色主题跟随系统"><span class="switch__track"></span><span class="switch__thumb"></span></label>
+        </li>
+        <li class="list-item">
+          <span class="list-item__icon"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></span>
+          <div class="list-item__text">
+            <p class="list-item__headline">下载后自动命名</p>
+            <p class="list-item__supporting">结果文件名追加 -colored 后缀</p>
+          </div>
+          <label class="switch"><input type="checkbox" checked aria-label="下载后自动命名"><span class="switch__track"></span><span class="switch__thumb"></span></label>
+        </li>
+        <li class="list-item">
+          <span class="list-item__icon"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/></svg></span>
+          <div class="list-item__text">
+            <p class="list-item__headline">上色完成提示</p>
+            <p class="list-item__supporting">长图推理耗时较长，完成后显示系统通知</p>
+          </div>
+          <label class="switch"><input type="checkbox" aria-label="上色完成提示"><span class="switch__track"></span><span class="switch__thumb"></span></label>
+        </li>
+      </ul>
+      <ul class="list" style="margin-top:16px">
+        <li class="list-item">
+          <div class="list-item__text">
+            <p class="list-item__headline">版本</p>
+            <p class="list-item__supporting">社区预览 · 零构建 Web APP</p>
+          </div>
+        </li>
+        <li class="list-item">
+          <div class="list-item__text">
+            <p class="list-item__headline">许可</p>
+            <p class="list-item__supporting">代码 Apache-2.0 · 模型权重 CC BY-NC-SA 4.0（非商业）</p>
+          </div>
+        </li>
+      </ul>
+    </section>
+  </div>
+
+  <!-- 手机端：底部 Navigation bar -->
+  <nav class="navigation-bar" aria-label="主导航">
+    <button class="navigation-bar__item is-active" data-nav="home">
+      <span class="navigation-bar__icon">
+        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+      </span>
+      <span>首页</span>
+    </button>
+    <button class="navigation-bar__item" data-nav="colorize">
+      <span class="navigation-bar__icon">
+        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M12 2C6.49 2 2 6.49 2 12s4.49 10 10 10c1.38 0 2.5-1.12 2.5-2.5 0-.61-.23-1.2-.64-1.67-.08-.1-.13-.21-.13-.33 0-.28.22-.5.5-.5H16c3.31 0 6-2.69 6-6 0-4.96-4.49-9-10-9zm5.5 11c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm-3-4c-.83 0-1.5-.67-1.5-1.5S13.67 6 14.5 6s1.5.67 1.5 1.5S15.33 9 14.5 9zM5 11.5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5S7.33 13 6.5 13 5 12.33 5 11.5zm6-4c0 .83-.67 1.5-1.5 1.5S8 8.33 8 7.5 8.67 6 9.5 6s1.5.67 1.5 1.5z"/></svg>
+      </span>
+      <span>上色</span>
+    </button>
+    <button class="navigation-bar__item" data-nav="gallery">
+      <span class="navigation-bar__icon">
+        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+      </span>
+      <span>图库</span>
+    </button>
+    <button class="navigation-bar__item" data-nav="settings">
+      <span class="navigation-bar__icon">
+        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 0 0-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+      </span>
+      <span>设置</span>
+    </button>
+  </nav>
+</div>
+
+<script>
+(() => {
+  'use strict';
+  const screens = { home: 'screen-home', colorize: 'screen-colorize', gallery: 'screen-gallery', settings: 'screen-settings' };
+  const frame = document.getElementById('workbench-frame');
+  let frameLoaded = false;
+
+  function show(name) {
+    if (!screens[name]) return;
+    for (const [key, id] of Object.entries(screens)) {
+      document.getElementById(id).hidden = key !== name;
+    }
+    document.querySelectorAll('[data-nav]').forEach((btn) => {
+      if (btn.classList.contains('fab')) return;
+      btn.classList.toggle('is-active', btn.dataset.nav === name);
+    });
+    if (name === 'colorize' && !frameLoaded) {
+      frame.src = 'index.html';
+      frameLoaded = true;
+      frame.addEventListener('load', () => {
+        // 同源内嵌：隐藏工作台自身的顶栏与页脚，保持 APP 沉浸式观感
+        try {
+          const doc = frame.contentDocument;
+          doc.querySelectorAll('.top-app-bar, .footer').forEach((el) => { el.style.display = 'none'; });
+        } catch { /* 跨源时忽略 */ }
+      }, { once: true });
+    }
+    window.scrollTo({ top: 0 });
+  }
+
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-nav]');
+    if (btn) show(btn.dataset.nav);
+  });
+})();
+</script>
+</body>
+</html>

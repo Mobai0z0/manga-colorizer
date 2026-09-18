@@ -30,9 +30,11 @@ http://127.0.0.1:8788/
 
 | 文件 | 说明 |
 |---|---|
-| `index.html` | 页面结构（单页） |
-| `app.css` | MD3 风格令牌与组件样式 |
+| `index.html` | 工作台页面（单页） |
+| `app.css` | M3 (Expressive) 令牌与工作台组件样式 |
 | `app.js` | 状态轮询、上传、对比、下载逻辑（无框架） |
+| `app.html` | APP 界面（桌面 navigation-rail / 手机 navigation-bar 自适应，"上色"页内嵌工作台） |
+| `app-shell.css` | APP 导航组件样式（navigation-rail / navigation-bar / fab / switch / list） |
 
 ## 开发注意
 
