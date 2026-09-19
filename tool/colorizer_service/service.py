@@ -96,6 +96,23 @@ _runtime_device = {'value': None}
 
 def _gpu_available() -> bool:
     return any('Dml' in p or 'CUDA' in p for p in ort.get_available_providers())
+
+
+def _expected_device() -> str:
+    """Device that WILL be used for the next inference, even before model load.
+
+    Mirrors _pick_providers(): explicit cpu stays cpu; otherwise GPU if any
+    GPU provider exists (CUDA wins over DML), else cpu.
+    """
+    chosen = _runtime_device.get('value') or DEVICE
+    if chosen == 'cpu':
+        return 'cpu'
+    available = ort.get_available_providers()
+    if 'CUDAExecutionProvider' in available:
+        return 'gpu-cuda'
+    if 'DmlExecutionProvider' in available:
+        return 'gpu-directml'
+    return 'cpu'
 _session_lock = threading.Lock()
 _inference_lock = threading.Lock()
 
@@ -547,8 +564,10 @@ def logs_tail(after: int = 0):
 def device_info():
     providers = _state['providers']
     st = _load_settings()
+    loaded = _device_label(providers) if providers else None
     return {'available': ort.get_available_providers(), 'active': providers,
-            'device': _device_label(providers), 'requested': DEVICE,
+            'device': loaded or _expected_device(), 'loaded_device': loaded,
+            'requested': DEVICE,
             'gpu_available': _gpu_available(), 'runtime_device': _runtime_device.get('value'),
             'output_dir': str(OUTPUT_DIR), 'settings': st}
 

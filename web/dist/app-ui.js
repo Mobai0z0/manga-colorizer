@@ -52,11 +52,11 @@
       : d.device === 'gpu-cuda' ? 'GPU · CUDA'
       : d.device === 'gpu-directml' ? 'GPU · DirectML'
       : 'CPU 模式';
-    const pill = $('dev-pill'), badge = $('dev-badge');
-    pill.textContent = label; badge.textContent = label;
-    pill.className = badge.className = gpu ? 'is-good' : 'is-warn';
-    pill.classList.add('m3-chip'); badge.classList.add('device-chip');
-    pill.title = badge.title = d ? '可用 Provider: ' + (d.available || []).join(', ') : '';
+    const pill = $('dev-pill');
+    pill.textContent = label;
+    pill.className = 'm3-chip ' + (gpu ? 'is-good' : 'is-warn');
+    pill.title = d ? '可用 Provider: ' + (d.available || []).join(', ')
+                     + (d.loaded_device ? '' : '（模型加载前为预估设备）') : '';
     if (d && d.output_dir) { outDir = d.output_dir; $('g-outdir').title = outDir; }
   }
 
