@@ -26,6 +26,8 @@ import logging
 import os
 from pathlib import Path
 import threading
+import time
+import traceback
 
 import cv2
 from fastapi import FastAPI, File, Form, Request, UploadFile
@@ -92,10 +94,20 @@ if DEVICE not in ('cpu', 'auto', 'cuda'):
     raise ValueError('COLORIZER_DEVICE must be cpu, auto or cuda')
 _state = {'gen': None, 'sam': None, 'providers': None}
 _runtime_device = {'value': None}
+_load_state = {'status': 'idle', 'error': None}  # idle | loading | ready | failed
+
+
+_gpu_info_cache = {'info': None, 'ts': 0.0}
 
 
 def _gpu_info() -> dict:
-    """Best-effort GPU details: model, vram, driver. Empty dict when unavailable."""
+    """Best-effort GPU details: model, vram, driver. Empty dict when unavailable.
+
+    结果缓存 5 分钟：nvidia-smi 是子进程调用，设备信息轮询接口不应每次拉起。
+    """
+    now = time.monotonic()
+    if _gpu_info_cache['info'] is not None and now - _gpu_info_cache['ts'] < 300:
+        return _gpu_info_cache['info']
     info: dict = {}
     try:
         import subprocess
@@ -112,6 +124,7 @@ def _gpu_info() -> dict:
         # DML covers non-NVIDIA GPUs too; mark generic accelerator when DML provider exists
         if 'DmlExecutionProvider' in ort.get_available_providers():
             info = {'name': 'DirectML 兼容 GPU', 'vram': None, 'driver': None, 'kind': 'directml'}
+    _gpu_info_cache.update(info=info, ts=now)
     return info
 
 
@@ -136,6 +149,33 @@ def _expected_device() -> str:
     return 'cpu'
 _session_lock = threading.Lock()
 _inference_lock = threading.Lock()
+_cpu_state = {'gen': None, 'sam': None}
+
+
+def _cpu_sessions():
+    """按需加载的 CPU 备用会话：GPU(DirectML/CUDA) 单块推理失败时的回退路径。
+
+    系统内存紧张时首次创建可能 bad_alloc，等 1s 重试一次。
+    """
+    with _session_lock:
+        if _cpu_state['gen'] is None:
+            if not GENERATOR.is_file() or not SAM_ENCODER.is_file():
+                raise RuntimeError('模型未就绪：需要 v6_generator.onnx 和 v6_sam_encoder.onnx')
+            last_exc = None
+            for attempt in (1, 2):
+                try:
+                    gen = ort.InferenceSession(str(GENERATOR), providers=['CPUExecutionProvider'])
+                    sam = ort.InferenceSession(str(SAM_ENCODER), providers=['CPUExecutionProvider'])
+                    _cpu_state.update(gen=gen, sam=sam)
+                    logging.info('CPU 备用会话已加载（GPU 推理失败时回退）')
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    if attempt == 1:
+                        time.sleep(1.0)
+            else:
+                raise last_exc
+        return _cpu_state['gen'], _cpu_state['sam']
 
 
 def _pick_providers():
@@ -160,6 +200,7 @@ def _device_label(providers) -> str:
 
 
 def _sessions():
+    _last_use['ts'] = time.monotonic()
     with _session_lock:
         if _state['gen'] is None:
             if not GENERATOR.is_file() or not SAM_ENCODER.is_file():
@@ -171,8 +212,74 @@ def _sessions():
             if DEVICE == 'cuda' and any('CUDAExecutionProvider' not in p for p in actual.values()):
                 raise RuntimeError('CUDA 初始化失败，未允许回退；请检查 CUDA/cuDNN 依赖')
             _state.update(gen=gen, sam=sam, providers=actual)
+            _load_state['status'] = 'ready'
+            _load_state['error'] = None
             logging.info('模型已加载: provider=%s device=%s', actual, _device_label(actual))
         return _state['gen'], _state['sam'], _state['providers']
+
+
+PRELOAD = os.environ.get('COLORIZER_PRELOAD', '1').lower() not in ('0', 'false', 'no')
+# 空闲多久后释放模型会话（内存+显存归还系统）；0 = 常驻不释放
+IDLE_UNLOAD_SECONDS = float(os.environ.get('COLORIZER_IDLE_UNLOAD', '600'))
+_last_use = {'ts': time.monotonic()}
+
+
+def _warmup():
+    """加载会话并跑一次空推理：DirectML 的内核编译与显存预留发生在首次推理时，
+    不预热的话用户提交的第一张图要等 10-20s（还会挤爆显存上限触发瞬时 OOM）。"""
+    gen, sam, _ = _sessions()
+    zeros = np.zeros((INFER_SIZE, INFER_SIZE), dtype=np.uint8)
+    try:
+        _run_pair(gen, sam, zeros)
+    except Exception:
+        logging.warning('预热推理失败，将依赖首次上色时的自动重试: %s', traceback.format_exc(limit=1))
+
+
+def _preload_worker():
+    _load_state.update(status='loading', error=None)
+    try:
+        _warmup()
+        _load_state['status'] = 'ready'
+        logging.info('模型预热完成，可立即上色')
+    except Exception as exc:
+        _load_state.update(status='failed', error=str(exc).replace('\n', ' ')[:200])
+        logging.warning('模型预热失败: %s', str(exc).replace('\n', ' ')[:200])
+
+
+def _start_preload():
+    if not PRELOAD:
+        return
+    if not (GENERATOR.is_file() and SAM_ENCODER.is_file()):
+        return  # 权重缺失（等待下载），首个上色请求时再走正常加载报错
+    threading.Thread(target=_preload_worker, daemon=True, name='model-preload').start()
+
+
+def _idle_unload_worker():
+    """空闲释放：模型会话常驻约 2-3GB 内存 + 显存，空闲超时后归还系统。
+
+    推理进行中绝不释放（inference_lock 非阻塞探测）；运行中的请求持有
+    会话引用，不受影响。下次上色时自动重新加载（预热约 10-20s）。
+    """
+    while True:
+        time.sleep(30)
+        if IDLE_UNLOAD_SECONDS <= 0:
+            continue
+        idle_for = time.monotonic() - _last_use['ts']
+        if idle_for < IDLE_UNLOAD_SECONDS:
+            continue
+        if not _inference_lock.acquire(blocking=False):
+            continue
+        try:
+            with _session_lock:
+                if _state['gen'] is None:
+                    continue
+                if time.monotonic() - _last_use['ts'] < IDLE_UNLOAD_SECONDS:
+                    continue
+                _state.update(gen=None, sam=None, providers=None)
+                _load_state['status'] = 'idle'
+            logging.info('空闲 %.0fs，已释放模型（内存/显存归还系统，下次上色自动唤醒）', idle_for)
+        finally:
+            _inference_lock.release()
 
 
 def _feather_weight(x0: int, x1: int, overlap: int) -> np.ndarray:
@@ -201,11 +308,8 @@ def _tile_bounds(total: int, tile: int, overlap: int) -> list[tuple[int, int]]:
     return bounds
 
 
-def colorize_single(gray: np.ndarray) -> np.ndarray:
-    """单块推理: 缩 1024 方形 → SAM+generator → 放大回原尺寸 (RGB)。"""
-    gen, sam, _ = _sessions()
-    h, w = gray.shape
-    scaled = cv2.resize(gray, (INFER_SIZE, INFER_SIZE), interpolation=cv2.INTER_AREA)
+def _run_pair(gen, sam, scaled):
+    """一次 SAM+generator 推理（输入为 1024² 灰度），返回模型原始 RGB 浮点输出。"""
     s_in = cv2.cvtColor(scaled, cv2.COLOR_GRAY2BGR)
     s_x = (s_in.astype(np.float32) / 127.5 - 1.0).transpose(2, 0, 1)[None]
     sam0, sam1 = sam.run(None, {sam.get_inputs()[0].name: s_x})
@@ -215,7 +319,35 @@ def colorize_single(gray: np.ndarray) -> np.ndarray:
         'sam_level1': sam1,
         'wd14_embedding': np.zeros((1, 1024), dtype=np.float32),
     }
-    rgb = gen.run(None, feed)[0][0].transpose(1, 2, 0)
+    return gen.run(None, feed)[0][0].transpose(1, 2, 0)
+
+
+def colorize_single(gray) -> np.ndarray:
+    """单块推理: 缩 1024 方形 → SAM+generator → 放大回原尺寸 (RGB)。
+
+    GPU 推理失败（如 DirectML 显存瞬时不足 OOM）时该块自动回退 CPU 重试，
+    长页分块不再因单块 GPU 异常整体 500。
+    """
+    h, w = gray.shape
+    scaled = cv2.resize(gray, (INFER_SIZE, INFER_SIZE), interpolation=cv2.INTER_AREA)
+    gen, sam, _ = _sessions()
+    try:
+        rgb = _run_pair(gen, sam, scaled)
+    except Exception as exc:
+        if DEVICE == 'cpu':
+            raise
+        # DirectML 首次推理可能因显存瞬时不足失败，重试通常即成功
+        logging.warning('GPU 推理失败，重试一次: %s', str(exc).replace('\n', ' ')[:160])
+        try:
+            rgb = _run_pair(gen, sam, scaled)
+        except Exception as exc2:
+            logging.warning('GPU 重试仍失败，本块回退 CPU: %s', str(exc2).replace('\n', ' ')[:160])
+            # 先释放 GPU 会话再建 CPU 会话，避免两套模型同时驻留（低内存机器上
+            # 同时持有会直接 bad_alloc）
+            with _session_lock:
+                _state.update(gen=None, sam=None, providers=None)
+            c_gen, c_sam = _cpu_sessions()
+            rgb = _run_pair(c_gen, c_sam, scaled)
     rgb = np.clip((rgb + 1.0) * 127.5, 0, 255).astype(np.uint8)
     return cv2.resize(rgb, (w, h), interpolation=cv2.INTER_CUBIC)
 
@@ -258,18 +390,35 @@ def colorize(gray: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(lab_o, cv2.COLOR_LAB2BGR)
 
 
-app = FastAPI(title='Manga Colorizer · Community Preview', version='0.2.0')
+app = FastAPI(title='Manga Colorizer · Community Preview', version='0.3.3')
+
+# 桌面壳（Tauri）的窗口固定运行在 http://tauri.localhost 源上，需要跨域读取本服务；
+# 服务只绑定 127.0.0.1，放开 CORS 不会把服务暴露到局域网。
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=['*'],
+    allow_methods=['*'],
+    allow_headers=['*'],
+)
 
 
 @app.get('/health')
 def health():
     actual = _state['providers']
-    fallback = bool(DEVICE == 'auto' and actual and any('CUDAExecutionProvider' not in p for p in actual.values()))
+    gpu_active = False
+    if actual:
+        gpu_active = any('CUDA' in p or 'Dml' in p
+                         for lst in actual.values() for p in (lst or []))
+    # 仅当 auto 模式下实际落到 CPU 才算回退；DML/CUDA 正常运行不算
+    fallback = bool(DEVICE == 'auto' and actual and not gpu_active)
     return {
         'ok': True,
         'weights_present': GENERATOR.is_file() and SAM_ENCODER.is_file(),
         'generator_loaded': _state['gen'] is not None,
         'sam_loaded': _state['sam'] is not None,
+        'model_status': _load_state['status'],
+        'model_error': _load_state['error'],
         'requested_device': DEVICE,
         'available_providers': ort.get_available_providers(),
         'providers': actual,
@@ -636,47 +785,21 @@ async def settings_set(request: Request):
         _runtime_device['value'] = mapped
         with _session_lock:
             _state.update(gen=None, sam=None, providers=None)
-        logging.info('处理器切换: %s (将在下次任务生效)', mapped)
+        logging.info('处理器切换: %s (预热新设备)', mapped)
+        _start_preload()
     return data
 
 
-# ---- 设置: 模式 / 处理器 / 免责声明 (本地持久化 settings.json) ----
-@app.get('/api/v1/settings')
-def settings_get():
-    return _load_settings()
-
-
-@app.post('/api/v1/settings')
-async def settings_set(request: Request):
-    body = await request.json()
-    allowed = {'mode', 'device', 'disclaimer_accepted'}
-    patch = {k: v for k, v in (body or {}).items() if k in allowed}
-    if 'device' in patch:
-        if patch['device'] not in ('cpu', 'gpu', 'auto'):
-            return JSONResponse({'error': 'device 必须是 cpu/gpu/auto'}, status_code=400)
-        if patch['device'] == 'gpu' and not _gpu_available():
-            return JSONResponse({'error': '本机没有可用的 GPU Provider'}, status_code=400)
-    if 'mode' in patch and patch['mode'] not in ('auto', 'hints', 'reference'):
-        return JSONResponse({'error': 'mode 必须是 auto/hints/reference'}, status_code=400)
-    if 'disclaimer_accepted' in patch and not isinstance(patch['disclaimer_accepted'], bool):
-        return JSONResponse({'error': 'disclaimer_accepted 必须是布尔值'}, status_code=400)
-    old_dev = _runtime_device.get('value')
-    data = _save_settings(patch)
-    new_dev = data.get('device', 'auto')
-    mapped = {'gpu': 'auto', 'cpu': 'cpu'}.get(new_dev, DEVICE)
-    if mapped != old_dev:
-        _runtime_device['value'] = mapped
-        with _session_lock:
-            _state.update(gen=None, sam=None, providers=None)
-        logging.info('处理器切换: %s (将在下次任务生效)', mapped)
-    return data
-
-
-# 同源静态前端：没有任意来源 CORS；开发时使用 Vite 的本机代理。
+# 同源静态前端：开发/浏览器场景由本服务直接挂载本目录。
 
 web_dist = Path(os.environ.get('COLORIZER_WEB_DIST', str(ROOT / 'web' / 'dist')))
 if web_dist.is_dir():
     app.mount('/', StaticFiles(directory=web_dist, html=True), name='web')
+
+# 启动即后台预热模型（加载 + 空推理），用户首次上色无需等待 10-20s 加载
+_start_preload()
+# 空闲超时自动释放模型（内存/显存归还系统）；COLORIZER_IDLE_UNLOAD=0 可关闭
+threading.Thread(target=_idle_unload_worker, daemon=True, name='model-idle-unload').start()
 
 if __name__ == '__main__':
     import uvicorn
@@ -684,7 +807,7 @@ if __name__ == '__main__':
     _ap = argparse.ArgumentParser()
     _ap.add_argument('--port', type=int, default=8788)
     _argv_port = _ap.parse_args().port
-    uvicorn.run(app, host='127.0.0.1', port=_argv_port)
+    uvicorn.run(app, host='127.0.0.1', port=_argv_port, access_log=False)
 
 
 

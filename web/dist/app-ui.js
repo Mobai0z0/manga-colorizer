@@ -24,6 +24,12 @@
   }
 
   /* ---------- Tauri 桥（存在才用） ---------- */
+  // API base: 页面由 sidecar 同源提供（浏览器打开 127.0.0.1:8788）时用相对路径；
+  // 打包窗口固定运行在 http://tauri.localhost 源上，必须直连 sidecar 绝对地址
+  //（sidecar 已放开 CORS，见 service.py）。
+  const SERVICE_PORT = '8788';
+  const API = location.port === SERVICE_PORT ? '' : 'http://127.0.0.1:' + SERVICE_PORT;
+  const api = (path) => API + path;
   const isTauri = !!(window.__TAURI__ && window.__TAURI__.core);
   const invoke = isTauri ? window.__TAURI__.core.invoke : null;
 
@@ -32,13 +38,22 @@
   async function pollHealth() {
     const pill = $('svc-pill');
     try {
-      const r = await fetch('/health', { cache: 'no-store' });
+      const r = await fetch(api('/health'), { cache: 'no-store' });
       const j = await r.json();
       svcFailCount = 0;
-      if (j.weights_present && (j.generator_loaded || j.sam_loaded)) {
+      if (j.model_status === 'failed') {
+        pill.textContent = '模型加载失败，请重启应用';
+        pill.className = 'm3-chip is-bad';
+        pill.title = (j.model_error || '') + '\n若反复失败，请查看日志页并确认系统可用内存充足';
+      } else if (j.weights_present && (j.generator_loaded || j.sam_loaded)) {
         pill.textContent = '服务就绪'; pill.className = 'm3-chip is-good';
+      } else if (j.weights_present && j.model_status === 'idle') {
+        pill.textContent = '模型休眠中 · 上色时自动唤醒';
+        pill.className = 'm3-chip';
+        pill.title = '空闲超时已释放模型内存/显存；提交上色后会自动重新加载（约 10-20 秒）';
       } else if (j.weights_present) {
-        pill.textContent = '模型加载中…'; pill.className = 'm3-chip';
+        pill.textContent = '模型预热中…'; pill.className = 'm3-chip';
+        pill.title = '模型正在后台加载（首次约 10-20 秒），完成后上色不再等待';
       } else {
         pill.textContent = '权重缺失，请重启应用重新下载'; pill.className = 'm3-chip is-bad';
         pill.title = '权重目录: ' + (j.model_dir || '%LOCALAPPDATA%\\manga-colorizer\\weights');
@@ -53,22 +68,23 @@
   }
   async function loadDevice() {
     let d = null;
-    try { d = await (await fetch('/api/v1/device', { cache: 'no-store' })).json(); } catch { }
+    try { d = await (await fetch(api('/api/v1/device'), { cache: 'no-store' })).json(); } catch { }
     const gpu = d && d.device && d.device !== 'cpu';
     const label = !d ? '…'
       : d.device === 'gpu-cuda' ? 'GPU · CUDA'
       : d.device === 'gpu-directml' ? 'GPU · DirectML'
       : 'CPU 模式';
-    const pill = $('dev-pill');
-    const gi = d && d.gpu_info ? d.gpu_info : null;
-    pill.textContent = gi && gi.name ? label + ' · ' + gi.name : label;
-    pill.className = 'm3-chip ' + (gpu ? 'is-good' : 'is-warn');
-    pill.title = d ? ('可用 Provider: ' + (d.available || []).join(', ')
-                     + (d.loaded_device ? '' : '（模型加载前为预估设备）')
-                     + (gi && gi.vram ? '\n显存: ' + gi.vram : '')
-                     + (gi && gi.driver ? '\n驱动: ' + gi.driver : '')) : '';
-    if (d && d.output_dir) { outDir = d.output_dir; $('g-outdir').title = outDir; }
-  }
+  const pill = $('dev-pill');
+  const gi = d && d.gpu_info ? d.gpu_info : null;
+  pill.textContent = gi && gi.name ? label + ' · ' + gi.name : label;
+  pill.className = 'm3-chip ' + (gpu ? 'is-good' : 'is-warn');
+  pill.title = d ? ('可用 Provider: ' + (d.available || []).join(', ')
+                   + (d.loaded_device ? '' : '（模型加载前为预估设备）')
+                   + (gi && gi.vram ? '\n显存: ' + gi.vram : '')
+                   + (gi && gi.driver ? '\n驱动: ' + gi.driver : '')) : '';
+  if (d && d.output_dir) { outDir = d.output_dir; $('g-outdir').title = outDir; }
+  updateDeviceAbility(d);
+}
 
   /* ---------- 批量队列 ---------- */
   const queue = [];
@@ -153,7 +169,7 @@
           endpoint = '/colorize_reference';
           fd.append('reference', refFile, refFile.name);
         }
-        const r = await fetch(endpoint, { method: 'POST', body: fd });
+        const r = await fetch(api(endpoint), { method: 'POST', body: fd });
         if (r.ok) { it.status = 'ok'; }
         else {
           let msg = 'HTTP ' + r.status;
@@ -177,19 +193,25 @@
 
   /* ---------- 图库 ---------- */
   let outDir = '';
+  let lastGalleryKey = '';
   async function refreshGallery() {
     let j;
-    try { j = await (await fetch('/api/v1/gallery?limit=200', { cache: 'no-store' })).json(); } catch { return; }
+    try { j = await (await fetch(api('/api/v1/gallery?limit=200'), { cache: 'no-store' })).json(); } catch { return; }
+    const items = (j.items || []).filter((x) => x.status === 'ok' && x.result_file);
+    // 台账无变化时跳过重渲染（定时轮询下避免反复重建 DOM/重新拉图）
+    const key = (j.count || 0) + '|' + (items.length ? items[0].id : '');
+    if (key === lastGalleryKey) return;
+    lastGalleryKey = key;
     const grid = $('g-grid');
     grid.innerHTML = '';
-    const items = (j.items || []).filter((x) => x.status === 'ok' && x.result_file);
+    lastGalleryKey = key;
     $('g-empty').hidden = items.length > 0;
     for (const it of items) {
       const card = document.createElement('div');
       card.className = 'card media-card';
       const img = document.createElement('img');
       img.className = 'media-card__thumb'; img.loading = 'lazy'; img.alt = it.source_name || '';
-      img.src = '/gallery/file/' + encodeURIComponent(it.result_file);
+      img.src = api('/gallery/file/') + encodeURIComponent(it.result_file);
       card.appendChild(img);
       const meta = document.createElement('div');
       meta.className = 'g-meta';
@@ -210,7 +232,7 @@
 
   /* ---------- 大图查看 ---------- */
   function openLightbox(it) {
-    $('lb-img').src = '/gallery/file/' + encodeURIComponent(it.result_file);
+    $('lb-img').src = api('/gallery/file/') + encodeURIComponent(it.result_file);
     $('lb-cap').textContent = (it.source_name || '') + ' · ' + (it.time || '').replace('T', ' ') +
       ' · ' + (it.device || '') + ' · ' + (it.elapsed_s != null ? it.elapsed_s + 's' : '') +
       (it.width ? ' · ' + it.width + '×' + it.height : '');
@@ -224,7 +246,7 @@
   let logSeq = 0;
   async function pollLogs() {
     let j;
-    try { j = await (await fetch('/api/v1/logs?after=' + logSeq, { cache: 'no-store' })).json(); } catch { return; }
+    try { j = await (await fetch(api('/api/v1/logs?after=') + logSeq, { cache: 'no-store' })).json(); } catch { return; }
     if (!j.items || !j.items.length) return;
     logSeq = j.next;
     const box = $('console');
@@ -255,7 +277,7 @@ function saveSettings(patch) {
   localStorage.setItem(SET_KEY, JSON.stringify(settings));
   const payload = { mode: settings.mode, device: settings.device, disclaimer_accepted: settings.disclaimer_accepted };
   if (settings.theme) payload.theme = settings.theme;
-  fetch('/api/v1/settings', {
+  fetch(api('/api/v1/settings'), {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   }).catch(() => {});
@@ -313,17 +335,24 @@ _origRun.addEventListener('click', () => {
   }
 }, true); // capture: run before the queue handler
 
-/* GPU availability: gray out when no DML/CUDA provider */
-async function applyDeviceAbility() {
-  let d = null;
-  try { d = await (await fetch('/api/v1/device', { cache: 'no-store' })).json(); } catch { }
+/* GPU availability: gray out when no DML/CUDA provider.
+   随 loadDevice 轮询反复执行：sidecar 冷启动期间拿不到设备信息时先占位，
+   服务就绪后自动恢复判定，不会永久灰掉。 */
+function updateDeviceAbility(d) {
   const gpuOk = !!(d && d.gpu_available);
   const gpuInput = document.querySelector('input[name=device][value="gpu"]');
   const note = $('gpu-note');
+  if (!d) {
+    // 服务未就绪时不要误报“无 GPU”，等下一轮轮询再判定
+    gpuInput.disabled = true;
+    note.hidden = false;
+    note.textContent = '服务未连接，暂无法检测 GPU（就绪后自动恢复）';
+    return;
+  }
   if (!gpuOk) {
     gpuInput.disabled = true;
     note.hidden = false;
-    note.textContent = '本机未检测到可用 GPU（DML/CUDA Provider 缺失）';
+    note.textContent = '本机未检测到可用 GPU（需要 DirectML 或 CUDA Provider）';
   } else {
     gpuInput.disabled = false;
     note.hidden = true;
@@ -337,6 +366,10 @@ async function applyDeviceAbility() {
 }
 
 /* theme toggle: dark/light, persisted; console follows tokens automatically */
+const THEME_ICON = {
+  dark: '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 0 1-4.4 2.26 5.403 5.403 0 0 1-3.14-9.8c-.44-.06-.9-.1-1.36-.1z"/></svg>',
+  light: '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M12 7c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zM2 13h2c.55 0 1-.45 1-1s-.45-1-1-1H2c-.55 0-1 .45-1 1s.45 1 1 1zm18 0h2c.55 0 1-.45 1-1s-.45-1-1-1h-2c-.55 0-1 .45-1 1s.45 1 1 1zM11 2v2c0 .55.45 1 1 1s1-.45 1-1V2c0-.55-.45-1-1-1s-1 .45-1 1zm0 18v2c0 .55.45 1 1 1s1-.45 1-1v-2c0-.55-.45-1-1-1s-1 .45-1 1zM5.99 4.58c-.39-.39-1.03-.39-1.41 0-.39.39-.39 1.03 0 1.41l1.06 1.06c.39.39 1.03.39 1.41 0s.39-1.03 0-1.41L5.99 4.58zm12.37 12.37c-.39-.39-1.03-.39-1.41 0-.39.39-.39 1.03 0 1.41l1.06 1.06c.39.39 1.03.39 1.41 0 .39-.39.39-1.03 0-1.41l-1.06-1.06zm1.06-10.96c.39-.39.39-1.03 0-1.41-.39-.39-1.03-.39-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06zM7.05 18.36c.39-.39.39-1.03 0-1.41-.39-.39-1.03-.39-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06z"/></svg>',
+};
 function applyTheme(theme) {
   const root = document.documentElement;
   if (theme === 'light') {
@@ -349,10 +382,18 @@ function applyTheme(theme) {
     root.removeAttribute('data-theme');
     root.style.colorScheme = '';
   }
+  syncThemeButton();
 }
 function currentTheme() {
   return document.documentElement.getAttribute('data-theme')
     || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+}
+function syncThemeButton() {
+  const dark = currentTheme() === 'dark';
+  const btn = $('theme-toggle');
+  // 图标显示点击后将切换到的主题
+  btn.innerHTML = dark ? THEME_ICON.light : THEME_ICON.dark;
+  btn.title = dark ? '切换到浅色主题' : '切换到深色主题';
 }
 function toggleTheme() {
   const next = currentTheme() === 'dark' ? 'light' : 'dark';
@@ -360,13 +401,16 @@ function toggleTheme() {
   applyTheme(next);
 }
 $('theme-toggle').addEventListener('click', toggleTheme);
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+  if (!document.documentElement.hasAttribute('data-theme')) syncThemeButton();
+});
 applyTheme(settings.theme);
 
 
   /* ---------- 启动 ---------- */
-  pollHealth(); loadDevice(); pollLogs(); applyDeviceAbility();
+  pollHealth(); loadDevice(); pollLogs();
   setInterval(pollHealth, 5000);
-  setInterval(loadDevice, 15000);
-  setInterval(pollLogs, 1200);
-  setInterval(() => { if (!$('screen-gallery').hidden) refreshGallery(); }, 8000);
+  setInterval(loadDevice, 30000);
+  setInterval(pollLogs, 2500);
+  setInterval(() => { if (!$('screen-gallery').hidden) refreshGallery(); }, 15000);
 })();
