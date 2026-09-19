@@ -37,3 +37,24 @@
 ## 5. 回滚
 
 卸载 0.3.0 → 安装 `DELIVERY\releases\v0.2.0-six-features\` 旧版；设置数据（settings.json/gallery）在 appdata 不受影响；代码回退 `git revert` 或 checkout `v0.2.0-six-features` tag。
+
+---
+
+# v0.3.1 增量：GPU 识别修复 + 主题按钮移位（2026-09-19）
+
+## 改动
+
+| 项 | 内容 |
+|---|---|
+| GPU 识别修复 | 模型未加载时 /api/v1/device 原返回 active=null → 标签误显示 CPU。新增 `_expected_device()`：按运行时设置 + 可用 Provider（CUDA > DML > CPU）预估下一次推理将使用的设备；`device` 字段 = 已加载标签 ?? 预估标签，另暴露 `loaded_device` 区分两者。前端 tooltip 注明「模型加载前为预估设备」 |
+| 主题按钮移位 | 顶栏圆形按钮删除；导航栏底部（原"…"设备徽标位置）新增 `rail-theme` 按钮（44px 圆形，M3 悬停/按压动效），ID 不变 `theme-toggle`，逻辑零改动 |
+| 附带修复 | 顶栏正则补丁误伤导致的首页/顶栏结构损坏已修复并全量审计（标签平衡 34/4/21 全配对，ID 无重复） |
+
+## 实测
+
+- 开发服 18787：加载前 device=gpu-directml ✓；干净 CPU 切换 22.2s（CPUExecutionProvider）vs GPU 8.9s（DmlExecutionProvider）✓
+- 安装版 0.3.1（/S 重装后哈希 007E4618… 与构建产物一致）：**加载前 device=gpu-directml** ✓；GPU 上色 1,585,708B / 8.4s，台账 dev=gpu-directml ✓；UI rail-theme=True、dev-badge 已移除 ✓
+
+## 排障记录（供后人复用）
+
+安装版 sidecar 旧二进制的根因：**首次 /S 静默安装时旧版应用进程仍在运行，exe 被 Windows 锁定，NSIS 静默跳过覆盖且 exit code 仍为 0**。处置：安装前先 `Stop-Process manga-colorizer*`；验证手段：MD5 比对 `build/sidecar-dist/` 与 `%LOCALAPPDATA%\Manga Colorizer\` 的 sidecar。字节级 grep PyInstaller exe 不可靠（zlib 压缩），验证新代码是否入包应启动 exe 后探针新字段/新端点。

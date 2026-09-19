@@ -52,7 +52,9 @@
       <span>日志</span>
     </button>
     <span class="navigation-rail__spacer"></span>
-    <span class="device-chip" id="dev-badge" title="处理设备">…</span>
+    <button class="rail-theme" id="theme-toggle" title="切换深浅主题" aria-label="切换深浅主题">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 0 1-4.4 2.26 5.403 5.403 0 0 1-3.14-9.8c-.44-.06-.9-.1-1.36-.1z"/></svg>
+    </button>
   </nav>
 
   <div class="app-shell__content">
@@ -68,9 +70,6 @@
         </div>
       </div>
       <div style="flex:1"></div>
-      <button class="theme-toggle" id="theme-toggle" title="切换深浅主题" aria-label="切换深浅主题">
-        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 0 1-4.4 2.26 5.403 5.403 0 0 1-3.14-9.8c-.44-.06-.9-.1-1.36-.1z"/></svg>
-      </span>
       <span class="m3-chip" id="dev-pill">设备检测中…</span>
       <span class="m3-chip" id="svc-pill">服务检测中…</span>
     </header>

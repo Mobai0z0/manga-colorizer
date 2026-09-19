@@ -175,3 +175,14 @@
 .log-line .lv.WARNING { color: var(--md-sys-color-tertiary); }
 .log-line .lv.ERROR { color: var(--md-sys-color-error); }
 .log-line .msg { word-break: break-all; color: var(--md-sys-color-on-surface); opacity: .92; }
+
+/* ---------- 导航栏底部主题切换 ---------- */
+.rail-theme {
+  border: 0; background: none; cursor: pointer; color: var(--md-sys-color-on-surface-variant);
+  width: 44px; height: 44px; border-radius: var(--md-sys-shape-corner-full);
+  display: grid; place-items: center; margin-top: 8px;
+  transition: background 200ms var(--md-sys-motion-ease-emphasized), transform 200ms;
+}
+.rail-theme:hover { background: color-mix(in srgb, var(--md-sys-color-secondary-container) 50%, transparent); color: var(--md-sys-color-on-surface); }
+.rail-theme:active { transform: scale(.92); }
+.rail-theme:focus-visible { outline: 3px solid var(--md-sys-color-primary); outline-offset: 2px; }
