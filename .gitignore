@@ -4,15 +4,9 @@ build/
 .idea/
 *.log
 
-# 本地素材、权重、运行环境及代理配置不随社区源码分发
+# 本地素材、权重、运行环境及临时产物不随社区源码分发
 models/
 out/
-out_rollback/
-.reasonix/
-DELIVERY/*
-!DELIVERY/desktop-mobile-acceptance.md
-!DELIVERY/desktop-mobile-overview.html
-reasonix.toml
 .venv/
 __pycache__/
 *.pyc
@@ -22,16 +16,18 @@ web/.vite/
 .env
 .env.*
 !.env.example
+.playwright-cli/
+.workbuddy/
+.mimosa/
+.reasonix/
 
 # desktop shell
 src-tauri/target/
 src-tauri/binaries/*.exe
 src-tauri/gen/
-build/
 
 # flutter mobile
 mobile/build/
 mobile/.dart_tool/
 mobile/android/.gradle/
 **/flutter_export_environment.sh
-

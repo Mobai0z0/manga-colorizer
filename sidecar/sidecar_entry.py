@@ -47,7 +47,8 @@ def main() -> int:
         return 4
 
     try:
-        uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="info")
+        # access_log=False: 轮询接口每秒数条访问日志纯属 I/O 浪费；启动/错误日志保留
+        uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="info", access_log=False)
     except OSError as exc:
         print(f"[sidecar] fatal: {exc}", flush=True)
         return 3

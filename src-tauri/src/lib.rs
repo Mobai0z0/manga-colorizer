@@ -272,8 +272,11 @@ fn cmd_start_download(app: AppHandle, state: tauri::State<AppState>) -> Result<b
 
 
 fn reload_main_window(app: &AppHandle) {
+    // 保持窗口在 tauri.localhost 源上（与 tauri.conf.json 的初始页面同源），
+    // localStorage 中的主题/模式/免责声明设置才能跨启动一致；sidecar 由前端
+    // 通过绝对地址 + CORS 访问，不依赖本窗口同源。
     if let Some(win) = app.get_webview_window("main") {
-        let url = Url::parse(&format!("http://127.0.0.1:{}/app-ui.html", sidecar_mgr::PORT)).expect("service url");
+        let url = Url::parse("http://tauri.localhost/app-ui.html").expect("bundled ui url");
         let _ = win.navigate(url);
         let _ = win.show();
         let _ = win.set_focus();

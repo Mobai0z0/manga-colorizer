@@ -1,0 +1,7 @@
+# Windows GPU 路径（DirectML，任意 DX12 GPU：NVIDIA / AMD / Intel）。
+# 不要与 onnxruntime / onnxruntime-gpu 同装在一个环境（同一 import 包会互相覆盖）。
+# 版本钉住 <1.21：实测 1.24.x 的 DirectML 数值在本模型上会使背景出现彩色斑块（噪点），
+# 且首次大图分块推理易触发显存 OOM；1.20.1 为验证过的干净基线。
+# 注意 1.20.x 没有 Python 3.13/3.14 wheel，GPU 路径请用 Python 3.10–3.12。
+-r requirements-common.txt
+onnxruntime-directml>=1.17,<1.21

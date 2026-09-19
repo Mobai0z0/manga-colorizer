@@ -1,1 +1,0 @@
-app-colorize.png, app-desktop.png, app-mobile.png, check-desktop.png, check-mobile.png, desktop-1440.png, desktop-dark.png, desktop-light.png, fix-auto.png, index-brand.png, long-quality-check.png, mobile-390x844.png, mobile-light.png, ui-auto-mode.png, ui-hints-mode.png, ui-mobile-hints.png, ui-mobile-home.png, ui-reference-mode.png

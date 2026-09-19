@@ -208,9 +208,9 @@ pub fn watch(app: AppHandle) {
             return;
         }
 
-        // phase 2: lifetime watchdog
+        // phase 2: lifetime watchdog（5s 间隔足够；每次轮询是一次 HTTP 请求）
         loop {
-            thread::sleep(Duration::from_secs(2));
+            thread::sleep(Duration::from_secs(5));
             {
                 let mut guard = CHILD.lock().unwrap();
                 if let Some(c) = guard.as_mut() {
