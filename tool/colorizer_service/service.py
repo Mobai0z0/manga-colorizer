@@ -94,6 +94,27 @@ _state = {'gen': None, 'sam': None, 'providers': None}
 _runtime_device = {'value': None}
 
 
+def _gpu_info() -> dict:
+    """Best-effort GPU details: model, vram, driver. Empty dict when unavailable."""
+    info: dict = {}
+    try:
+        import subprocess
+        out = subprocess.run(
+            ['nvidia-smi', '--query-gpu=name,memory.total,driver_version',
+             '--format=csv,noheader'], capture_output=True, text=True, timeout=4)
+        if out.returncode == 0 and out.stdout.strip():
+            parts = [p.strip() for p in out.stdout.strip().split(',')]
+            if len(parts) >= 3:
+                info = {'name': parts[0], 'vram': parts[1], 'driver': parts[2], 'kind': 'nvidia'}
+    except Exception:
+        pass
+    if not info:
+        # DML covers non-NVIDIA GPUs too; mark generic accelerator when DML provider exists
+        if 'DmlExecutionProvider' in ort.get_available_providers():
+            info = {'name': 'DirectML 兼容 GPU', 'vram': None, 'driver': None, 'kind': 'directml'}
+    return info
+
+
 def _gpu_available() -> bool:
     return any('Dml' in p or 'CUDA' in p for p in ort.get_available_providers())
 
@@ -569,6 +590,7 @@ def device_info():
             'device': loaded or _expected_device(), 'loaded_device': loaded,
             'requested': DEVICE,
             'gpu_available': _gpu_available(), 'runtime_device': _runtime_device.get('value'),
+            'gpu_info': _gpu_info(),
             'output_dir': str(OUTPUT_DIR), 'settings': st}
 
 
@@ -593,7 +615,7 @@ def settings_get():
 @app.post('/api/v1/settings')
 async def settings_set(request: Request):
     body = await request.json()
-    allowed = {'mode', 'device', 'disclaimer_accepted'}
+    allowed = {'mode', 'device', 'disclaimer_accepted', 'theme'}
     patch = {k: v for k, v in (body or {}).items() if k in allowed}
     if 'device' in patch:
         if patch['device'] not in ('cpu', 'gpu', 'auto'):
@@ -604,6 +626,8 @@ async def settings_set(request: Request):
         return JSONResponse({'error': 'mode 必须是 auto/hints/reference'}, status_code=400)
     if 'disclaimer_accepted' in patch and not isinstance(patch['disclaimer_accepted'], bool):
         return JSONResponse({'error': 'disclaimer_accepted 必须是布尔值'}, status_code=400)
+    if 'theme' in patch and patch['theme'] not in ('dark', 'light', None):
+        return JSONResponse({'error': 'theme 必须是 dark/light/null'}, status_code=400)
     old_dev = _runtime_device.get('value')
     data = _save_settings(patch)
     new_dev = data.get('device', 'auto')

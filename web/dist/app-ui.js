@@ -28,20 +28,27 @@
   const invoke = isTauri ? window.__TAURI__.core.invoke : null;
 
   /* ---------- 服务与设备状态 ---------- */
+  let svcFailCount = 0;
   async function pollHealth() {
+    const pill = $('svc-pill');
     try {
-      const j = await (await fetch('/health', { cache: 'no-store' })).json();
-      const pill = $('svc-pill');
+      const r = await fetch('/health', { cache: 'no-store' });
+      const j = await r.json();
+      svcFailCount = 0;
       if (j.weights_present && (j.generator_loaded || j.sam_loaded)) {
         pill.textContent = '服务就绪'; pill.className = 'm3-chip is-good';
       } else if (j.weights_present) {
         pill.textContent = '模型加载中…'; pill.className = 'm3-chip';
       } else {
-        pill.textContent = '权重缺失'; pill.className = 'm3-chip is-bad';
+        pill.textContent = '权重缺失，请重启应用重新下载'; pill.className = 'm3-chip is-bad';
+        pill.title = '权重目录: ' + (j.model_dir || '%LOCALAPPDATA%\\manga-colorizer\\weights');
       }
-    } catch {
-      const pill = $('svc-pill');
-      pill.textContent = '服务未连接'; pill.className = 'm3-chip is-bad';
+    } catch (err) {
+      svcFailCount += 1;
+      pill.textContent = '服务未连接（第 ' + svcFailCount + ' 次，自动重试中）';
+      pill.className = 'm3-chip is-bad';
+      pill.title = '连接 127.0.0.1:8788 失败: ' + String(err).slice(0, 120)
+        + '\nsidecar 由应用自动拉起；持续失败请查看日志页';
     }
   }
   async function loadDevice() {
@@ -53,10 +60,13 @@
       : d.device === 'gpu-directml' ? 'GPU · DirectML'
       : 'CPU 模式';
     const pill = $('dev-pill');
-    pill.textContent = label;
+    const gi = d && d.gpu_info ? d.gpu_info : null;
+    pill.textContent = gi && gi.name ? label + ' · ' + gi.name : label;
     pill.className = 'm3-chip ' + (gpu ? 'is-good' : 'is-warn');
-    pill.title = d ? '可用 Provider: ' + (d.available || []).join(', ')
-                     + (d.loaded_device ? '' : '（模型加载前为预估设备）') : '';
+    pill.title = d ? ('可用 Provider: ' + (d.available || []).join(', ')
+                     + (d.loaded_device ? '' : '（模型加载前为预估设备）')
+                     + (gi && gi.vram ? '\n显存: ' + gi.vram : '')
+                     + (gi && gi.driver ? '\n驱动: ' + gi.driver : '')) : '';
     if (d && d.output_dir) { outDir = d.output_dir; $('g-outdir').title = outDir; }
   }
 
@@ -243,9 +253,11 @@ const settings = Object.assign(
 function saveSettings(patch) {
   Object.assign(settings, patch);
   localStorage.setItem(SET_KEY, JSON.stringify(settings));
+  const payload = { mode: settings.mode, device: settings.device, disclaimer_accepted: settings.disclaimer_accepted };
+  if (settings.theme) payload.theme = settings.theme;
   fetch('/api/v1/settings', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mode: settings.mode, device: settings.device, disclaimer_accepted: settings.disclaimer_accepted }),
+    body: JSON.stringify(payload),
   }).catch(() => {});
 }
 
@@ -338,12 +350,16 @@ function applyTheme(theme) {
     root.style.colorScheme = '';
   }
 }
-$('theme-toggle').addEventListener('click', () => {
-  const cur = settings.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-  const next = cur === 'dark' ? 'light' : 'dark';
+function currentTheme() {
+  return document.documentElement.getAttribute('data-theme')
+    || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+}
+function toggleTheme() {
+  const next = currentTheme() === 'dark' ? 'light' : 'dark';
   saveSettings({ theme: next });
   applyTheme(next);
-});
+}
+$('theme-toggle').addEventListener('click', toggleTheme);
 applyTheme(settings.theme);
 
 
