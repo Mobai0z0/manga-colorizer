@@ -1,3 +1,5 @@
+// gray.dart — 就地转灰度（覆盖写入原 PNG）
+// 用法: dart run tool/gray.dart <img.png>
 import 'dart:io';
 import 'package:image/image.dart' as img;
 

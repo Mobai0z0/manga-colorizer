@@ -1,6 +1,6 @@
 [package]
 name = "manga-colorizer"
-version = "0.3.3"
+version = "0.4.0"
 description = "Manga Colorizer desktop shell (Tauri 2) - web workbench + Python sidecar + weight downloader"
 authors = ["manga-colorizer"]
 edition = "2021"

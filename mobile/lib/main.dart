@@ -11,6 +11,8 @@ import 'package:share_plus/share_plus.dart';
 
 import 'package:manga_colorizer_core/manga_colorizer_core.dart';
 
+/// 移动端工作台：选图 → 提示点上色（纯 Dart 引擎 manga_colorizer_core，
+/// 推理在 isolate 中执行，不依赖后端服务）→ 保存/分享结果。
 void main() => runApp(const MangaColorizerApp());
 
 const _accent = Color(0xFF2F6D5E);

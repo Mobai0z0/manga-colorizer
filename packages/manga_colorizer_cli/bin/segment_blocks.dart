@@ -6,7 +6,7 @@ import 'dart:typed_data';
 import 'package:manga_colorizer_cli/src/cli_io.dart';
 import 'package:manga_colorizer_core/manga_colorizer_core.dart';
 
-/// 色块分割 v11: 按黑白灰度明暗区分色块(用户思路第一步)。
+/// 色块分割 v11: 按黑白灰度明暗区分色块（分块上色流水线的第一步）。
 ///
 /// 机制: 展平亮度(boxBlur 去网点) → 等面积分位切成 K 个明度带 →
 /// 带内 4-连通域成块(边界自动贴合墨线) → 小块并入相邻最大块 →

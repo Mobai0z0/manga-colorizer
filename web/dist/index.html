@@ -1,9 +1,11 @@
 <!doctype html>
-<!-- Material Design 3 (Expressive) 风格，令牌以原生 CSS 变量实现（非官方 @material/web 组件，
-     组件命名对齐 M3 规范：top-app-bar / card / filled-button / choice-chip /
-     segmented-button / linear-progress / snackbar / icon-button），零构建零运行时依赖。
-     服务端：tool/colorizer_service/service.py（同源挂载本目录）。
-     许可：仓库代码 Apache-2.0；模型权重 CC BY-NC-SA 4.0。 -->
+<!-- Manga Colorizer — 唯一前端页面（桌面壳与浏览器工作台共用）。
+     Material Design 3 (Expressive) 组件命名：top-app-bar / navigation-rail /
+     navigation-bar / card / list / filled-button / tonal-button / chip /
+     swatch / snackbar。零构建、零运行时依赖，纯 HTML+CSS+JS。
+     后端：tool/colorizer_service/service.py（浏览器直接访问时同源挂载本目录；
+     Tauri 打包窗口经 http://127.0.0.1:8788 跨源调用，见 app.js 的 API 基准）。
+     许可：代码 Apache-2.0；模型权重 CC BY-NC-SA 4.0（不随仓库分发）。 -->
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -13,130 +15,251 @@
 <meta name="theme-color" content="#101414" media="(prefers-color-scheme: dark)">
 <title>Manga Colorizer · 漫画上色工作台</title>
 <link rel="stylesheet" href="app.css">
-<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20100%20100'%3E%3Cdefs%3E%3ClinearGradient%20id='g'%20x1='0'%20y1='0'%20x2='1'%20y2='1'%3E%3Cstop%20offset='0'%20stop-color='%2300838a'/%3E%3Cstop%20offset='1'%20stop-color='%2300565c'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect%20x='2'%20y='2'%20width='96'%20height='96'%20rx='26'%20fill='url(%23g)'/%3E%3Cpath%20d='M25%2027h50a9%209%200%200%201%209%209v27a9%209%200%200%201-9%209H58l-10%2011-10-11H25a9%209%200%200%201-9-9V36a9%209%200%200%201%209-9z'%20fill='%23fff'/%3E%3Ccircle%20cx='37'%20cy='49'%20r='7.5'%20fill='%23e53935'/%3E%3Ccircle%20cx='55'%20cy='49'%20r='7.5'%20fill='%23fdd835'/%3E%3Ccircle%20cx='73'%20cy='49'%20r='7.5'%20fill='%231e88e5'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="app-shell.css">
+<link rel="stylesheet" href="app-ui.css">
+<link rel="icon" href="app-icon.png" type="image/png">
 </head>
 <body>
-<header class="top-app-bar">
-  <div class="top-app-bar__brand">
-    <span class="brand-mark" aria-hidden="true">
-      <svg viewBox="0 0 100 100" width="42" height="42">
-        <defs><linearGradient id="bm-g" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stop-color="#00838a"/><stop offset="1" stop-color="#00565c"/>
-        </linearGradient></defs>
-        <rect x="2" y="2" width="96" height="96" rx="26" fill="url(#bm-g)"/>
-        <path d="M25 27h50a9 9 0 0 1 9 9v27a9 9 0 0 1-9 9H58l-10 11-10-11H25a9 9 0 0 1-9-9V36a9 9 0 0 1 9-9z" fill="#fff"/>
-        <circle cx="37" cy="49" r="7.5" fill="#e53935"/>
-        <circle cx="55" cy="49" r="7.5" fill="#fdd835"/>
-        <circle cx="73" cy="49" r="7.5" fill="#1e88e5"/>
-      </svg>
-    </span>
-    <div>
-      <h1>Manga Colorizer</h1>
-      <p class="top-app-bar__sub">黑白漫画语义上色 · 社区预览</p>
-    </div>
+<div class="app-shell">
+
+  <!-- 桌面端：Navigation rail -->
+  <nav class="navigation-rail" aria-label="主导航">
+    <button class="navigation-rail__destination is-active" data-nav="home">
+      <span class="navigation-rail__icon">
+        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+      </span>
+      <span>首页</span>
+    </button>
+    <button class="navigation-rail__destination" data-nav="colorize">
+      <span class="navigation-rail__icon">
+        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M12 2C6.49 2 2 6.49 2 12s4.49 10 10 10c1.38 0 2.5-1.12 2.5-2.5 0-.61-.23-1.2-.64-1.67-.08-.1-.13-.21-.13-.33 0-.28.22-.5.5-.5H16c3.31 0 6-2.69 6-6 0-4.96-4.49-9-10-9zm5.5 11c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm-3-4c-.83 0-1.5-.67-1.5-1.5S13.67 6 14.5 6s1.5.67 1.5 1.5S15.33 9 14.5 9zM5 11.5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5S7.33 13 6.5 13 5 12.33 5 11.5zm6-4c0 .83-.67 1.5-1.5 1.5S8 8.33 8 7.5 8.67 6 9.5 6s1.5.67 1.5 1.5z"/></svg>
+      </span>
+      <span>上色</span>
+    </button>
+    <button class="navigation-rail__destination" data-nav="gallery">
+      <span class="navigation-rail__icon">
+        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+      </span>
+      <span>图库</span>
+    </button>
+    <button class="navigation-rail__destination" data-nav="logs">
+      <span class="navigation-rail__icon">
+        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M3 3h18v2H3zm0 4h18v2H3zm0 4h12v2H3zm0 4h12v2H3zm0 4h8v2H3z"/></svg>
+      </span>
+      <span>日志</span>
+    </button>
+    <span class="navigation-rail__spacer"></span>
+    <button class="rail-theme" id="theme-toggle" title="切换深浅主题" aria-label="切换深浅主题">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 0 1-4.4 2.26 5.403 5.403 0 0 1-3.14-9.8c-.44-.06-.9-.1-1.36-.1z"/></svg>
+    </button>
+  </nav>
+
+  <div class="app-shell__content">
+    <!-- 顶栏 -->
+    <header class="top-app-bar">
+      <div class="top-app-bar__brand">
+        <span class="brand-mark">
+          <img src="app-icon.png" alt="Manga Colorizer" width="42" height="42" style="border-radius:13px;display:block" title="Manga Colorizer">
+        </span>
+        <div>
+          <h1>Manga Colorizer</h1>
+          <p class="top-app-bar__sub">黑白漫画语义上色</p>
+        </div>
+      </div>
+      <div style="flex:1"></div>
+      <span class="m3-chip" id="dev-pill">设备检测中…</span>
+      <span class="m3-chip" id="svc-pill">服务检测中…</span>
+    </header>
+
+    <!-- 首页 -->
+    <section class="screen" id="screen-home">
+      <div class="hero">
+        <h2>黑白漫画，一键上色</h2>
+        <p>深度模型语义配色：发 / 肤 / 瞳 / 背景自动上色，支持批量排队、提示点精修与参考图色调迁移，亮度始终保真。GPU 自动加速，无 GPU 时回退 CPU。</p>
+        <div class="actions">
+          <button class="filled-button" data-nav="colorize">开始上色</button>
+          <button class="tonal-button" data-nav="gallery">浏览图库</button>
+          <button class="tonal-button" data-nav="logs">查看日志</button>
+        </div>
+      </div>
+      <ul class="list" style="margin-top:22px">
+        <li class="list-item">
+          <span class="list-item__icon"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M9.64 7.64c.23-.5.36-1.05.36-1.64 0-2.21-1.79-4-4-4S2 3.79 2 6s1.79 4 4 4c.59 0 1.14-.13 1.64-.36L10 12l-2.36 2.36C7.14 14.13 6.59 14 6 14c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4c0-.59-.13-1.14-.36-1.64L12 14l7 7h3v-1L9.64 7.64z"/></svg></span>
+          <div class="list-item__text">
+            <p class="list-item__headline">GPU 自动加速</p>
+            <p class="list-item__supporting">DirectML / CUDA 自适应；日志标明实际设备，不可用时自动回退 CPU 并说明原因</p>
+          </div>
+        </li>
+        <li class="list-item">
+          <span class="list-item__icon"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M4 6h16v2H4zm0 5h16v2H4zm0 5h16v2H4z"/></svg></span>
+          <div class="list-item__text">
+            <p class="list-item__headline">批量排队处理</p>
+            <p class="list-item__supporting">多选或拖拽加入队列，按顺序逐个处理，单个失败不阻断，支持中途取消</p>
+          </div>
+        </li>
+        <li class="list-item">
+          <span class="list-item__icon"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg></span>
+          <div class="list-item__text">
+            <p class="list-item__headline">成果图库与台账</p>
+            <p class="list-item__supporting">每次上色自动入库（时间 / 设备 / 耗时），重启后历史完整保留，可定位成品与原图文件</p>
+          </div>
+        </li>
+      </ul>
+    </section>
+
+    <!-- 上色：批量队列 -->
+    <section class="screen" id="screen-colorize" hidden>
+      <div class="screen-head">
+        <h2>批量上色</h2>
+        <p>按加入顺序逐个处理；完成品自动进入图库。单张 ≤ 20MiB，一次最多 32 张。</p>
+      </div>
+      <!-- 设置面板：上色模式 / 处理器 / 免责声明 -->
+      <div class="settings-panel card" id="settings-panel">
+        <div class="set-row">
+          <span class="set-label">上色模式</span>
+          <div class="seg-group" role="radiogroup" aria-label="上色模式">
+            <label class="seg"><input type="radio" name="mode" value="auto"><span>全自动</span></label>
+            <label class="seg"><input type="radio" name="mode" value="hints"><span>提示点</span></label>
+            <label class="seg"><input type="radio" name="mode" value="reference"><span>参考图</span></label>
+          </div>
+        </div>
+        <div class="set-row" id="ref-row" hidden>
+          <span class="set-label">参考图</span>
+          <div class="ref-picker">
+            <button class="tonal-button" id="btn-ref-pick" type="button">选择参考图…</button>
+            <input type="file" id="ref-input" accept="image/png,image/jpeg,image/webp" hidden>
+            <span class="ref-name" id="ref-name">未选择</span>
+          </div>
+        </div>
+        <div class="set-row">
+          <span class="set-label">处理器</span>
+          <div class="seg-group" role="radiogroup" aria-label="处理器">
+            <label class="seg"><input type="radio" name="device" value="cpu"><span>CPU</span></label>
+            <label class="seg"><input type="radio" name="device" value="gpu"><span>GPU</span></label>
+            <span class="set-note" id="gpu-note" hidden></span>
+          </div>
+        </div>
+        <label class="disclaimer">
+          <input type="checkbox" id="disclaimer">
+          <span>我确认对处理内容拥有合法权利；上色结果仅供个人创作与预览，不用于商业发布（模型权重 CC BY-NC-SA 4.0）。</span>
+        </label>
+        <p class="set-hint" id="set-hint" hidden></p>
+      </div>
+
+      <!-- 提示点编辑器（模式=提示点时显示；每个队列项各自保存提示点） -->
+      <div class="card hint-card" id="hint-card" hidden>
+        <div class="queue-card__head">
+          <span>提示点编辑</span>
+          <span class="queue-card__count" id="hints-count">未选择图片</span>
+        </div>
+        <p class="subpanel-hint">点击下方队列中的图片载入画布；先选颜色再点画布落点，双击圆点删除。</p>
+        <div class="swatches" id="swatches">
+          <button class="swatch is-active" style="--sw:#e53935" data-color="#e53935" aria-label="红色"></button>
+          <button class="swatch" style="--sw:#fb8c00" data-color="#fb8c00" aria-label="橙色"></button>
+          <button class="swatch" style="--sw:#fdd835" data-color="#fdd835" aria-label="黄色"></button>
+          <button class="swatch" style="--sw:#43a047" data-color="#43a047" aria-label="绿色"></button>
+          <button class="swatch" style="--sw:#1e88e5" data-color="#1e88e5" aria-label="蓝色"></button>
+          <button class="swatch" style="--sw:#8e24aa" data-color="#8e24aa" aria-label="紫色"></button>
+          <button class="swatch" style="--sw:#e0b090" data-color="#e0b090" aria-label="肤色"></button>
+          <button class="swatch" style="--sw:#4e342e" data-color="#4e342e" aria-label="深棕"></button>
+        </div>
+        <div class="canvas-wrap" id="canvas-wrap">
+          <p class="placeholder" id="hint-placeholder">从队列中选择一张图片，在此画布上放置提示点。</p>
+          <div class="canvas-stage" id="canvas-stage" hidden>
+            <img id="view-original" class="canvas-img" alt="队列图片原稿">
+            <div id="hint-layer" class="hint-layer"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="queue-layout">
+        <div class="card queue-card">
+          <div class="drop" id="drop" role="button" tabindex="0" aria-label="添加图片">
+            <svg viewBox="0 0 24 24" width="34" height="34" aria-hidden="true"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6z"/></svg>
+            <p class="drop__big">拖拽图片到此处，或点击选择</p>
+            <p class="drop__hint">PNG / JPEG / WebP · 长图自动分块推理</p>
+          </div>
+          <input type="file" id="file-input" multiple accept="image/png,image/jpeg,image/webp" hidden>
+          <div class="actions" style="margin-top:16px">
+            <button class="filled-button" id="btn-run" disabled>开始处理</button>
+            <button class="tonal-button" id="btn-cancel" disabled>取消</button>
+            <button class="tonal-button" id="btn-clear" disabled>清空队列</button>
+          </div>
+          <p class="queue-summary" id="q-summary" hidden></p>
+        </div>
+        <div class="card queue-card">
+          <div class="queue-card__head">
+            <span>队列</span><span class="queue-card__count" id="q-count">0 项</span>
+          </div>
+          <div class="q-list" id="q-list" aria-live="polite"></div>
+          <div class="q-empty" id="q-empty">队列空空如也。添加图片开始吧。</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 图库 -->
+    <section class="screen" id="screen-gallery" hidden>
+      <div class="screen-head">
+        <h2>图库</h2>
+        <p>上色成品按时间倒序 · <span id="outdir-wrap"><button class="linklike" id="g-outdir">打开输出文件夹</button> · </span><button class="linklike" id="g-refresh">刷新</button></p>
+      </div>
+      <div class="media-grid" id="g-grid"></div>
+      <div class="q-empty" id="g-empty" hidden>还没有成品。去「上色」处理第一张图吧。</div>
+    </section>
+
+    <!-- 日志 -->
+    <section class="screen" id="screen-logs" hidden>
+      <div class="screen-head">
+        <h2>控制台日志</h2>
+        <p>实时滚动，含时间戳与级别（信息 / 警告 / 错误），同步写入 <code>logs\app-*.log</code></p>
+      </div>
+      <div class="console" id="console" role="log" aria-label="处理日志"></div>
+    </section>
   </div>
-  <div class="status-badge">
-    <span class="status-dot" id="status-dot" aria-hidden="true"></span>
-    <span id="status-text">检测服务…</span>
-  </div>
-</header>
 
-<main class="layout">
-  <!-- 左列：上传与模式（filled card） -->
-  <section class="card card--control" aria-labelledby="upload-title">
-    <h2 id="upload-title" class="card__title">上传原稿</h2>
-    <div id="dropzone" class="drop-zone" tabindex="0" role="button"
-         aria-label="选择或拖入图片，支持 PNG、JPEG、WebP">
-      <svg viewBox="0 0 24 24" width="40" height="40" aria-hidden="true">
-        <path fill="currentColor" d="M19 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-5H3v5a3 3 0 0 0 3 3h12a3 3 0 0 0 3-3v-5h-2zM11 5.83 8.41 8.41 7 7l5-5 5 5-1.41 1.41L13 5.83V16h-2V5.83z"/>
-      </svg>
-      <p><strong>点击选择</strong> 或拖入漫画页</p>
-      <p class="drop-zone-hint" id="limits-text">PNG / JPEG / WebP</p>
-      <input id="file-input" type="file" accept="image/png,image/jpeg,image/webp" hidden>
-    </div>
-    <div id="file-chip" class="file-chip" hidden>
-      <span id="file-name"></span>
-      <span id="file-size" class="file-size"></span>
-      <button id="file-clear" class="icon-button" aria-label="移除文件">×</button>
-    </div>
+  <!-- 手机端：底部 Navigation bar -->
+  <nav class="navigation-bar" aria-label="主导航">
+    <button class="navigation-bar__item is-active" data-nav="home">
+      <span class="navigation-bar__icon">
+        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+      </span>
+      <span>首页</span>
+    </button>
+    <button class="navigation-bar__item" data-nav="colorize">
+      <span class="navigation-bar__icon">
+        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M12 2C6.49 2 2 6.49 2 12s4.49 10 10 10c1.38 0 2.5-1.12 2.5-2.5 0-.61-.23-1.2-.64-1.67-.08-.1-.13-.21-.13-.33 0-.28.22-.5.5-.5H16c3.31 0 6-2.69 6-6 0-4.96-4.49-9-10-9z"/></svg>
+      </span>
+      <span>上色</span>
+    </button>
+    <button class="navigation-bar__item" data-nav="gallery">
+      <span class="navigation-bar__icon">
+        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+      </span>
+      <span>图库</span>
+    </button>
+    <button class="navigation-bar__item" data-nav="logs">
+      <span class="navigation-bar__icon">
+        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M3 3h18v2H3zm0 4h18v2H3zm0 4h12v2H3zm0 4h12v2H3zm0 4h8v2H3z"/></svg>
+      </span>
+      <span>日志</span>
+    </button>
+  </nav>
+</div>
 
-    <fieldset class="mode-group">
-      <legend>上色模式</legend>
-      <label class="choice-chip"><input type="radio" name="mode" value="auto" checked><span>全自动</span></label>
-      <label class="choice-chip"><input type="radio" name="mode" value="hints"><span>提示点</span></label>
-      <label class="choice-chip"><input type="radio" name="mode" value="reference"><span>参考图</span></label>
-    </fieldset>
-
-    <!-- 提示点面板 -->
-    <div id="hints-panel" class="subpanel" hidden>
-      <p class="subpanel-hint">在右侧画布上点击放置提示点；先选颜色，点击画布落点，双击点删除。</p>
-      <div class="swatches" id="swatches">
-        <button class="swatch is-active" style="--sw:#e53935" data-color="#e53935" aria-label="红色"></button>
-        <button class="swatch" style="--sw:#fb8c00" data-color="#fb8c00" aria-label="橙色"></button>
-        <button class="swatch" style="--sw:#fdd835" data-color="#fdd835" aria-label="黄色"></button>
-        <button class="swatch" style="--sw:#43a047" data-color="#43a047" aria-label="绿色"></button>
-        <button class="swatch" style="--sw:#1e88e5" data-color="#1e88e5" aria-label="蓝色"></button>
-        <button class="swatch" style="--sw:#8e24aa" data-color="#8e24aa" aria-label="紫色"></button>
-        <button class="swatch" style="--sw:#e0b090" data-color="#e0b090" aria-label="肤色"></button>
-        <button class="swatch" style="--sw:#4e342e" data-color="#4e342e" aria-label="深棕"></button>
-      </div>
-      <p class="subpanel-meta" id="hints-count">已放 0 个提示点</p>
+<!-- 图库大图查看 -->
+<div class="lightbox" id="lightbox" hidden>
+  <div class="lightbox__backdrop" id="lb-backdrop"></div>
+  <figure class="lightbox__figure">
+    <img id="lb-img" alt="上色结果大图">
+    <figcaption class="lightbox__cap" id="lb-cap"></figcaption>
+    <div class="actions" style="justify-content:center">
+      <button class="tonal-button" id="lb-open-src">打开输出文件夹</button>
+      <button class="tonal-button" id="lb-close">关闭</button>
     </div>
-
-    <!-- 参考图面板 -->
-    <div id="reference-panel" class="subpanel" hidden>
-      <p class="subpanel-hint">上传彩色参考图（人设/色调板/任意彩图），服务提取整体色调迁移到原稿。</p>
-      <div id="ref-drop" class="ref-drop" tabindex="0" role="button" aria-label="选择参考图">
-        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path fill="currentColor" d="M21 19V5a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h15a1 1 0 0 0 1-1zM8.5 13.5l2.5 3 3.5-4.5 4.5 6h-14l3.5-4.5z"/></svg>
-        <span id="ref-label">选择参考图</span>
-        <img id="ref-thumb" alt="参考图缩略" hidden>
-        <input id="ref-input" type="file" accept="image/png,image/jpeg,image/webp" hidden>
-      </div>
-    </div>
-
-    <label class="license-check">
-      <input id="license-ok" type="checkbox">
-      <span>我了解默认后端使用 <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/" target="_blank" rel="noopener">CC BY-NC-SA 4.0</a> 模型，仅用于非商业用途</span>
-    </label>
-
-    <div class="actions">
-      <button id="submit" class="filled-button" disabled>开始上色</button>
-      <button id="download" class="tonal-button" hidden>下载结果</button>
-    </div>
-    <div id="progress" class="linear-progress" hidden role="progressbar" aria-label="上色进度">
-      <div class="linear-progress__indicator"></div>
-    </div>
-    <p id="progress-text" class="progress-text" hidden>模型推理中，约 10-120 秒（视图像大小，CPU）…</p>
-  </section>
-
-  <!-- 右列：画布 / 结果（filled card） -->
-  <section class="card card--result" aria-labelledby="result-title">
-    <div class="result-head">
-      <h2 id="result-title" class="card__title" style="margin:0">画布</h2>
-      <div class="segmented-button" id="compare-seg" hidden role="tablist" aria-label="切换视图">
-        <button class="segmented-button__option" data-view="original" role="tab" aria-selected="false">原图</button>
-        <button class="segmented-button__option is-active" data-view="result" role="tab" aria-selected="true">上色</button>
-      </div>
-    </div>
-    <div class="canvas-wrap" id="canvas-wrap">
-      <p id="placeholder" class="placeholder">上传漫画页并开始上色后，这里会显示结果。<br>提示点模式下可直接在画布上点击放点。</p>
-      <div id="canvas-stage" class="canvas-stage" hidden>
-        <img id="view-original" class="canvas-img" alt="原稿">
-        <div id="hint-layer" class="hint-layer" aria-hidden="true"></div>
-      </div>
-      <img id="result-img" class="canvas-img" alt="上色结果" hidden>
-    </div>
-    <p id="result-meta" class="result-meta" hidden></p>
-  </section>
-</main>
-
-<footer class="footer">
-  <p>代码 Apache-2.0 · 权重许可 CC BY-NC-SA 4.0（不随仓库分发，需自行下载） ·
-    <a href="https://huggingface.co/sharky172/manga-light-colorizer" target="_blank" rel="noopener">模型来源</a> ·
-    <a href="/api/v1/capabilities" target="_blank" rel="noopener">能力接口</a></p>
-</footer>
+  </figure>
+</div>
 
 <div id="snackbar" class="snackbar" role="status" aria-live="polite" hidden></div>
-<script src="app.js" defer></script>
+<script src="app.js"></script>
 </body>
 </html>

@@ -102,6 +102,10 @@ pub fn spawn(app: &AppHandle) -> Result<(), String> {
         "服务组件缺失（sidecar 未找到），请重新安装应用".to_string()
     })?;
 
+    // A previous attempt may have left a hung child; clear it before deciding
+    // to reuse the port or spawn a fresh process (avoids double-spawn).
+    kill();
+
     // If a previous sidecar still serves the port, reuse it (e.g. app restarted).
     if health_ok(PORT) {
         let _ = app.emit("sidecar-status", SidecarStatus {
@@ -165,6 +169,49 @@ pub fn spawn(app: &AppHandle) -> Result<(), String> {
 
 pub fn kill() {
     if let Some(mut c) = CHILD.lock().unwrap().take() {
+        let pid = c.id();
+        let _ = c.kill();
+        let _ = c.wait();
+        kill_tree(pid); // clean up any orphaned python child of the onefile bootloader
+    }
+}
+
+/// Kill the sidecar process tree (PyInstaller onefile spawns a python child).
+#[cfg(target_os = "windows")]
+fn kill_tree(pid: u32) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let _ = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn();
+}
+
+#[cfg(not(target_os = "windows"))]
+fn kill_tree(_pid: u32) {}
+
+/// Ask the sidecar to shut down gracefully (releases model memory/VRAM), then
+/// ensure the process tree is gone. Runs on app exit so no background process or
+/// GPU allocation lingers after the window closes. Works both for a child we
+/// spawned and for a reused sidecar that survived a prior restart.
+pub fn shutdown_and_release() {
+    let url = format!("http://127.0.0.1:{PORT}/shutdown");
+    if let Ok(client) = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+    {
+        let _ = client.post(&url).send();
+    }
+
+    if let Some(mut c) = CHILD.lock().unwrap().take() {
+        // give the graceful path a moment to let the child exit on its own
+        for _ in 0..10 {
+            if let Ok(Some(_)) = c.try_wait() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(300));
+        }
+        kill_tree(c.id());
         let _ = c.kill();
         let _ = c.wait();
     }

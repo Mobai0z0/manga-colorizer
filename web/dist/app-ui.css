@@ -1,6 +1,7 @@
 /* ============================================================
-   Manga Colorizer APP v2 扩展样式 — 批量队列 / 图库元数据 / 控制台日志 / 设备徽标
-   令牌与基础组件全部复用 app.css；本文件只补差异件
+   Manga Colorizer APP 功能组件 — 批量队列 / 提示点编辑 / 图库元数据 /
+   控制台日志 / lightbox / 设置面板
+   令牌与基础组件复用 app.css，导航壳层复用 app-shell.css
    ============================================================ */
 
 /* ---------- M3 chip（顶栏状态） ---------- */
@@ -14,15 +15,6 @@
 .m3-chip.is-good { background: var(--md-sys-color-secondary-container); color: var(--md-sys-color-on-secondary-container); }
 .m3-chip.is-warn { background: var(--md-sys-color-tertiary-container); color: var(--md-sys-color-on-tertiary-container); }
 .m3-chip.is-bad  { background: var(--md-sys-color-on-error-container); color: var(--md-sys-color-error); }
-
-.device-chip {
-  font-family: inherit; font-size: .66rem; font-weight: 600;
-  padding: 3px 10px; border-radius: var(--md-sys-shape-corner-full);
-  background: var(--md-sys-color-surface-container-high);
-  color: var(--md-sys-color-on-surface-variant); margin-bottom: 10px; white-space: nowrap;
-}
-.device-chip.is-good { background: var(--md-sys-color-secondary-container); color: var(--md-sys-color-on-secondary-container); }
-.device-chip.is-warn { background: var(--md-sys-color-tertiary-container); color: var(--md-sys-color-on-tertiary-container); }
 
 .linklike {
   border: 0; background: none; cursor: pointer; font: inherit;
@@ -48,6 +40,9 @@
 .drop svg { opacity: .7; }
 .drop__big { margin: 8px 0 2px; font-size: .9rem; font-weight: 600; color: var(--md-sys-color-on-surface); }
 .drop__hint { font-size: .76rem; opacity: .75; }
+
+/* 原生 file input 仅作触发用，永不渲染（选择由 .drop / .ref-pick 承担） */
+input[type="file"][hidden] { display: none !important; }
 
 .queue-card__head {
   display: flex; align-items: baseline; justify-content: space-between;
@@ -77,11 +72,19 @@
   padding: 34px 16px; text-align: center; color: var(--md-sys-color-on-surface-variant); font-size: .82rem;
 }
 
+/* ---------- 提示点编辑器（上色页，模式=提示点） ---------- */
+.hint-card { margin-bottom: 18px; padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; }
+.hint-card .canvas-wrap { min-height: 260px; }
+.hint-card .swatches { margin-top: 2px; }
+.q-item { cursor: pointer; }
+.q-item:hover { background: var(--md-sys-color-surface-container-high); }
+.q-item:focus-visible { outline: 3px solid var(--md-sys-color-primary); outline-offset: -3px; }
+.q-item.is-sel { outline: 2px solid var(--md-sys-color-primary); outline-offset: -2px; }
+
 .queue-summary { margin: 14px 0 0; font-size: .8rem; color: var(--md-sys-color-on-surface-variant); }
 .queue-summary b { color: var(--md-sys-color-on-surface); }
 
 /* ---------- 图库卡片 ---------- */
-.media-card__thumb--ph { display: grid; place-items: center; color: var(--md-sys-color-on-surface-variant); }
 .g-meta { padding: 10px 14px 12px; font-size: .78rem; }
 .g-meta .g-nm { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .g-meta .g-row { display: flex; gap: 8px; margin-top: 3px; font-size: .68rem; color: var(--md-sys-color-on-surface-variant); font-variant-numeric: tabular-nums; }
@@ -90,31 +93,39 @@
 /* ---------- 控制台日志 ---------- */
 .console {
   font-family: "Cascadia Mono", Consolas, monospace; font-size: .72rem; line-height: 1.55;
-  background: var(--md-sys-color-inverse-surface); color: var(--md-sys-color-inverse-on-surface);
+  background: var(--md-sys-color-surface-container);
+  color: var(--md-sys-color-on-surface);
+  border: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 60%, transparent);
   border-radius: var(--md-sys-shape-corner-md); padding: 14px 16px;
   height: calc(100dvh - 250px); min-height: 260px; overflow: auto;
+  scrollbar-color: var(--md-sys-color-outline-variant) transparent;
+  scrollbar-width: thin;
 }
 .log-line { display: flex; gap: 10px; padding: 1.5px 0; }
-.log-line .ts { opacity: .55; flex: none; }
+.log-line .ts { color: var(--md-sys-color-on-surface-variant); opacity: .8; flex: none; }
 .log-line .lv { flex: none; width: 52px; font-weight: 600; }
-.log-line .lv.INFO { color: #6ff6fb; }
-.log-line .lv.WARNING { color: #ffb78c; }
-.log-line .lv.ERROR { color: #ffdad6; }
-.log-line .msg { word-break: break-all; opacity: .92; }
+.log-line .lv.INFO { color: var(--md-sys-color-primary); }
+.log-line .lv.WARNING { color: var(--md-sys-color-tertiary); }
+.log-line .lv.ERROR { color: var(--md-sys-color-error); }
+.log-line .msg { word-break: break-all; color: var(--md-sys-color-on-surface); opacity: .92; }
 
-/* ---------- lightbox ---------- */
+/* ---------- lightbox（M3 对话框样式：容器底色 + corner-xl + 海拔 3） ---------- */
 .lightbox { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; }
 .lightbox[hidden] { display: none; }
-.lightbox__backdrop { position: absolute; inset: 0; background: color-mix(in srgb, var(--md-sys-color-scrim) 72%, transparent); }
+.lightbox__backdrop { position: absolute; inset: 0; background: rgb(var(--md-sys-color-scrim) / .6); }
 .lightbox__figure {
   position: relative; z-index: 1; display: flex; flex-direction: column; gap: 12px; align-items: center;
   max-width: min(92vw, 1200px);
+  background: var(--md-sys-color-surface-container-high);
+  border-radius: var(--md-sys-shape-corner-xl);
+  padding: 20px; box-shadow: var(--md-sys-elevation-3);
 }
 .lightbox__figure img {
-  max-width: 88vw; max-height: 72vh; border-radius: var(--md-sys-shape-corner-md);
-  box-shadow: var(--md-sys-elevation-3); background: var(--md-sys-color-surface-container-highest);
+  max-width: 88vw; max-height: 68vh; border-radius: var(--md-sys-shape-corner-md);
+  background: var(--md-sys-color-surface-container-highest);
 }
-.lightbox__cap { color: #fff; font-size: .78rem; opacity: .9; text-align: center; }
+.lightbox__cap { color: var(--md-sys-color-on-surface-variant); font-size: .78rem; text-align: center; }
+.lightbox__figure .actions { margin-top: 0; }
 
 /* ---------- 设置面板：模式 / 处理器 / 免责声明 ---------- */
 .settings-panel { padding: 16px 20px; margin-bottom: 18px; display: flex; flex-direction: column; gap: 12px; }
@@ -130,6 +141,7 @@
   display: inline-block; padding: 7px 16px; border-radius: var(--md-sys-shape-corner-full);
   border: 1px solid var(--md-sys-color-outline-variant);
   font-size: .78rem; font-weight: 600; color: var(--md-sys-color-on-surface-variant);
+  min-height: 40px; box-sizing: border-box;
   transition: background .15s, color .15s, border-color .15s;
 }
 .seg:hover span { border-color: var(--md-sys-color-outline); }
@@ -150,36 +162,10 @@
 .disclaimer input { margin-top: 3px; width: 16px; height: 16px; accent-color: var(--md-sys-color-primary); cursor: pointer; }
 .disclaimer span { font-size: .74rem; color: var(--md-sys-color-on-surface-variant); line-height: 1.5; }
 
-.theme-toggle {
-  border: 1px solid var(--md-sys-color-outline-variant); background: var(--md-sys-color-surface-container-high);
-  color: var(--md-sys-color-on-surface-variant); width: 36px; height: 36px; border-radius: 50%;
-  cursor: pointer; display: grid; place-items: center; transition: background .15s;
-}
-.theme-toggle:hover { background: var(--md-sys-color-secondary-container); color: var(--md-sys-color-on-secondary-container); }
-
-/* ---------- 日志面板双主题：变量驱动，跟随 app.css 的 light/dark ---------- */
-.console {
-  font-family: "Cascadia Mono", Consolas, monospace; font-size: .72rem; line-height: 1.55;
-  background: var(--md-sys-color-surface-container);
-  color: var(--md-sys-color-on-surface);
-  border: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 60%, transparent);
-  border-radius: var(--md-sys-shape-corner-md); padding: 14px 16px;
-  height: calc(100dvh - 250px); min-height: 260px; overflow: auto;
-  scrollbar-color: var(--md-sys-color-outline-variant) transparent;
-  scrollbar-width: thin;
-}
-.log-line { display: flex; gap: 10px; padding: 1.5px 0; }
-.log-line .ts { color: var(--md-sys-color-on-surface-variant); opacity: .8; flex: none; }
-.log-line .lv { flex: none; width: 52px; font-weight: 600; }
-.log-line .lv.INFO { color: var(--md-sys-color-primary); }
-.log-line .lv.WARNING { color: var(--md-sys-color-tertiary); }
-.log-line .lv.ERROR { color: var(--md-sys-color-error); }
-.log-line .msg { word-break: break-all; color: var(--md-sys-color-on-surface); opacity: .92; }
-
 /* ---------- 导航栏底部主题切换 ---------- */
 .rail-theme {
   border: 0; background: none; cursor: pointer; color: var(--md-sys-color-on-surface-variant);
-  width: 44px; height: 44px; border-radius: var(--md-sys-shape-corner-full);
+  width: 48px; height: 48px; border-radius: var(--md-sys-shape-corner-full);
   display: grid; place-items: center; margin-top: 8px;
   transition: background 200ms var(--md-sys-motion-ease-emphasized), transform 200ms;
 }

@@ -1,5 +1,5 @@
 /// Dart 客户端: 调用 Python 模型服务的 /colorize_auto 端点。
-/// 用法: dart run tool/colorize_backend.dart -i <输入> -o <输出> [--infer-size 768]
+/// 用法: dart run tool/colorize_auto_client.dart -i <输入> -o <输出> [--infer-size 768]
 /// 服务启动: python -m uvicorn tool.colorizer_service.service:app --port 8788
 import 'dart:convert';
 import 'dart:io';

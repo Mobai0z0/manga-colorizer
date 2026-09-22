@@ -5,8 +5,10 @@
 
 ## 已核验的上游声明
 
-来源：[sharky172/manga-light-colorizer 模型卡](https://huggingface.co/sharky172/manga-light-colorizer#license)。本次通过 hf-mirror 的 README 原文核对 License 段落。
+来源：[sharky172/manga-light-colorizer 模型卡](https://huggingface.co/sharky172/manga-light-colorizer#license)（License 段落以其 README 原文为准）。
 
+| 组件 | 许可 | 说明 |
+|---|---|---|
 | 模型权重 | [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) | 非商业可选后端；不随源码分发，使用者自行下载 |
 | 上游推理代码 | [GPL-3.0](https://www.gnu.org/licenses/gpl-3.0.html) | 保留来源说明；本地 service.py 为独立实现，与上游代码的相似性待审计 |
 | 本仓库原创代码 | Apache-2.0 | 见 LICENSE / NOTICE；调用 NC 权重不改变权重自身许可 |

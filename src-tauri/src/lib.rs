@@ -276,7 +276,7 @@ fn reload_main_window(app: &AppHandle) {
     // localStorage 中的主题/模式/免责声明设置才能跨启动一致；sidecar 由前端
     // 通过绝对地址 + CORS 访问，不依赖本窗口同源。
     if let Some(win) = app.get_webview_window("main") {
-        let url = Url::parse("http://tauri.localhost/app-ui.html").expect("bundled ui url");
+        let url = Url::parse("http://tauri.localhost/index.html").expect("bundled ui url");
         let _ = win.navigate(url);
         let _ = win.show();
         let _ = win.set_focus();
@@ -379,7 +379,7 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
-                sidecar_mgr::kill();
+                sidecar_mgr::shutdown_and_release();
             }
             let _ = app;
         });

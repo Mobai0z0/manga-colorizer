@@ -8,7 +8,7 @@ import 'package:manga_colorizer_core/manga_colorizer_core.dart';
 
 /// 原生彩漫质感上色 v8 (material): 全图覆盖 + 色相感知精确归属。
 ///
-/// v7 → v8 修复(用户反馈: 颜色不精确 / 只有人物和天空上色):
+/// 设计要点:
 ///   1) 全图覆盖: 中性像素(灰阶/网点/未锚定区域, v≥0.15)不再保留灰色,
 ///      按最近锚点材质合成颜色(饱和 ×0.55 收敛), 亮度用展平场(网点→平涂);
 ///      纯墨线(v<0.15)仍然原样保留 — 线稿纯净。
@@ -300,14 +300,14 @@ Uint8List materialPass(
 
   // 每锚点: 期望色相。hair 材质取圆周均值(消除多锚点色相差斑块)。
   final expHues = List<double>.generate(hints.length, (k) {
-    final (h, s, _) = _rgbToHuv(hints[k].r / 255, hints[k].g / 255,
+    final (h, s, _) = _rgbToHsv(hints[k].r / 255, hints[k].g / 255,
         hints[k].b / 255);
     return _expectedHue(materials[k], s <= 0 ? 0 : h);
   });
   double sinSum = 0, cosSum = 0;
   for (var k = 0; k < hints.length; k++) {
     if (materials[k] != 'hair') continue;
-    final (h, s, _) = _rgbToHuv(hints[k].r / 255, hints[k].g / 255,
+    final (h, s, _) = _rgbToHsv(hints[k].r / 255, hints[k].g / 255,
         hints[k].b / 255);
     if (s <= 0) continue;
     sinSum += math.sin(h * math.pi / 180);
@@ -443,7 +443,3 @@ Uint8List materialPass(
       '覆盖未及 $uncolored (${(100 * uncolored / n).toStringAsFixed(2)}%)');
   return out;
 }
-
-/// 兼容旧名(_rgbToHuv → _rgbToHsv)。
-(double, double, double) _rgbToHuv(double r, double g, double b) =>
-    _rgbToHsv(r, g, b);
