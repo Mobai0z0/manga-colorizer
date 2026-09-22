@@ -7,6 +7,8 @@ import 'package:manga_colorizer_core/manga_colorizer_core.dart';
 
 import 'package:manga_colorizer_cli/src/cli_io.dart';
 
+/// CLI 主入口: 提示点/预设/调色板驱动的漫画上色。
+/// 用法见 --help。
 Future<void> main(List<String> args) async {
   final parser = ArgParser()
     ..addOption('input', abbr: 'i', mandatory: true, help: '输入黑白漫画图片')

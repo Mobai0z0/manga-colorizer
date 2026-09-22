@@ -1,8 +1,9 @@
 import 'dart:io';
 import 'package:image/image.dart' as img;
 
-/// 检验 1: 上色结果的亮度保真性 (对比原稿)。
+/// 检验上色结果的亮度保真性 (对比原稿)。
 /// 区分 descreen 展平区(网点)与非展平区, 统计亮度偏差分布。
+/// 用法: dart run tool/check_luminance.dart <原稿.png> <成图.png>
 void main(List<String> args) {
   final orig = img.decodePng(File(args[0]).readAsBytesSync())!;
   final colored = img.decodePng(File(args[1]).readAsBytesSync())!;

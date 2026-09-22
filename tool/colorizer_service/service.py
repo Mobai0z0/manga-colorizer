@@ -10,6 +10,7 @@
   POST /colorize_auto       multipart: image → PNG (全自动, 亮度回写原稿)
   POST /colorize_hints      multipart: image + hints(JSON) → PNG (色度扩散引擎)
   POST /colorize_reference  multipart: image + reference → PNG (主色迁移)
+  POST /shutdown            仅回环: 释放模型显存/内存并请求服务优雅退出
 
 长图说明: 长边超过 TILE=1024 自动分块推理 (OVERLAP=256, 线性羽化融合),
 避免整页下采样到 1024 方形造成的精度损失。
@@ -95,6 +96,8 @@ if DEVICE not in ('cpu', 'auto', 'cuda'):
 _state = {'gen': None, 'sam': None, 'providers': None}
 _runtime_device = {'value': None}
 _load_state = {'status': 'idle', 'error': None}  # idle | loading | ready | failed
+# uvicorn Server 实例由启动入口注入；/shutdown 据此请求优雅退出
+_server_ref = {'server': None}
 
 
 _gpu_info_cache = {'info': None, 'ts': 0.0}
@@ -282,6 +285,23 @@ def _idle_unload_worker():
             _inference_lock.release()
 
 
+def _release_models():
+    """释放所有 ONNX 会话；进程内归还内存/显存由调用方（退出或空闲卸载）保证。"""
+    with _session_lock:
+        _state.update(gen=None, sam=None, providers=None)
+        _cpu_state.update(gen=None, sam=None)
+    try:
+        import gc
+        gc.collect()
+    except Exception:
+        pass
+
+
+def bind_server(server) -> None:
+    """由启动入口注入 uvicorn Server，供 /shutdown 触发优雅退出。"""
+    _server_ref['server'] = server
+
+
 def _feather_weight(x0: int, x1: int, overlap: int) -> np.ndarray:
     """一维线性羽化权重: 两端 overlap 区域从 0 线性升到 1, 中间全 1。"""
     w = np.ones(x1 - x0, dtype=np.float32)
@@ -390,7 +410,7 @@ def colorize(gray: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(lab_o, cv2.COLOR_LAB2BGR)
 
 
-app = FastAPI(title='Manga Colorizer · Community Preview', version='0.3.3')
+app = FastAPI(title='Manga Colorizer · Community Preview', version='0.4.0')
 
 # 桌面壳（Tauri）的窗口固定运行在 http://tauri.localhost 源上，需要跨域读取本服务；
 # 服务只绑定 127.0.0.1，放开 CORS 不会把服务暴露到局域网。
@@ -403,6 +423,17 @@ app.add_middleware(
 )
 
 
+def _device_payload() -> dict:
+    providers = _state['providers']
+    loaded = _device_label(providers) if providers else None
+    return {'available': ort.get_available_providers(), 'active': providers,
+            'device': loaded or _expected_device(), 'loaded_device': loaded,
+            'requested': DEVICE,
+            'gpu_available': _gpu_available(), 'runtime_device': _runtime_device.get('value'),
+            'gpu_info': _gpu_info(),
+            'output_dir': str(OUTPUT_DIR), 'settings': _load_settings()}
+
+
 @app.get('/health')
 def health():
     actual = _state['providers']
@@ -412,6 +443,7 @@ def health():
                          for lst in actual.values() for p in (lst or []))
     # 仅当 auto 模式下实际落到 CPU 才算回退；DML/CUDA 正常运行不算
     fallback = bool(DEVICE == 'auto' and actual and not gpu_active)
+    # 合并设备信息：前端只需一个 5s 轮询即可刷新服务状态 + 设备徽标
     return {
         'ok': True,
         'weights_present': GENERATOR.is_file() and SAM_ENCODER.is_file(),
@@ -423,6 +455,7 @@ def health():
         'available_providers': ort.get_available_providers(),
         'providers': actual,
         'fallback_reason': 'CUDA 未启用，实际使用 CPU；检查服务日志' if fallback else None,
+        'device_info': _device_payload(),
     }
 
 
@@ -477,8 +510,19 @@ def _gallery_insert(*, source_name: str, mode: str, device: str, elapsed_s: floa
             rec['result_path'] = str(out_path)
             rec['result_file'] = Path(out_path).name
             try:
-                h, w = cv2.imread(str(out_path)).shape[:2]
+                img = cv2.imread(str(out_path))
+                h, w = img.shape[:2]
                 rec['width'], rec['height'] = w, h
+                # 网格缩略图：避免前端把整页成品原图当缩略图加载（图库列表曾因此
+                # 一次拉取上百张全尺寸 PNG）
+                scale = 320 / max(h, w)
+                thumb = cv2.resize(img, (max(1, int(w * scale)), max(1, int(h * scale))),
+                                   interpolation=cv2.INTER_AREA) if scale < 1 else img
+                thumb_file = OUTPUT_DIR / (Path(out_path).stem + '_thumb.jpg')
+                ok, buf = cv2.imencode('.jpg', thumb, [cv2.IMWRITE_JPEG_QUALITY, 82])
+                if ok:
+                    thumb_file.write_bytes(buf.tobytes())
+                    rec['thumb_file'] = thumb_file.name
             except Exception:
                 pass
         if src_bgr is not None:
@@ -528,9 +572,10 @@ def _process(data: bytes, source_name: str = 'image.png') -> Response:
         _inference_lock.release()
 
 
-# ---- 提示点模式: 调用 Dart 引擎等价实现 ----
-# Python 端简化实现: 提示点色度在亮度相似邻域内扩散 (Levin 启发的加权最小二乘近似)。
-# 精确求解见 packages/manga_colorizer_core (Dart); 此处为服务端轻量版, 大图建议用 CLI。
+# ---- 提示点模式 ----
+# 在服务端做提示点色度扩散（亮度相似邻域内的加权平均，Levin 交互式上色的轻量近似），
+# 再叠加到模型的全自动语义底色之上：提示点覆盖区取提示色，其余保留模型色。
+# 需要精确全局求解时使用 CLI（packages/manga_colorizer_cli）。
 
 def _hint_colorize(bgr: np.ndarray, hints: list[dict]) -> np.ndarray:
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
@@ -573,9 +618,27 @@ def _reference_transfer(bgr: np.ndarray, ref: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(np.clip(lab_s, 0, 255).astype(np.uint8), cv2.COLOR_LAB2BGR)
 
 
-def _process_hints(data: bytes, hints_raw: str) -> Response:
+def _persist_gallery(resp: Response, bgr: np.ndarray, *, source_name: str, mode: str,
+                     t0, suffix: str):
+    """auto 之外的模式同样入图库台账：结果先落盘（含缩略图生成），再记一行。"""
+    device = _device_label(_state['providers'])
+    elapsed = (datetime.now() - t0).total_seconds()
+    stamp = datetime.now().strftime('%Y%m%d%H%M%S')
+    out_path = OUTPUT_DIR / (stamp + suffix)
+    try:
+        out_path.write_bytes(resp.body)
+    except Exception:
+        out_path = None
+    _gallery_insert(source_name=source_name, mode=mode, device=device, elapsed_s=elapsed,
+                    src_bgr=bgr, out_path=out_path)
+    logging.info('上色完成: %s mode=%s device=%s elapsed=%.1fs size=%dx%d',
+                 source_name, mode, device, elapsed, bgr.shape[1], bgr.shape[0])
+
+
+def _process_hints(data: bytes, hints_raw: str, source_name: str = 'image.png') -> Response:
     if not _inference_lock.acquire(blocking=False):
         return JSONResponse({'error': '模型忙碌，请稍后重试'}, status_code=429)
+    t0 = datetime.now()
     try:
         try:
             bgr = _decode(data)
@@ -590,22 +653,19 @@ def _process_hints(data: bytes, hints_raw: str) -> Response:
         # 语义底色 + 提示点色度叠加: 先全自动上色, 再用提示点精修局部
         auto = colorize(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY))
         hinted = _hint_colorize(bgr, hints)
-        # 提示点覆盖区用提示色, 其余保留模型色
-        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        # 提示点作用区 (色度幅值显著高于中性) 用 hinted 的色度, 其余保留模型色
         lab_a = cv2.cvtColor(auto, cv2.COLOR_BGR2LAB).astype(np.float32)
         lab_h = cv2.cvtColor(hinted, cv2.COLOR_BGR2LAB).astype(np.float32)
-        # 提示点作用过的地方 (weight>阈值) 用 hinted 的色度
-        # 重新计算 hint 权重图, 无需暴露内部
         out = auto.copy()
         lab_o = cv2.cvtColor(out, cv2.COLOR_BGR2LAB).astype(np.float32)
-        diff = np.abs(lab_h[..., 1:3] - lab_h[..., 1:3]).sum(axis=2)  # placeholder
-        # 简化: hinted 中非中性像素 (chroma 幅值 > 2) 视为提示区, 覆盖 auto
         chroma_mag = np.sqrt(lab_h[..., 1] ** 2 + lab_h[..., 2] ** 2)
         auto_mag = np.sqrt(lab_a[..., 1] ** 2 + lab_a[..., 2] ** 2)
         mask = (chroma_mag > 6) & (chroma_mag > auto_mag * 0.5)
         lab_o[..., 1:3] = np.where(mask[..., None], lab_h[..., 1:3], lab_o[..., 1:3])
         out = cv2.cvtColor(lab_o.astype(np.uint8), cv2.COLOR_LAB2BGR)
-        return _encode_png(out)
+        resp = _encode_png(out)
+        _persist_gallery(resp, bgr, source_name=source_name, mode='hints', t0=t0, suffix='_hints.png')
+        return resp
     except RuntimeError as exc:
         logging.exception('Model unavailable')
         return JSONResponse({'error': str(exc)}, status_code=503)
@@ -616,9 +676,10 @@ def _process_hints(data: bytes, hints_raw: str) -> Response:
         _inference_lock.release()
 
 
-def _process_reference(data: bytes, ref_data: bytes) -> Response:
+def _process_reference(data: bytes, ref_data: bytes, source_name: str = 'image.png') -> Response:
     if not _inference_lock.acquire(blocking=False):
         return JSONResponse({'error': '模型忙碌，请稍后重试'}, status_code=429)
+    t0 = datetime.now()
     try:
         try:
             bgr = _decode(data)
@@ -635,7 +696,9 @@ def _process_reference(data: bytes, ref_data: bytes) -> Response:
         lab_o[..., 1] = 0.5 * lab_a[..., 1] + 0.5 * lab_s[..., 1]
         lab_o[..., 2] = 0.5 * lab_a[..., 2] + 0.5 * lab_s[..., 2]
         out = cv2.cvtColor(np.clip(lab_o, 0, 255).astype(np.uint8), cv2.COLOR_LAB2BGR)
-        return _encode_png(out)
+        resp = _encode_png(out)
+        _persist_gallery(resp, bgr, source_name=source_name, mode='reference', t0=t0, suffix='_ref.png')
+        return resp
     except RuntimeError as exc:
         logging.exception('Model unavailable')
         return JSONResponse({'error': str(exc)}, status_code=503)
@@ -664,7 +727,7 @@ async def colorize_hints(image: UploadFile = File(...), hints: str = Form('[]'))
         data = await image.read(MAX_BYTES + 1)
         if len(data) > MAX_BYTES:
             return JSONResponse({'error': '文件超过 20 MiB'}, status_code=413)
-        return await run_in_threadpool(_process_hints, data, hints)
+        return await run_in_threadpool(_process_hints, data, hints, image.filename or 'image.png')
     finally:
         await image.close()
 
@@ -676,7 +739,7 @@ async def colorize_reference(image: UploadFile = File(...), reference: UploadFil
         ref_data = await reference.read(MAX_BYTES + 1)
         if len(data) > MAX_BYTES or len(ref_data) > MAX_BYTES:
             return JSONResponse({'error': '文件超过 20 MiB'}, status_code=413)
-        return await run_in_threadpool(_process_reference, data, ref_data)
+        return await run_in_threadpool(_process_reference, data, ref_data, image.filename or 'image.png')
     finally:
         await image.close()
         await reference.close()
@@ -732,15 +795,7 @@ def logs_tail(after: int = 0):
 
 @app.get('/api/v1/device')
 def device_info():
-    providers = _state['providers']
-    st = _load_settings()
-    loaded = _device_label(providers) if providers else None
-    return {'available': ort.get_available_providers(), 'active': providers,
-            'device': loaded or _expected_device(), 'loaded_device': loaded,
-            'requested': DEVICE,
-            'gpu_available': _gpu_available(), 'runtime_device': _runtime_device.get('value'),
-            'gpu_info': _gpu_info(),
-            'output_dir': str(OUTPUT_DIR), 'settings': st}
+    return _device_payload()
 
 
 @app.get('/gallery/file/{name}')
@@ -751,8 +806,10 @@ def gallery_file(name: str):
     path = OUTPUT_DIR / safe
     if not path.is_file():
         return JSONResponse({'error': '文件不存在'}, status_code=404)
-    return Response(path.read_bytes(), media_type='image/png',
-                    headers={'Cache-Control': 'max-age=3600'})
+    media = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp'}.get(
+        path.suffix.lower(), 'image/png')
+    return Response(path.read_bytes(), media_type=media,
+                    headers={'Cache-Control': 'max-age=86400'})
 
 
 # ---- 设置: 模式 / 处理器 / 免责声明 (本地持久化 settings.json) ----
@@ -790,6 +847,29 @@ async def settings_set(request: Request):
     return data
 
 
+@app.post('/shutdown')
+def shutdown(request: Request):
+    """桌面壳退出时调用：先释放模型（归还内存/显存），再请求服务优雅退出。
+
+    仅接受回环地址；服务本身只绑定 127.0.0.1，这里再校验一层，避免被
+    同源页面上的脚本误触发。找不到 uvicorn Server 句柄时退化为进程退出，
+    由操作系统回收显存。
+    """
+    client = request.client.host if request.client else ''
+    if client not in ('127.0.0.1', '::1'):
+        return JSONResponse({'error': 'forbidden'}, status_code=403)
+    _release_models()
+    logging.info('收到 /shutdown，服务即将退出')
+    srv = _server_ref['server']
+    if srv is not None:
+        srv.should_exit = True
+    else:
+        threading.Thread(
+            target=lambda: (time.sleep(0.2), os._exit(0)),
+            daemon=True, name='sidecar-exit').start()
+    return {'ok': True}
+
+
 # 同源静态前端：开发/浏览器场景由本服务直接挂载本目录。
 
 web_dist = Path(os.environ.get('COLORIZER_WEB_DIST', str(ROOT / 'web' / 'dist')))
@@ -807,16 +887,7 @@ if __name__ == '__main__':
     _ap = argparse.ArgumentParser()
     _ap.add_argument('--port', type=int, default=8788)
     _argv_port = _ap.parse_args().port
-    uvicorn.run(app, host='127.0.0.1', port=_argv_port, access_log=False)
-
-
-
-
-
-
-
-
-
-
-
-
+    _cfg = uvicorn.Config(app, host='127.0.0.1', port=_argv_port, access_log=False)
+    _srv = uvicorn.Server(_cfg)
+    bind_server(_srv)
+    _srv.run()

@@ -41,14 +41,20 @@ def main() -> int:
 
     try:
         import uvicorn  # noqa: PLC0415
-        from service import app  # the patched copy bundled next to this exe / in _MEIPASS
+        import service  # the patched copy bundled next to this exe / in _MEIPASS
+        app = service.app
     except Exception as exc:  # pragma: no cover
         print(f"[sidecar] fatal: cannot import service: {exc}", flush=True)
         return 4
 
     try:
         # access_log=False: 轮询接口每秒数条访问日志纯属 I/O 浪费；启动/错误日志保留
-        uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="info", access_log=False)
+        # 用 Server 实例（而非 uvicorn.run）以便 /shutdown 触发优雅退出
+        config = uvicorn.Config(app, host="127.0.0.1", port=args.port,
+                                log_level="info", access_log=False)
+        server = uvicorn.Server(config)
+        service.bind_server(server)
+        server.run()
     except OSError as exc:
         print(f"[sidecar] fatal: {exc}", flush=True)
         return 3

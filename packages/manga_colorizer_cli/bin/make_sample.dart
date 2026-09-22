@@ -4,6 +4,8 @@ import 'package:args/args.dart';
 import 'package:manga_colorizer_cli/src/cli_io.dart';
 import 'package:manga_colorizer_cli/src/sample_page.dart';
 
+/// 生成一张自绘日漫风格示例页（墨线 + 网点 + 速度线），供无原稿时试用/回归。
+/// 用法见 --help。
 Future<void> main(List<String> args) async {
   final parser = ArgParser()
     ..addOption('output', abbr: 'o', defaultsTo: 'sample_manga.png', help: '输出 PNG 路径')

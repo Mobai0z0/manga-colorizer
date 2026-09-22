@@ -1,14 +1,14 @@
 /* ============================================================
-   Manga Colorizer APP 界面 — M3 导航组件（app.html 专用）
-   组件名对齐 M3 规范：navigation-rail / navigation-bar / fab /
-   switch / list，令牌与基础组件复用 app.css
+   Manga Colorizer APP 壳层 — M3 导航组件（index.html 使用）
+   组件名对齐 M3 规范：navigation-rail / navigation-bar / list / hero，
+   令牌与基础组件复用 app.css
    ============================================================ */
 
 /* ---------- App shell ---------- */
 .app-shell { display: grid; grid-template-columns: auto 1fr; min-height: 100dvh; }
 .app-shell__content { display: flex; flex-direction: column; min-width: 0; min-height: 100dvh; }
 
-/* ---------- Navigation rail（桌面端，M3 Expressive：顶部 FAB + 目的地） ---------- */
+/* ---------- Navigation rail（桌面端，M3 Expressive 目的地） ---------- */
 .navigation-rail {
   display: flex; flex-direction: column; align-items: center;
   width: 96px; padding: 18px 0 22px; gap: 6px;
@@ -16,23 +16,6 @@
   border-right: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 50%, transparent);
   position: sticky; top: 0; height: 100dvh; box-sizing: border-box;
 }
-.navigation-rail__brand { margin-bottom: 14px; }
-.navigation-rail__brand svg { width: 40px; height: 40px; border-radius: 13px; display: block; }
-
-/* FAB（M3 圆角 morph） */
-.fab {
-  border: 0; cursor: pointer; font-family: inherit;
-  width: 56px; height: 56px; border-radius: 18px;
-  background: var(--md-sys-color-primary-container); color: var(--md-sys-color-on-primary-container);
-  display: grid; place-items: center;
-  box-shadow: var(--md-sys-elevation-1);
-  transition: border-radius 220ms var(--md-sys-motion-ease-emphasized),
-    transform 200ms var(--md-sys-motion-ease-spring), box-shadow .2s;
-  margin-bottom: 18px;
-}
-.fab:hover { box-shadow: var(--md-sys-elevation-2); }
-.fab:active { border-radius: 12px; transform: scale(.94); }
-.fab:focus-visible { outline: 3px solid var(--md-sys-color-primary); outline-offset: 2px; }
 
 .navigation-rail__destination {
   display: flex; flex-direction: column; align-items: center; gap: 5px;
@@ -87,16 +70,10 @@
   padding: clamp(18px, 3vw, 30px) clamp(16px, 4vw, 36px) clamp(96px, 14vh, 130px);
   animation: card-in var(--md-sys-motion-duration) var(--md-sys-motion-ease-spring) backwards;
 }
-.screen--frame { display: flex; flex-direction: column; max-width: none; padding: 0 0 88px; }
-@media (min-width: 901px) { .screen--frame { padding-bottom: 0; } }
 
 .screen-head { margin: 0 0 18px; }
 .screen-head h2 { margin: 0; font-size: 1.5rem; font-weight: 700; letter-spacing: -.02em; }
 .screen-head p { margin: 4px 0 0; font-size: .86rem; color: var(--md-sys-color-on-surface-variant); }
-
-/* 内嵌工作台 iframe（上色页） */
-.screen-frame__embed { flex: 1; width: 100%; border: 0; border-radius: 0; min-height: 72dvh; }
-@media (min-width: 901px) { .screen-frame__embed { min-height: calc(100dvh - 88px); } }
 
 /* ---------- List（设置 / 功能项） ---------- */
 .list {
@@ -119,39 +96,11 @@
 .list-item__headline { font-size: .92rem; font-weight: 600; }
 .list-item__supporting { margin: 2px 0 0; font-size: .78rem; color: var(--md-sys-color-on-surface-variant); line-height: 1.5; }
 
-/* ---------- Switch（M3） ---------- */
-.switch { position: relative; display: inline-block; flex: none; }
-.switch input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
-.switch__track {
-  display: block; width: 52px; height: 32px; border-radius: var(--md-sys-shape-corner-full);
-  background: var(--md-sys-color-surface-container-highest);
-  border: 2px solid var(--md-sys-color-outline);
-  transition: background 200ms, border-color 200ms;
-}
-.switch__thumb {
-  position: absolute; top: 50%; left: 8px; transform: translateY(-50%);
-  width: 16px; height: 16px; border-radius: 50%;
-  background: var(--md-sys-color-outline);
-  transition: left 220ms var(--md-sys-motion-ease-spring), width 180ms, height 180ms, background 200ms;
-}
-.switch input:checked + .switch__track { background: var(--md-sys-color-primary); border-color: var(--md-sys-color-primary); }
-.switch input:checked + .switch__track ~ .switch__thumb,
-.switch input:checked ~ .switch__thumb { left: 24px; width: 24px; height: 24px; background: var(--md-sys-color-on-primary); }
-.switch input:focus-visible + .switch__track { outline: 3px solid var(--md-sys-color-primary); outline-offset: 2px; }
-
 /* ---------- 图库网格 ---------- */
 .media-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 14px; }
 .media-card { padding: 0; overflow: hidden; cursor: pointer; }
+.media-card:focus-visible { outline: 3px solid var(--md-sys-color-primary); outline-offset: 2px; }
 .media-card__thumb { aspect-ratio: 4 / 3; width: 100%; display: block; object-fit: cover; }
-.media-card__thumb--ph {
-  display: grid; place-items: center;
-  background:
-    repeating-conic-gradient(color-mix(in srgb, var(--md-sys-color-outline) 12%, transparent) 0 25%, transparent 0 50%) 0 0 / 18px 18px,
-    linear-gradient(135deg, var(--md-sys-color-primary-container), var(--md-sys-color-tertiary-container));
-  color: var(--md-sys-color-on-primary-container);
-}
-.media-card__label { padding: 12px 14px; font-size: .84rem; font-weight: 600; }
-.media-card__label small { display: block; margin-top: 2px; font-weight: 400; color: var(--md-sys-color-on-surface-variant); }
 
 /* ---------- 首页 hero ---------- */
 .hero {
