@@ -1,6 +1,7 @@
 name: manga_colorizer_mobile
 description: Manga Colorizer Android app - embeds manga_colorizer_core (pure-Dart hint-based colorization).
 publish_to: none
+resolution: workspace
 version: 0.1.0
 
 environment:
