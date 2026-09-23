@@ -27,7 +27,7 @@ a = Analysis(
         "uvicorn.protocols.websockets.auto",
         "uvicorn.lifespan",
         "uvicorn.lifespan.on",
-        "python-multipart",
+        "python_multipart",
         "service",
     ],
     hookspath=[],
