@@ -26,6 +26,7 @@ jobs:
       - name: Build sidecar (PyInstaller onefile)
         run: |
           python -m PyInstaller sidecar/manga-colorizer-sidecar.spec --noconfirm --distpath build/sidecar-dist --workpath build/sidecar-work
+          New-Item -ItemType Directory -Force src-tauri/binaries | Out-Null
           Copy-Item build/sidecar-dist/manga-colorizer-sidecar.exe src-tauri/binaries/manga-colorizer-sidecar-x86_64-pc-windows-msvc.exe -Force
           Get-Item src-tauri/binaries/*.exe | Select-Object Name,Length
 
