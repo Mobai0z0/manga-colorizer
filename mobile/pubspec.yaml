@@ -15,6 +15,10 @@ dependencies:
   # OrtValue.asFlattenedList）与 README 的 Android 16KB 页要求均在 1.8.5 源码上
   # 逐个核对过，故下界提到实际验证版本，避免半吊子的旧绑定被解析出来。
   flutter_onnxruntime: ^1.8.5
+  # 计划定版：resize/blur 用纯 Dart 的 image 包（average≈cv2 INTER_AREA，
+  # catmullRom≈cv2 INTER_CUBIC）。workspace lock 已含 4.10.1（传递依赖），
+  # 提为直接依赖不改变解析版本。
+  image: ^4.3.0
   image_picker: ^1.1.2
   share_plus: ^10.0.0
   path_provider: ^2.1.4
