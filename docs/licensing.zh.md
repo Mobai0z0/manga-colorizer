@@ -1,4 +1,6 @@
-# 社区版许可与发行边界
+# 社区版许可与发行边界（中文）
+
+[English](licensing.en.md)
 
 **本仓库代码采用 [Apache License 2.0](../LICENSE)（第三方组件见 [NOTICE](../NOTICE)）。**
 模型权重不随仓库分发，仍受其自身许可约束（见下表）。
