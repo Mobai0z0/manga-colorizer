@@ -126,4 +126,115 @@ void main() {
           throwsA(isA<ArgumentError>()));
     });
   });
+
+  group('pickOutputKey（输出只按名字解析，禁止位置回退）', () {
+    test('名字命中即返回，即使它在 keys 里排错位置（哈希序≠声明序）', () {
+      // 模拟真实漂移：Map 迭代序是 Java HashMap 的哈希序，sam_level1 反而在前。
+      expect(
+          pickOutputKey(
+              keys: ['sam_level1', 'sam_level0'],
+              name: 'sam_level0',
+              index: 0,
+              expectedCount: 2),
+          'sam_level0');
+    });
+
+    test('名字缺失但键非空 → null（调用方抛错），绝不按位置拿错 tensor', () {
+      // 这是评审指出的静默错色路径：旧实现会返回 keys[0]，把 level1 当 level0。
+      expect(
+          pickOutputKey(
+              keys: ['output__0_add_1', 'output__1_add_1'],
+              name: 'sam_level0',
+              index: 0,
+              expectedCount: 2),
+          isNull);
+      expect(
+          pickOutputKey(
+              keys: <String>[], name: 'rgb_pred', index: 0, expectedCount: 1),
+          isNull);
+    });
+
+    test('仅当绑定完全没名字（1:1 且全空串）才按声明下标退化', () {
+      expect(
+          pickOutputKey(
+              keys: ['', ''], name: 'sam_level1', index: 1, expectedCount: 2),
+          isNotNull);
+      // 数量对不上（原生侧真丢了输出）时同样不许退化。
+      expect(
+          pickOutputKey(
+              keys: [''], name: 'sam_level0', index: 0, expectedCount: 2),
+          isNull);
+      // 空串键 + 越界下标 → null。
+      expect(
+          pickOutputKey(
+              keys: ['', ''], name: 'sam_level0', index: 2, expectedCount: 2),
+          isNull);
+    });
+  });
+
+  group('flattenToFloat32（asFlattenedList 收敛）', () {
+    test('raw 已是 Float32List → identity 快路径，不再复制 16 MB', () {
+      final raw = Float32List(2 * 3 * 4)..[0] = 0.5;
+      final (data, shape) = flattenToFloat32(raw, [1, 2, 3, 4], 'x');
+      expect(identical(data, raw), isTrue);
+      expect(shape, [1, 2, 3, 4]);
+    });
+
+    test('普通 List 逐元素转换，值一致', () {
+      final (data, shape) =
+          flattenToFloat32(<dynamic>[1.5, -2.5, 3.0], [1, 1, 1, 3], 'y');
+      expect(data, isA<Float32List>());
+      expect(identical(data, <dynamic>[1.5, -2.5, 3.0]), isFalse);
+      expect(data, [1.5, -2.5, 3.0]);
+      expect(shape, [1, 1, 1, 3]);
+      // 形状不可变：透传给 runGen 前不被下游篡改。
+      expect(() => shape[0] = 9, throwsUnsupportedError);
+    });
+
+    test('形状/数据不符（含 Float32List 快路径）→ StateError', () {
+      expect(() => flattenToFloat32(<dynamic>[1.0], [1, 2], 'z'),
+          throwsStateError);
+      expect(() => flattenToFloat32(Float32List(2), [1, 3], 'z'),
+          throwsStateError);
+    });
+
+    test('非数值元素 → StateError，不静默转 0', () {
+      expect(() => flattenToFloat32(<dynamic>[1.0, 'x'], [1, 2], 'z'),
+          throwsStateError);
+    });
+  });
+
+  group('FakeBackend 与真实后端共用输入守卫', () {
+    final feat = (Float32List(256 * 64 * 64), [1, 256, 64, 64]);
+    final feat1 = (Float32List(256 * 32 * 32), [1, 256, 32, 32]);
+
+    test('runSam 拒绝非 3·s² 输入', () async {
+      await expectLater(FakeBackend().runSam(Float32List(3 * 4 * 4 + 3), 4),
+          throwsA(isA<ArgumentError>()));
+    });
+
+    test('runGen 拒绝非 s² 灰度平面（Task 5 若传成 3·s² 必须在这炸）', () async {
+      await expectLater(
+          FakeBackend().runGen(Float32List(3 * 4 * 4), 4, feat, feat1),
+          throwsA(isA<ArgumentError>()));
+    });
+
+    test('runGen 拒绝数据/形状不一致或非 4 维的特征', () async {
+      await expectLater(
+          FakeBackend().runGen(
+              Float32List(16), 4, (Float32List(999), [1, 256, 64, 64]), feat1),
+          throwsA(isA<ArgumentError>()));
+      await expectLater(
+          FakeBackend()
+              .runGen(Float32List(16), 4, (feat.$1, [256, 64, 64]), feat1),
+          throwsA(isA<ArgumentError>()));
+    });
+
+    test('合法输入仍然通过（守卫没把 happy path 掐死）', () async {
+      final b = FakeBackend();
+      final (s0, s1) = await b.runSam(Float32List(3 * 128 * 128), 128);
+      final out = await b.runGen(Float32List(128 * 128), 128, s0, s1);
+      expect(out.length, 3 * 128 * 128);
+    });
+  });
 }

@@ -3,7 +3,10 @@
 // 绑定事实（flutter_onnxruntime 1.8.5，按 pub 缓存源码核对，非文档记忆）：
 //   · 加载：OnnxRuntime().createSession(path)（无 createSessionFromFile）
 //   · 类型：OrtSession（非 InferenceSession），有 inputNames/outputNames/close()
-//   · run() 返回 Map<String, OrtValue>（键为输出名，插入顺序＝图声明顺序）
+//   · run() 返回 Map<String, OrtValue>（键为输出名）。注意：该 Map 由原生侧 Java
+//     HashMap 灌入（FlutterOnnxruntimePlugin.kt:438），Dart 侧迭代顺序＝字符串哈希序，
+//     **不是**图声明顺序，因此输出只允许按名字取（见 pickOutputKey）。
+//     输入侧不同：session.inputNames 是 ORT 实得的声明顺序，_remapInputs 可按位置回退。
 //   · OrtValue 无 .value：数据要 await value.asFlattenedList() 取回；shape 已是 List<int>
 //   · OrtValue 持有原生张量，必须显式 dispose()，否则原生内存泄漏
 //   · 释放 session 用 close()（无 release()）
@@ -13,6 +16,7 @@
 // → rgb_pred[batch,3,h,w]。
 // 以上绑定差异只允许封闭在本文件内：OnnxBackend 的方法签名是硬约束。
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter_onnxruntime/flutter_onnxruntime.dart';
 import 'backend_api.dart';
 import 'weights.dart';
@@ -26,8 +30,93 @@ const _kSam1 = 'sam_level1';
 const _kWd14 = 'wd14_embedding';
 const _kRgbPred = 'rgb_pred';
 
-/// generator 的 feed 顺序（＝ ONNX 图声明顺序，名字漂移时按位置回退用）。
+/// generator 的 feed 顺序（＝ encoder/generator 图声明顺序，仅 `_remapInputs` 对
+/// **输入**做位置回退用；输出侧不做位置回退，原因见 pickOutputKey）。
 const _kGenFeedOrder = [_kLbw, _kSam0, _kSam1, _kWd14];
+
+/// SAM encoder 输入契约：长度必须是 3·s²（[1,3,S,S] CHW）。
+/// 真实后端与 FakeBackend 共用，保证宿主测试检验的就是真机上的那份契约。
+@visibleForTesting
+void requireSamInput(Float32List chw, int s) {
+  if (chw.length != 3 * s * s) {
+    throw ArgumentError('runSam 需要 $s²×3 浮点，实得 ${chw.length}');
+  }
+}
+
+/// generator 的 L_bw 输入契约：长度必须是 s²（[1,1,S,S] 平面，非三通道）。
+@visibleForTesting
+void requireGrayPlane(Float32List plane, int s) {
+  if (plane.length != s * s) {
+    throw ArgumentError('runGen 的 L_bw 平面需要 $s² 浮点，实得 ${plane.length}');
+  }
+}
+
+/// runSam→runGen 透传特征的一致性契约：4 维形状且元素数与数据长度一致。
+@visibleForTesting
+void requirePlanar((Float32List, List<int>) t, String label) {
+  var n = 1;
+  for (final d in t.$2) {
+    n *= d;
+  }
+  if (t.$2.length != 4 || n != t.$1.length) {
+    throw ArgumentError('$label 数据/形状不一致: ${t.$1.length} vs ${t.$2}');
+  }
+}
+
+/// 输出名解析：只按名字命中。唯一的退化条件是绑定**完全没给名字**（键数量与期望
+/// 输出 1:1 且全为空串），此时按下标取是唯一可行的选择。
+///
+/// 不做一般位置回退：run() 的 Map 由原生 Java HashMap 灌入
+/// （FlutterOnnxruntimePlugin.kt:438），迭代顺序＝字符串哈希序、不是图声明顺序，
+/// 恰恰在名字漂移的那种模型上，按位置回退会静默调换 sam_level0/1 → 错色且无异常。
+/// 返回 null 表示解析失败，调用方必须抛错（宁可崩，不可悄悄换 tensor）。
+@visibleForTesting
+String? pickOutputKey({
+  required List<String> keys,
+  required String name,
+  required int index,
+  required int expectedCount,
+}) {
+  if (keys.contains(name)) return name;
+  if (keys.length == expectedCount &&
+      index < keys.length &&
+      keys.every((k) => k.isEmpty)) {
+    return keys[index];
+  }
+  return null;
+}
+
+/// 把 `OrtValue.asFlattenedList()` 的回传收敛为 (Float32List, 不可变形状)。
+///
+/// identity 快路径：已是 Float32List 时原样返回。没有它，1024² 的 sam_level0
+/// （≈16 MB / 419 万元素）每次都要再复制一份并做 419 万次动态下标读取——
+/// Step 0 在真机上量峰值 RSS，这个常数因子直接进测量。
+@visibleForTesting
+(Float32List, List<int>) flattenToFloat32(
+    List<dynamic> raw, List<int> shape, String label) {
+  var n = 1;
+  for (final d in shape) {
+    n *= d;
+  }
+  if (raw is Float32List) {
+    if (n != raw.length) {
+      throw StateError('$label: 形状 $shape 与数据 ${raw.length} 不符');
+    }
+    return (raw, List<int>.unmodifiable(shape));
+  }
+  final data = Float32List(raw.length);
+  for (var i = 0; i < raw.length; i++) {
+    final e = raw[i];
+    if (e is! num) {
+      throw StateError('$label: 绑定回传了非数值元素 ${e.runtimeType}');
+    }
+    data[i] = e.toDouble();
+  }
+  if (n != data.length) {
+    throw StateError('$label: 形状 $shape 与数据 ${data.length} 不符');
+  }
+  return (data, List<int>.unmodifiable(shape));
+}
 
 class OrtOnnxBackend implements OnnxBackend {
   OrtOnnxBackend(this._store);
@@ -58,9 +147,7 @@ class OrtOnnxBackend implements OnnxBackend {
   Future<((Float32List, List<int>), (Float32List, List<int>))> runSam(
       Float32List chw, int s) async {
     final sam = _samLoaded();
-    if (chw.length != 3 * s * s) {
-      throw ArgumentError('runSam 需要 $s²×3 浮点，实得 ${chw.length}');
-    }
+    requireSamInput(chw, s);
     final input = await OrtValue.fromList(chw, [1, 3, s, s]);
     Map<String, OrtValue>? outputs;
     try {
@@ -68,8 +155,8 @@ class OrtOnnxBackend implements OnnxBackend {
       final names = sam.inputNames;
       if (names.isEmpty) throw StateError('encoder session 没有输入名，绑定异常');
       outputs = await sam.run({names.first: input});
-      final f0 = await _flatten(_pickOutput(outputs, _kSam0, 0), _kSam0);
-      final f1 = await _flatten(_pickOutput(outputs, _kSam1, 1), _kSam1);
+      final f0 = await _flatten(_pickOutput(outputs, _kSam0, 0, 2), _kSam0);
+      final f1 = await _flatten(_pickOutput(outputs, _kSam1, 1, 2), _kSam1);
       return ((f0.$1, f0.$2), (f1.$1, f1.$2));
     } finally {
       await input.dispose();
@@ -80,24 +167,34 @@ class OrtOnnxBackend implements OnnxBackend {
   }
 
   @override
-  Future<Float32List> runGen(Float32List grayChw, int s,
+  Future<Float32List> runGen(Float32List grayPlane, int s,
       (Float32List, List<int>) sam0, (Float32List, List<int>) sam1) async {
     final gen = _genLoaded();
-    if (grayChw.length != s * s) {
-      throw ArgumentError('runGen 的 L_bw 平面需要 $s² 浮点，实得 ${grayChw.length}');
-    }
-    _checkPlanar(sam0, _kSam0);
-    _checkPlanar(sam1, _kSam1);
-    final feed = <String, OrtValue>{
-      _kLbw: await OrtValue.fromList(grayChw, [1, 1, s, s]),
-      _kSam0: await OrtValue.fromList(sam0.$1, sam0.$2),
-      _kSam1: await OrtValue.fromList(sam1.$1, sam1.$2),
-      _kWd14: await OrtValue.fromList(Float32List(1024), [1, 1024]),
-    };
+    requireGrayPlane(grayPlane, s);
+    requirePlanar(sam0, _kSam0);
+    requirePlanar(sam1, _kSam1);
+    // feed 的构建必须在 try 内并登记每个已建 OrtValue：OrtValue.fromList 一旦把原生
+    // 张量注册进插件全局缓存（Kotlin `ortValues`），只有其 Dart 包装被 dispose 才会
+    // 移除，而 closeSession 并不清该缓存（FlutterOnnxruntimePlugin.kt:477-489）。
+    // 若第 2~4 个 fromList 抛出（真实触发：16 MB 的 sam_level0 原生 OOM），map 字面量
+    // 整体失败、feed 根本不存在，未登记的张量将活到进程结束。
+    final created = <OrtValue>[];
     Map<String, OrtValue>? outputs;
     try {
+      Future<OrtValue> make(Float32List data, List<int> shape) async {
+        final v = await OrtValue.fromList(data, shape);
+        created.add(v);
+        return v;
+      }
+
+      final feed = <String, OrtValue>{
+        _kLbw: await make(grayPlane, [1, 1, s, s]),
+        _kSam0: await make(sam0.$1, sam0.$2),
+        _kSam1: await make(sam1.$1, sam1.$2),
+        _kWd14: await make(Float32List(1024), [1, 1024]),
+      };
       outputs = await gen.run(_remapInputs(gen, feed));
-      final pred = _pickOutput(outputs, _kRgbPred, 0);
+      final pred = _pickOutput(outputs, _kRgbPred, 0, 1);
       final (chw, shape) = await _flatten(pred, _kRgbPred);
       if (shape.length != 4 ||
           shape[1] != 3 ||
@@ -107,7 +204,7 @@ class OrtOnnxBackend implements OnnxBackend {
       }
       return rgbChwToHwc(chw, s);
     } finally {
-      for (final v in feed.values) {
+      for (final v in created) {
         await v.dispose();
       }
       for (final v in outputs?.values ?? const <OrtValue>[]) {
@@ -156,16 +253,22 @@ class OrtOnnxBackend implements OnnxBackend {
   StateError _notReady() =>
       StateError('OrtOnnxBackend 未就绪：先 await load()（或 dispose() 后重新 load）');
 
-  /// 绑定返回的 Map 若缺名字（少数导出图无输出名），退化为图声明顺序下标。
-  OrtValue _pickOutput(Map<String, OrtValue> out, String name, int index) {
-    final v = out[name];
-    if (v != null) return v;
+  /// 只按名字取输出；仅当绑定完全没给名字时按声明顺序退化（见 pickOutputKey）。
+  OrtValue _pickOutput(
+      Map<String, OrtValue> out, String name, int index, int expectedCount) {
     final keys = out.keys.toList();
-    if (index < keys.length) return out[keys[index]]!;
-    throw StateError('输出缺少 $name（绑定只给出 $keys）');
+    final key = pickOutputKey(
+        keys: keys, name: name, index: index, expectedCount: expectedCount);
+    if (key == null) {
+      throw StateError('输出缺少 $name（绑定只给出 $keys；run() 的 Map 顺序来自原生 '
+          'HashMap、不是图声明顺序，禁止按位置回退）');
+    }
+    return out[key]!;
   }
 
-  /// feed 名与模型声明一致时原样下发；漂移时按图声明顺序位置回退。
+  /// feed 名与模型声明一致时原样下发；漂移时按声明顺序位置回退。
+  /// 输入侧回退是可信的：declared 来自 `session.inputNames`，即 ORT 实得的图声明顺序
+  /// （与输出侧 Java HashMap 的哈希序不同，故 runGen 的 feed 序 `_kGenFeedOrder` 成立）。
   Map<String, OrtValue> _remapInputs(OrtSession s, Map<String, OrtValue> feed) {
     final declared = s.inputNames;
     if (declared.every(feed.containsKey)) return feed;
@@ -178,35 +281,8 @@ class OrtOnnxBackend implements OnnxBackend {
     };
   }
 
-  void _checkPlanar((Float32List, List<int>) t, String label) {
-    var n = 1;
-    for (final d in t.$2) {
-      n *= d;
-    }
-    if (t.$2.length != 4 || n != t.$1.length) {
-      throw ArgumentError('$label 数据/形状不一致: ${t.$1.length} vs ${t.$2}');
-    }
-  }
-
-  Future<(Float32List, List<int>)> _flatten(OrtValue v, String label) async {
-    final raw = await v.asFlattenedList();
-    final data = Float32List(raw.length);
-    for (var i = 0; i < raw.length; i++) {
-      final e = raw[i];
-      if (e is! num) {
-        throw StateError('$label: 绑定回传了非数值元素 ${e.runtimeType}');
-      }
-      data[i] = e.toDouble();
-    }
-    var n = 1;
-    for (final d in v.shape) {
-      n *= d;
-    }
-    if (n != data.length) {
-      throw StateError('$label: 形状 ${v.shape} 与数据 ${data.length} 不符');
-    }
-    return (data, List<int>.unmodifiable(v.shape));
-  }
+  Future<(Float32List, List<int>)> _flatten(OrtValue v, String label) async =>
+      flattenToFloat32(await v.asFlattenedList(), v.shape, label);
 }
 
 /// 模型原生 `rgb_pred [1,3,S,S]` → 行优先、像素步长 3 的 RGB（值域不变）。

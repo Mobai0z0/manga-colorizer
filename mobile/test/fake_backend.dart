@@ -2,6 +2,10 @@ import 'dart:typed_data';
 import 'package:manga_colorizer_mobile/onnx/backend.dart';
 
 /// 常数场替身: 特征固定形状, rgb 输出按像素 x 左红右蓝。
+///
+/// 输入守卫与真实后端 OrtOnnxBackend 共用同一组函数（requireSamInput /
+/// requireGrayPlane / requirePlanar）：Task 5 若把缓冲尺寸算错（例如给 runGen 传
+/// 3·S² 而非 S²，或特征元组被截断），宿主测试就会炸，而不是只换到真机才失败。
 class FakeBackend implements OnnxBackend {
   /// 默认值必须是**可变**列表：`const []` 会让 `calls.add` 在 `FakeBackend()`
   /// 的默认用法下抛 UnsupportedError（计划原文即如此，Task 5 的用例必踩）。
@@ -22,6 +26,7 @@ class FakeBackend implements OnnxBackend {
   @override
   Future<((Float32List, List<int>), (Float32List, List<int>))> runSam(
       Float32List chw, int s) async {
+    requireSamInput(chw, s);
     calls.add('sam:${chw.length}');
     final a = Float32List(256 * 64 * 64)..fillRange(0, 256 * 64 * 64, 0.1);
     final b = Float32List(256 * 32 * 32)..fillRange(0, 256 * 32 * 32, 0.1);
@@ -29,10 +34,13 @@ class FakeBackend implements OnnxBackend {
   }
 
   @override
-  Future<Float32List> runGen(Float32List l, int s, (Float32List, List<int>) a,
-      (Float32List, List<int>) b) async {
+  Future<Float32List> runGen(Float32List grayPlane, int s,
+      (Float32List, List<int>) sam0, (Float32List, List<int>) sam1) async {
+    requireGrayPlane(grayPlane, s);
+    requirePlanar(sam0, 'sam0');
+    requirePlanar(sam1, 'sam1');
     if (throwOnGen) throw StateError('boom');
-    calls.add('gen:${l.length}');
+    calls.add('gen:${grayPlane.length}');
     final out = Float32List(3 * s * s);
     for (var y = 0; y < s; y++) {
       for (var x = 0; x < s; x++) {

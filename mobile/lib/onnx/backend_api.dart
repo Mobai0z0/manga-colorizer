@@ -18,12 +18,14 @@ abstract class OnnxBackend {
       Float32List chw, int s);
 
   /// 输入 S*S 灰度平面（模型侧 [1,1,S,S]，同归一化）+ [runSam] 的两级特征；
-  /// 返回 S×S、行优先、每像素 3 通道的 RGB，值域 [-1,1]（未 clip）。
+  /// 返回 S×S、行优先、每像素 3 通道的 RGB。
+  /// 后端对模型输出**既不 clip 也不反归一化**：原样透传 `rgb_pred` 的浮点值，
+  /// 值域约定（约 [-1,1]）与 `clip((y+1)*127.5)` 都由调用方负责。
   ///
   /// 注意：模型原生输出是 CHW（`rgb_pred [1,3,S,S]`），本接口刻意转成行优先 HWC
   /// 再返回，因为消费方（Task 5 的 Lab 融合）按像素遍历；转换发生在后端内部，
   /// 替身与真实后端布局一致，Task 5 无需感知。
-  Future<Float32List> runGen(Float32List grayChw, int s,
+  Future<Float32List> runGen(Float32List grayPlane, int s,
       (Float32List, List<int>) sam0, (Float32List, List<int>) sam1);
 
   /// 释放 session（空闲即释放；可重复调用）。
