@@ -11,6 +11,10 @@ dependencies:
   flutter:
     sdk: flutter
   crypto: ^3.0.3
+  # 计划原文写 ^1.4.0；本文件的绑定调用（createSession/OrtSession.close/
+  # OrtValue.asFlattenedList）与 README 的 Android 16KB 页要求均在 1.8.5 源码上
+  # 逐个核对过，故下界提到实际验证版本，避免半吊子的旧绑定被解析出来。
+  flutter_onnxruntime: ^1.8.5
   image_picker: ^1.1.2
   share_plus: ^10.0.0
   path_provider: ^2.1.4
