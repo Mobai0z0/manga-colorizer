@@ -2,8 +2,8 @@
 
 [English](getting-started.en.md) · 开发/架构见 [architecture.zh.md](architecture.zh.md) 与 [development.zh.md](development.zh.md)
 
-三条上手路径：Windows 安装包（普通用户）、Python 服务 + 浏览器工作台（无桌面环境）、
-从源码构建桌面应用（贡献者）。
+四条上手路径：Windows 安装包（普通用户）、Python 服务 + 浏览器工作台（无桌面环境）、
+从源码构建桌面应用（贡献者）、Android 应用（端侧全自动，见方式四）。
 
 ## 方式一：Windows 安装包（推荐普通用户）
 
@@ -44,6 +44,21 @@ NVIDIA CUDA 路径：`python -m pip install -r tool/colorizer_service/requiremen
 > 实测 1.24.x 的 DirectML 数值在本模型上会让背景出现彩色斑块（噪点），且首次长图分块推理
 > 易触发显存瞬时不足；1.20.1 为干净基线。1.20.x 没有 Python 3.13/3.14 wheel，GPU 路径请用
 > Python 3.10–3.12（CPU 路径 3.14 可用）。GPU 单块推理失败时该块自动回退 CPU，长图不会整体失败。
+
+## 方式四：Android 应用（端侧全自动）
+
+在 `mobile/` 下用 Flutter 从源码构建（`flutter build apk --debug`，本分支实现时验证通过），
+或等 Releases 的正式 APK。
+
+1. 安装并打开应用，切到「全自动」页签。
+2. 权重不随 APK 分发（CC BY-NC-SA），首次使用由应用内引导下载（约 300MB，一次性），
+   支持断点续传与 SHA-256 校验；manifest 内置 hf-mirror 镜像源备选（国内网络）。
+3. 就绪后选图开始全自动上色，结果可在应用内分享/保存。「提示点上色」页签不受影响，
+   无需权重、完全离线可用。
+
+设备要求：Android arm64 物理设备。端侧推理走 ONNX Runtime CPU 执行提供者（无
+GPU/NNAPI 路径），每 1024² 分块耗时与峰值内存尚未真机实测——低端设备可能较慢，
+该方式的表现与结论待实测后修订。
 
 ## 手动下载权重
 

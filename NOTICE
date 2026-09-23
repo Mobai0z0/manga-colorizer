@@ -18,3 +18,22 @@ Third-party components:
 * Python packages: fastapi, uvicorn, numpy, onnxruntime, opencv-python-headless,
   pillow, python-multipart — each under its own license (MIT/BSD/Apache unless
   noted in the package itself).
+
+* Android on-device fully-automatic colorization (mobile/) dependencies:
+
+  - flutter_onnxruntime (pub.dev) — MIT, Copyright (c) 2025 MASIC AI, per the
+    LICENSE shipped with the package.
+    https://pub.dev/packages/flutter_onnxruntime
+
+  - ONNX Runtime Android binaries pulled in by it
+    (com.microsoft.onnxruntime:onnxruntime-android) — MIT, Copyright Microsoft.
+    https://github.com/microsoft/onnxruntime
+
+  - image (pub.dev) — MIT per the LICENSE shipped with the package
+    (Copyright (c) 2013-2022 Brendan Duncan), with additional third-party
+    attributions in the package's LICENSE-other.md.
+    https://pub.dev/packages/image
+
+  - crypto (pub.dev) — BSD-3-Clause, Copyright 2015 the Dart project authors,
+    per the LICENSE shipped with the package.
+    https://pub.dev/packages/crypto

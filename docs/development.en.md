@@ -45,6 +45,10 @@ accesses it cross-origin via CORS (the sidecar binds only the loopback address).
   correspondence.
 - The service binds 127.0.0.1 with no authentication; public deployment requires your own
   reverse proxy, authentication, and TLS.
+- Android on-device fully-automatic colorization runs on the ONNX Runtime CPU execution
+  provider (no GPU/NNAPI path): per-1024²-tile runtime and peak memory on arm64 physical
+  devices are not yet measured, low-end devices may be slow, and the Step 0 device gate will
+  be filled in after real-device measurement.
 - Weights are CC BY-NC-SA: uploading to GitHub / free sharing / non-commercial integration are
   OK; paid services and ad-monetized use require separate authorization
   (see [licensing.en.md](licensing.en.md) for details).
