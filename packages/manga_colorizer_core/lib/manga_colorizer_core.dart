@@ -14,6 +14,7 @@ export 'src/checker.dart';
 export 'src/filters.dart';
 export 'src/geometry.dart' show ChromaSolver, ChromaSolution;
 export 'src/image_io.dart';
+export 'src/lab.dart';
 export 'src/palette.dart';
 export 'src/skin.dart';
 export 'src/tiling.dart';
