@@ -71,9 +71,22 @@ void main() {
     int ab(int x) =>
         (lab[(50 * w + x) * 3 + 1] - 128).abs() +
         (lab[(50 * w + x) * 3 + 2] - 128).abs();
+    // 带符号色度（相对中性 128 的偏移），用于"接缝＝平均"断言。
+    int aC(int x) => lab[(50 * w + x) * 3 + 1] - 128;
+    int bC(int x) => lab[(50 * w + x) * 3 + 2] - 128;
     expect(ab(100), greaterThan(0));
     expect((ab(100) - ab(1300)).abs(), greaterThan(0)); // 两侧色相不同
     expect(ab(896), greaterThan(0)); // 重叠区中央也被融合上色
+    // 评审加固：ab() 只看幅值，"赢者通吃"（+= 被改成 =）也能通过；
+    // 断言接缝中心的**带符号** a/b 各自严格落在纯左块(x=100)与纯右块
+    // (x=1300)观测值之间——单块直接胜出会取到区间外的端点值。
+    // 实测（probe）：左(+67,+42) 右(+52,-75) 接缝(+63,-21)，两侧余量 ≥4。
+    for (final (ch, c) in [('a', aC), ('b', bC)]) {
+      final lo = c(100) < c(1300) ? c(100) : c(1300);
+      final hi = c(100) < c(1300) ? c(1300) : c(100);
+      expect(c(896), greaterThan(lo), reason: '$ch@896 低于两侧端点＝单块胜出');
+      expect(c(896), lessThan(hi), reason: '$ch@896 高于两侧端点＝单块胜出');
+    }
     // 进度按块上报，终值 1.0
     expect(progress.length, 2);
     expect(progress.last, 1.0);
