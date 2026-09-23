@@ -78,8 +78,21 @@ class WeightsStore {
     final client = HttpClient();
     try {
       final url = mirrorPreferred(f.url) ? f.mirrorUrl : f.url;
+      // 上次进程若在写完最后一字节后、流式哈希完成前被杀死，.part 已是完整大小：
+      // 再发 `Range: bytes=<size>-` 只会收到 416 而永久卡死（桌面侧
+      // downloader.rs 对非 206 一律丢弃重开）。这里先校验并晋升，内容不对则
+      // 走下面的 416/大小不符路径整段重来。
+      if (start == f.size && start > 0 && await _shaOf(part) == f.sha256) {
+        await _promote(part, f);
+        return;
+      }
       var done =
           await _fetch(client, Uri.parse(url), part, start, f, onProgress);
+      if (done < 0) {
+        // 416：服务端不认这个 offset → 丢弃 .part 整段重来（同桌面语义）
+        await part.delete();
+        done = await _fetch(client, Uri.parse(url), part, 0, f, onProgress);
+      }
       if (done != f.size) {
         // .part 可能过期损坏：整段重下一次（唯一一次），仍不对则抛
         await part.delete();
@@ -90,19 +103,27 @@ class WeightsStore {
         }
       }
       // 流式 sha256 校验（大文件不整读进内存）
-      final digest = (await sha256.bind(part.openRead()).first).toString();
-      if (digest != f.sha256) {
+      if (await _shaOf(part) != f.sha256) {
         await part.delete();
         throw WeightsException('${f.name}: sha256 校验失败');
       }
-      final out = File(pathOf(f));
-      if (out.existsSync()) await out.delete();
-      await part.rename(out.path);
+      await _promote(part, f);
     } finally {
       client.close(force: true);
     }
   }
 
+  Future<String> _shaOf(File f) async =>
+      (await sha256.bind(f.openRead()).first).toString();
+
+  Future<void> _promote(File part, WeightFile f) async {
+    final out = File(pathOf(f));
+    if (out.existsSync()) await out.delete(); // Windows 上 rename 不覆盖已存在文件
+    await part.rename(out.path);
+  }
+
+  /// 拉取一次（可选 Range 续传）。返回完成后的 .part 大小；`-1` 表示服务端对
+  /// 该 offset 回了 416（由调用方丢弃 .part 后整段重来）。
   Future<int> _fetch(
     HttpClient client,
     Uri url,
@@ -111,24 +132,45 @@ class WeightsStore {
     WeightFile f,
     void Function(int done, int total)? onProgress,
   ) async {
-    final req = await client.getUrl(url);
-    if (start > 0) req.headers.set(HttpHeaders.rangeHeader, 'bytes=$start-');
-    final res = await req.close();
-    if (res.statusCode != 200 && res.statusCode != 206) {
-      throw WeightsException('${f.name}: HTTP ${res.statusCode}');
+    IOSink? sink;
+    try {
+      final req = await client.getUrl(url);
+      if (start > 0) req.headers.set(HttpHeaders.rangeHeader, 'bytes=$start-');
+      final res = await req.close();
+      if (res.statusCode == HttpStatus.requestedRangeNotSatisfiable) {
+        await res.drain<void>();
+        return -1;
+      }
+      if (res.statusCode != 200 && res.statusCode != 206) {
+        await res.drain<void>();
+        throw WeightsException('${f.name}: HTTP ${res.statusCode}');
+      }
+      // 206 = 续传（在 .part 后追加）；200 = 服务端忽略 Range，整段重写
+      final append = res.statusCode == 206;
+      sink = part.openWrite(mode: append ? FileMode.append : FileMode.write);
+      var done = append ? start : 0;
+      await for (final chunk in res) {
+        sink.add(chunk);
+        done += chunk.length;
+        onProgress?.call(done, f.size);
+      }
+      await sink.flush();
+      final out = sink;
+      sink = null;
+      await out.close();
+      return part.lengthSync();
+    } on WeightsException {
+      rethrow;
+    } on Object catch (e) {
+      // 传输层错误（SocketException/HttpException 等）不得逃逸本契约：Task 4/6
+      // 只按 WeightsException 处理。已收到的字节随 .part 保留在磁盘，下次调用
+      // 从该 offset 续传；原始错误文本并入 message 以便排查。
+      try {
+        await sink?.close(); // flush 已缓冲字节后落盘
+      } on Object catch (_) {
+        // 关闭失败不覆盖原始错误
+      }
+      throw WeightsException('${f.name}: 传输中断: $e');
     }
-    // 206 = 续传（在 .part 后追加）；200 = 服务端忽略 Range，整段重写
-    final append = res.statusCode == 206;
-    final sink =
-        part.openWrite(mode: append ? FileMode.append : FileMode.write);
-    var done = append ? start : 0;
-    await for (final chunk in res) {
-      sink.add(chunk);
-      done += chunk.length;
-      onProgress?.call(done, f.size);
-    }
-    await sink.flush();
-    await sink.close();
-    return part.lengthSync();
   }
 }
