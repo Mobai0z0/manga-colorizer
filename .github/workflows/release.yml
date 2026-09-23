@@ -1,10 +1,14 @@
-name: Release
+name: CI & Release
 
-# 打 tag（v*）推送到远端即自动构建并发布 GitHub Release；也支持手动触发（workflow_dispatch）。
-# 仅打 tag 时才创建 Release，手动触发只构建不发布。
+# 单一工作流承担 CI 与发布，避免两份重复的构建逻辑：
+# - push main / PR / 手动触发：仅构建验证（不发布）
+# - 推送 v* tag：构建 + 自动创建 GitHub Release 并上传产物
 on:
   push:
+    branches: [main]
     tags: ["v*"]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -69,6 +73,12 @@ jobs:
   android:
     name: Android APK (Flutter, release-signed)
     runs-on: ubuntu-latest
+    # secrets 上下文不能用于 step 级 if，先在 job 级 env 落地，再用 env.KEYSTORE_B64 判断
+    env:
+      KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      STORE_PW: ${{ secrets.ANDROID_STORE_PASSWORD }}
+      KEY_PW: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
     steps:
       - uses: actions/checkout@v4
 
@@ -88,13 +98,8 @@ jobs:
         run: flutter pub get
 
       - name: Configure release signing
-        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        if: ${{ env.KEYSTORE_B64 != '' }}
         shell: bash
-        env:
-          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          STORE_PW: ${{ secrets.ANDROID_STORE_PASSWORD }}
-          KEY_PW: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
           echo "$KEYSTORE_B64" | base64 -d > mobile/android/upload-keystore.jks
           {
