@@ -2,8 +2,9 @@
 
 [中文](getting-started.zh.md) · For the development/architecture guides see [architecture.en.md](architecture.en.md) and [development.en.md](development.en.md)
 
-Three onboarding paths: the Windows installer (regular users), the Python service + browser
-workbench (no desktop environment), and building the desktop app from source (contributors).
+Four onboarding paths: the Windows installer (regular users), the Python service + browser
+workbench (no desktop environment), building the desktop app from source (contributors), and
+the Android app (on-device fully automatic, Option 4).
 
 ## Option 1: Windows installer (recommended for regular users)
 
@@ -50,6 +51,24 @@ CUDA is unavailable the service errors out explicitly instead of silently fallin
 > shortage; 1.20.1 is a clean baseline. 1.20.x has no Python 3.13/3.14 wheels, so use
 > Python 3.10–3.12 for the GPU path (the CPU path works on 3.14). When GPU per-tile inference
 > fails, that tile automatically falls back to CPU, so long images never fail as a whole.
+
+## Option 4: Android app (on-device fully automatic)
+
+Build from source with Flutter under `mobile/` (`flutter build apk --debug`, green at
+implementation time on this branch), or wait for the official APK in Releases.
+
+1. Install and open the app, switch to the "Fully automatic" tab.
+2. Weights are not shipped inside the APK (CC BY-NC-SA); on first use the app guides you
+   through downloading them (~300 MB, one-time), with resume support and SHA-256
+   verification; the manifest carries an hf-mirror fallback source for mainland-China networks.
+3. Once ready, pick an image and start fully automatic colorization; results can be
+   shared/saved from inside the app. The "Hint colorization" tab is unaffected — it needs no
+   weights and works fully offline.
+
+Device requirement: an Android arm64 physical device. On-device inference runs on the ONNX
+Runtime CPU execution provider (no GPU/NNAPI path); per-1024²-tile runtime and peak memory
+are not yet measured on real devices — low-end devices may be slow, and the behavior and
+conclusions of this option will be revised after measurement.
 
 ## Manual weight download
 

@@ -19,7 +19,7 @@ Python sidecar (:8788, tool/colorizer_service)
 packages/manga_colorizer_core    Pure-Dart colorization engine (Levin 2004 chroma diffusion, deterministic, offline-capable)
 packages/manga_colorizer_cli     Batch colorization / three-panel comparison images / palette tools
 packages/manga_colorizer_server  Dart HTTP backend (shelf, experimental path)
-mobile/                          Flutter Android shell (calls the same Dart engine)
+mobile/                          Flutter Android shell (Dart engine + on-device fully-automatic ONNX)
 ```
 
 Feature set: fully automatic ONNX semantic colorization (SAM guidance + generator), hint-point
@@ -123,11 +123,21 @@ reproducible.
 
 ## Mobile (mobile/)
 
-A lightweight Android-side workbench (Flutter): pick an image → tap the canvas to drop hint
-points → colorize → share/save. Inference calls the pure-Dart engine `manga_colorizer_core`
-directly, running offline in an isolate, with no dependency on the desktop sidecar or any backend
-service; ONNX weights are not involved (CC BY-NC-SA constrains only the desktop/browser
-fully-automated path).
+A lightweight Android-side workbench (Flutter) with two tabs:
+
+- **Hint colorization**: pick an image → tap the canvas to drop hint points →
+  colorize → share/save. Inference calls the pure-Dart engine
+  `manga_colorizer_core` directly, running offline in an isolate, with no
+  dependency on the desktop sidecar or any backend service, and no model
+  weights needed.
+- **Fully automatic**: on-device ONNX fully-automatic colorization, with
+  pipeline semantics aligned to the desktop `/colorize_auto` — the same weight
+  pair (v6_sam_encoder + v6_generator), tile 1024 / overlap 256 linear
+  feathering, and the L channel always taken from the original gray image.
+  Weights are not shipped inside the APK (CC BY-NC-SA); they are downloaded
+  on first use inside the app, with resume support and SHA-256 verification,
+  and the manifest carries an hf-mirror fallback source for mainland-China
+  networks.
 
 ```bash
 cd mobile
@@ -136,5 +146,9 @@ flutter run            # Connect to an Android device / emulator
 flutter test           # Widget smoke tests
 ```
 
-Requires the Flutter SDK (Dart `^3.6.0`). On-device fully-automatic ONNX colorization for Android
-is a separate line of evolution and is not yet implemented in this module.
+Requires the Flutter SDK (Dart `^3.6.0`). The fully-automatic tab needs an
+Android arm64 physical device: on-device inference runs on the ONNX Runtime
+CPU execution provider (no GPU/NNAPI path); per-1024²-tile runtime and peak
+memory are not yet measured on real devices, low-end devices may be slow, and
+the gate numbers and conclusions here will be revised after real-device
+measurement.

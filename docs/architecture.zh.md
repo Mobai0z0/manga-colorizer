@@ -19,7 +19,7 @@ Python sidecar（:8788，tool/colorizer_service）
 packages/manga_colorizer_core    纯 Dart 上色引擎（Levin 2004 色度扩散，确定性，可离线）
 packages/manga_colorizer_cli     批量上色 / 三联对比图 / 色板工具
 packages/manga_colorizer_server  Dart HTTP 后端（shelf，实验路径）
-mobile/                          Flutter Android 壳（调用同款 Dart 引擎）
+mobile/                          Flutter Android 壳（Dart 引擎 + 端侧 ONNX 全自动）
 ```
 
 功能特性：全自动 ONNX 语义上色（SAM 引导 + generator）、提示点画布精修、参考图色调迁移、
@@ -113,9 +113,15 @@ dart run manga_colorizer_cli:colorize -i 原稿.png -o 输出.png --hints hints.
 
 ## 移动端（mobile/）
 
-Android 侧轻量工作台（Flutter）：选图 → 画布点按落提示点 → 上色 → 分享/保存。推理直接
-调用纯 Dart 引擎 `manga_colorizer_core`，在 isolate 中离线执行，不依赖桌面 sidecar 或
-任何后端服务；不涉及 ONNX 权重（CC BY-NC-SA 仅约束桌面/浏览器全自动路径）。
+Android 侧轻量工作台（Flutter），两个页签：
+
+- **提示点上色**：选图 → 画布点按落提示点 → 上色 → 分享/保存。推理直接调用纯 Dart
+  引擎 `manga_colorizer_core`，在 isolate 中离线执行，不依赖桌面 sidecar 或任何后端
+  服务，也不需要模型权重。
+- **全自动**：端侧 ONNX 全自动上色，管线语义对齐桌面 `/colorize_auto`——同款权重对
+  （v6_sam_encoder + v6_generator）、tile 1024 / overlap 256 线性羽化融合、L 通道
+  始终回写原稿灰度。权重不随 APK 分发（CC BY-NC-SA），首次使用时在应用内引导下载，
+  支持断点续传与 SHA-256 校验，manifest 内置 hf-mirror 镜像源备选（国内网络）。
 
 ```bash
 cd mobile
@@ -124,5 +130,6 @@ flutter run            # 连接 Android 设备 / 模拟器
 flutter test           # 控件冒烟测试
 ```
 
-要求 Flutter SDK（Dart `^3.6.0`）。Android 端侧 ONNX 全自动上色为独立演进方向，尚未在
-本模块实现。
+要求 Flutter SDK（Dart `^3.6.0`）。全自动页签需 Android arm64 物理设备：端侧推理走
+ONNX Runtime CPU 执行提供者（无 GPU/NNAPI 路径），每 1024² 分块耗时与峰值内存尚未
+真机实测，低端设备可能较慢，相关门槛与结论待实测后修订。
