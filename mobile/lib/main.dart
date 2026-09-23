@@ -11,11 +11,21 @@ import 'package:share_plus/share_plus.dart';
 
 import 'package:manga_colorizer_core/manga_colorizer_core.dart';
 
-/// 移动端工作台：选图 → 提示点上色（纯 Dart 引擎 manga_colorizer_core，
-/// 推理在 isolate 中执行，不依赖后端服务）→ 保存/分享结果。
+import 'auto_panel.dart';
+import 'onnx/auto_service.dart';
+
+/// 移动端工作台：两个页签——
+///   · 提示点：选图 → 提示点上色（纯 Dart 引擎 manga_colorizer_core，
+///     推理在 isolate 中执行，不依赖后端服务）→ 保存/分享结果；
+///   · 全自动：ONNX 端侧推理（AutoEngine 工作 isolate，见 onnx/auto_service.dart）。
 void main() => runApp(const MangaColorizerApp());
 
 const _accent = Color(0xFF2F6D5E);
+
+/// Color 通道（0..1 double）→ 8bit 整数。替代已弃用的 `.red/.green/.blue`
+/// 访问器（其弃用说明给出的等价式即 `(*.c * 255.0).round().clamp(0, 255)`；
+/// 对本应用的 8bit 调色板色二者逐值相同）。
+int _channel(double v) => (v * 255.0).round().clamp(0, 255).toInt();
 
 class MangaColorizerApp extends StatelessWidget {
   const MangaColorizerApp({super.key});
@@ -46,9 +56,13 @@ class WorkbenchPage extends StatefulWidget {
 
 enum _ViewMode { original, colorized }
 
-class _WorkbenchPageState extends State<WorkbenchPage> {
+class _WorkbenchPageState extends State<WorkbenchPage>
+    with WidgetsBindingObserver {
   final ImagePicker _picker = ImagePicker();
   final List<_HintPoint> _hints = [];
+
+  /// 「全自动」页签的常驻引擎（两页签共享；退到后台即释放模型归还内存）。
+  final AutoEngine _engine = AutoEngine();
 
   DecodedImage? _source;
   Uint8List? _sourcePng;
@@ -58,13 +72,31 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
   bool _busy = false;
   String _status = '从相册选图，或点右上角加载内置样例';
   String? _elapsed;
-  int? _lastHintCount;
 
   static const _palette = <Color>[
     Color(0xFF1E88E5), Color(0xFFE53935), Color(0xFFFDD835),
     Color(0xFF43A047), Color(0xFF8E24AA), Color(0xFFF48FB1),
     Color(0xFF6D4C41), Color(0xFF212121),
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    unawaited(_engine.shutdown());
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // spec §4 空闲释放的后台侧：退到后台立即 dispose 后端 + 回收工作 isolate。
+    if (state == AppLifecycleState.paused) unawaited(_engine.shutdown());
+  }
 
   Future<void> _loadBytes(List<int> bytes, String label) async {
     setState(() { _busy = true; _status = '读取图片…'; _resultPng = null; _hints.clear(); _mode = _ViewMode.original; });
@@ -102,9 +134,9 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
         .map((h) => ColorHint(
               x: (h.pos.dx * (src.width - 1)).round(),
               y: (h.pos.dy * (src.height - 1)).round(),
-              r: _brush == h.color ? h.color.red : h.color.red,
-              g: h.color.green,
-              b: h.color.blue,
+              r: _channel(h.color.r),
+              g: _channel(h.color.g),
+              b: _channel(h.color.b),
             ))
         .toList();
     setState(() { _busy = true; _status = '上色中（色度扩散求解，亮度完整保留）…'; });
@@ -126,7 +158,6 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       sw.stop();
       setState(() {
         _resultPng = png.bytes;
-        _lastHintCount = png.hintCount;
         _mode = _ViewMode.colorized;
         _elapsed = '${(sw.elapsedMilliseconds / 1000).toStringAsFixed(1)} s';
         _status = png.hintCount == 0
@@ -163,19 +194,31 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
   @override
   Widget build(BuildContext context) {
     final src = _source;
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Manga Colorizer'),
-        backgroundColor: Theme.of(context).colorScheme.surface,
-        actions: [
-          IconButton(onPressed: _busy ? null : _pickImage, icon: const Icon(Icons.photo_library_outlined), tooltip: '从相册选图'),
-          IconButton(onPressed: _busy ? null : _loadBundledSample, icon: const Icon(Icons.image_outlined), tooltip: '内置样例'),
-        ],
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Manga Colorizer'),
+          backgroundColor: Theme.of(context).colorScheme.surface,
+          actions: [
+            IconButton(onPressed: _busy ? null : _pickImage, icon: const Icon(Icons.photo_library_outlined), tooltip: '从相册选图'),
+            IconButton(onPressed: _busy ? null : _loadBundledSample, icon: const Icon(Icons.image_outlined), tooltip: '内置样例'),
+          ],
+          bottom: const TabBar(tabs: [
+            Tab(text: '提示点'),
+            Tab(text: '全自动'),
+          ]),
+        ),
+        body: TabBarView(children: [
+          // 页签 1：提示点（原有工作台，原样保留）。
+          Column(children: [
+            Expanded(child: src == null ? _buildEmpty() : _buildCanvas(src)),
+            _buildToolbar(),
+          ]),
+          // 页签 2：全自动（ONNX 端侧推理）。
+          AutoPanel(engine: _engine),
+        ]),
       ),
-      body: Column(children: [
-        Expanded(child: src == null ? _buildEmpty() : _buildCanvas(src)),
-        _buildToolbar(),
-      ]),
     );
   }
 
@@ -184,7 +227,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       child: Padding(
         padding: const EdgeInsets.all(32),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Icon(Icons.palette_outlined, size: 56, color: Theme.of(context).colorScheme.primary.withOpacity(0.4)),
+          Icon(Icons.palette_outlined, size: 56, color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.4)),
           const SizedBox(height: 16),
           Text(_status, textAlign: TextAlign.center, style: Theme.of(context).textTheme.bodyMedium),
           const SizedBox(height: 16),
@@ -232,7 +275,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
                     width: 18, height: 18,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      color: h.color.withOpacity(0.85),
+                      color: h.color.withValues(alpha: 0.85),
                       border: Border.all(color: Colors.white, width: 2),
                     ),
                   ),
