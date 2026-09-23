@@ -31,3 +31,9 @@ mobile/build/
 mobile/.dart_tool/
 mobile/android/.gradle/
 **/flutter_export_environment.sh
+
+# Android release signing — DO NOT COMMIT (private key + passwords)
+mobile/android/key.properties
+mobile/android/upload-keystore.jks
+mobile/android/*.jks
+mobile/android/*.keystore
