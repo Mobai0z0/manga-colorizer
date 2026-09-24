@@ -4,7 +4,7 @@
 //
 // 投递：构造注入为主（app 根 → AppShell → 各屏/AutoEngine）；对无法穿参的
 // 底层静默 catch（gallery_store、启动期）用静态 [LogBus.current] 兜底。
-// 本文件不 import 任何应用内文件，只依赖 flutter/foundation 与 log_entry。
+// 除 log_entry 外，本文件不 import 任何应用内文件，只依赖 flutter/foundation。
 //
 // level 与 tag 语义分离：level 只表达严重度（info/warning/error），供过滤与
 // 着色；tag 表达来源子系统，二者互不越界。tag 取值 startup/weights/auto/
@@ -67,7 +67,9 @@ class LogBus extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
-    current = null;
+    // 仅当自己仍是 current 时才解绑：dispose 一个已被替换的旧实例
+    // （如临时 Bus 测试结束后）不应把宿主正在使用的 Bus 置空。
+    if (current == this) current = null;
     super.dispose();
   }
 }
