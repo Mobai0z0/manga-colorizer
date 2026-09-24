@@ -1,28 +1,58 @@
-name: CI & Release
+name: Release
 
-# 单一工作流承担 CI 与发布，避免两份重复的构建逻辑：
-# - push main / PR / 手动触发：仅构建验证（不发布）
-# - 推送 v* tag：构建 + 自动创建 GitHub Release 并上传产物
+# 发布流程：打 v* 标签 = 发新版，平时不触发任何构建。
+#
+# 发版步骤（本地）：
+#   1. 统一三处版本号：src-tauri/tauri.conf.json 的 version、
+#      mobile/pubspec.yaml 的 version、本次要打的标签号（去掉 v 前缀）
+#   2. 提交代码
+#   3. 打标签并推送：git tag v0.4.1 && git push origin v0.4.1
+#   → 自动构建 Windows 安装包 + 安卓分架构 APK，并创建 GitHub Release 上传全部产物
+#
+# 注意：工作流按「标签所在提交」里的这份文件执行，调整流程后要先提交再打标签。
+# 手动触发（workflow_dispatch）只构建不发布，用于免标签试跑流水线。
 on:
   push:
-    branches: [main]
     tags: ["v*"]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: write
 
-# 修复「推 main + 推 v* tag」时同一提交触发两次并行构建的问题：
-# 用 workflow 名 + commit SHA 作为并发组，后到的运行会排队等待而非同时跑。
+# 同一 ref 重复触发时排队串行，避免并行构建互相踩
 concurrency:
-  group: ${{ github.workflow }}-${{ github.sha }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  validate:
+    name: 版本一致性检查（标签 = 桌面版 = 安卓版）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify versions match tag
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG_VER="${GITHUB_REF_NAME#v}"
+          TAURI_VER=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' src-tauri/tauri.conf.json | head -n1)
+          MOBILE_VER=$(sed -n 's/^version: *\([0-9][0-9.]*\).*/\1/p' mobile/pubspec.yaml | head -n1)
+          echo "标签=$TAG_VER 桌面端=$TAURI_VER 安卓端=$MOBILE_VER"
+          if [ -z "$TAG_VER" ] || [ -z "$TAURI_VER" ] || [ -z "$MOBILE_VER" ]; then
+            echo "::error::版本号解析失败，请检查 src-tauri/tauri.conf.json 与 mobile/pubspec.yaml 的 version 字段"
+            exit 1
+          fi
+          if [ "$TAG_VER" != "$TAURI_VER" ] || [ "$TAG_VER" != "$MOBILE_VER" ]; then
+            echo "::error::版本不一致：标签 v$TAG_VER，桌面端 $TAURI_VER，安卓端 $MOBILE_VER。请先统一三处版本号并提交，再打标签。"
+            exit 1
+          fi
+          echo "版本一致（$TAG_VER）"
+
   desktop:
     name: Windows desktop (Tauri NSIS) + sidecar
+    needs: [validate]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -61,8 +91,6 @@ jobs:
 
       - name: Build Tauri app (NSIS installer)
         uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: .
           tauriScript: tauri
@@ -77,7 +105,8 @@ jobs:
             build/sidecar-dist/manga-colorizer-sidecar.exe
 
   android:
-    name: Android APK (Flutter, release-signed)
+    name: Android APKs (Flutter, release-signed, per-ABI)
+    needs: [validate]
     runs-on: ubuntu-latest
     # secrets 上下文不能用于 step 级 if，先在 job 级 env 落地，再用 env.KEYSTORE_B64 判断
     env:
@@ -138,15 +167,16 @@ jobs:
           fi
           echo "签名自检通过（alias=$ALIAS 可读）。"
 
-      - name: Build APK (release)
+      # 按 CPU 架构分包：产出 arm64-v8a / armeabi-v7a / x86_64 三个单架构小包
+      - name: Build APKs (release, split per ABI)
         working-directory: mobile
-        run: flutter build apk --release
+        run: flutter build apk --release --split-per-abi
 
-      - name: Upload APK
+      - name: Upload APKs
         uses: actions/upload-artifact@v4
         with:
           name: android-apk
-          path: mobile/build/app/outputs/flutter-apk/app-release.apk
+          path: mobile/build/app/outputs/flutter-apk/app-*-release.apk
 
   publish:
     name: Publish GitHub Release
@@ -162,8 +192,36 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      # 关键修复：download-artifact 会保留目录层级，旧写法 files: artifacts/*
+      # 只匹配到文件夹、被发布动作按文件过滤后变成 0 个附件。
+      # 先把所有文件摊平到 release/ 并统一命名，再上传。
+      - name: Collect and rename assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find artifacts -type f -exec cp {} release/ \;
+          cd release
+          TAG="${GITHUB_REF_NAME}"
+          # Windows 安装包（NSIS 文件名带空格和版本号，统一成规范名）
+          for f in *_x64-setup.exe; do mv "$f" "MangaColorizer-${TAG}-win64-setup.exe"; done
+          # sidecar 独立版（安装包内已内置同款，供绿色安装/排查用）
+          if [ -f manga-colorizer-sidecar.exe ]; then
+            mv manga-colorizer-sidecar.exe "manga-colorizer-sidecar-${TAG}-win64.exe"
+          fi
+          # 安卓分架构 APK
+          mv app-arm64-v8a-release.apk   "MangaColorizer-${TAG}-android-arm64-v8a.apk"
+          mv app-armeabi-v7a-release.apk "MangaColorizer-${TAG}-android-armeabi-v7a.apk"
+          mv app-x86_64-release.apk      "MangaColorizer-${TAG}-android-x86_64.apk"
+          echo "== 待上传产物 =="
+          ls -la
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/*
+          files: release/*
+          fail_on_unmatched_files: true
           generate_release_notes: true
+          body: |
+            **Windows**：下载 `MangaColorizer-${{ github.ref_name }}-win64-setup.exe` 双击安装。
+            **Android**：按手机 CPU 架构下载对应 APK，绝大多数手机选 `arm64-v8a`。
