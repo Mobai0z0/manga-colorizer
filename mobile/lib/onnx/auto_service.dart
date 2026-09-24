@@ -31,10 +31,10 @@ import 'weights.dart';
 /// 后端工厂：由权重目录构造一个未 load() 的 OnnxBackend。
 typedef AutoBackendFactory = OnnxBackend Function(String weightsDir);
 
-/// 生产默认工厂：OrtOnnxBackend + WeightsStore（镜像策略固定：
-/// mirrorPreferred 恒 false＝直连主站）。
+/// 生产默认工厂：OrtOnnxBackend + WeightsStore（仅用于推理时按 pathOf 定位
+/// 已就绪权重，不参与下载选路，故下载源用默认值即可）。
 OnnxBackend ortAutoBackendFactory(String weightsDir) => OrtOnnxBackend(
-      WeightsStore(dir: Directory(weightsDir), mirrorPreferred: (u) => false),
+      WeightsStore(dir: Directory(weightsDir)),
     );
 
 /// worker 侧后端工厂。**可替换**：宿主测试在 setUp 里换成 FakeBackend 工厂

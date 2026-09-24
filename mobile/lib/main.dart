@@ -143,7 +143,10 @@ class _WorkbenchPageState extends State<WorkbenchPage>
   Future<void> _pickImage() async {
     final XFile? file = await _picker.pickImage(source: ImageSource.gallery);
     if (file == null) return;
-    await _loadBytes(await File(file.path).readAsBytes(), '已加载');
+    // 用 XFile.readAsBytes 而非 File(path).readAsBytes：部分 Android 设备上
+    // 相册返回的是 content:// URI，XFile.path 并非真实文件路径，直接 File()
+    // 读取会失败；readAsBytes 经平台通道解析该 URI。
+    await _loadBytes(await file.readAsBytes(), '已加载');
   }
 
   Future<void> _loadBundledSample() async {
