@@ -26,10 +26,10 @@ void main() {
     expect(bus.entries.first.level, LogLevel.info);
   });
 
-  // 图库入库在无法穿参的回调深处经 LogBus.current 投递降级日志：这条写入能
-  // 落进应用根自己的总线，当且仅当 initState 已先把该指针置入。若置入被挪
-  // 到异步加载之后（挪进取决于加载完成的回调、或挪进 _loadSettings 的尾部），
-  // 下方取到的指针为 null、或降级写入无处投递，本用例即红。
+  // 图库入库在无法穿参的回调深处经 LogBus.current 投递降级日志：本用例只在
+  // pumpWidget（一帧）之后取指针并断言降级写入落进应用根的总线，锁定的是
+  // 「指针在首帧结束前已置入、且指向应用根持有的那个总线」。若 initState
+  // 不再置入指针或置入其他实例，下方取到 null 或写入落不进根总线，即红。
   testWidgets('gallery 降级写入经静态指针落进应用根的总线', (tester) async {
     LogBus.current = null;
     await tester.pumpWidget(const MangaColorizerApp());
