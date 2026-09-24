@@ -1,5 +1,6 @@
-// 应用根：持有 SettingsController 与 GalleryStore 及主题装配（含 DynamicColorBuilder
-// 的 Material You 动态取色分支），home 为多页壳 AppShell。
+// 应用根：持有 SettingsController、GalleryStore、LogBus（端侧运行日志唯一真源）
+// 及主题装配（含 DynamicColorBuilder 的 Material You 动态取色分支），
+// home 为多页壳 AppShell。
 import 'dart:async';
 import 'dart:io';
 
@@ -10,6 +11,7 @@ import 'package:path_provider/path_provider.dart';
 import 'app_settings.dart';
 import 'app_theme.dart';
 import 'gallery/gallery_store.dart';
+import 'logs/log_bus.dart';
 import 'shell/app_shell.dart';
 
 /// 设置目录：应用私有存储下的 manga-light-colorizer（与权重目录同名同址，
@@ -32,14 +34,19 @@ class _MangaColorizerAppState extends State<MangaColorizerApp> {
   /// 端侧图库唯一真源：解析到设置目录后 attachDir + load，透传给各屏。
   final GalleryStore _gallery = GalleryStore();
 
+  /// 端侧运行日志唯一真源：进程内环形缓冲，随应用根同生命周期。
+  final LogBus _logs = LogBus();
+
   @override
   void initState() {
     super.initState();
+    LogBus.current = _logs; // 早于 _loadSettings，令启动埋点有处可写。
     unawaited(_loadSettings());
   }
 
   /// 启动读取磁盘设置；path_provider 不可用（如宿主测试）时静默保留默认值。
   Future<void> _loadSettings() async {
+    _logs.info('startup', '应用启动');
     try {
       final dir = await appSettingsDir();
       _controller.attachBase(dir);
@@ -48,8 +55,9 @@ class _MangaColorizerAppState extends State<MangaColorizerApp> {
       // 与 attachBase 传同一基目录，账本/图片落在其 gallery 子目录。
       _gallery.attachDir(dir);
       await _gallery.load();
-    } on Object {
+    } on Object catch (e) {
       // 无法解析/读取设置目录：以内存默认值继续，不阻塞启动。
+      _logs.error('startup', '加载设置/图库目录失败：$e');
     }
   }
 
@@ -71,7 +79,8 @@ class _MangaColorizerAppState extends State<MangaColorizerApp> {
               darkTheme: dyn && darkDynamic != null
                   ? ThemeData(useMaterial3: true, colorScheme: darkDynamic)
                   : buildAppTheme(s.themePreset, Brightness.dark),
-              home: AppShell(controller: _controller, gallery: _gallery),
+              home: AppShell(
+                  controller: _controller, gallery: _gallery, logs: _logs),
             );
           },
         );

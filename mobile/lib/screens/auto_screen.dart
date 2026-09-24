@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import '../app_settings.dart';
 import '../gallery/gallery_store.dart';
+import '../logs/log_bus.dart';
 import '../onnx/auto_service.dart';
 import '../shell/screen_chrome.dart';
 import '../auto_panel.dart';
@@ -14,11 +15,15 @@ class AutoScreen extends StatefulWidget {
     super.key,
     required this.controller,
     required this.gallery,
+    required this.logs,
   });
   final SettingsController controller;
 
   /// 端侧图库：全自动成功后由 AutoTab 回调触发非阻塞入库。
   final GalleryStore gallery;
+
+  /// 端侧运行日志总线：由应用根持有并下发，本屏只透传不释放。
+  final LogBus logs;
 
   @override
   State<AutoScreen> createState() => _AutoScreenState();
