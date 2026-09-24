@@ -34,6 +34,8 @@ class LogBus extends ChangeNotifier {
   void error(String tag, String message) => _append(LogLevel.error, tag, message);
 
   /// 清空可见记录，但 seq 计数不复位以保持跨清空的单调性。
+  /// 仅供测试重置：运行日志控制台按设计不提供清空入口。
+  @visibleForTesting
   void clear() {
     if (_ring.isEmpty) return;
     _ring.clear();
