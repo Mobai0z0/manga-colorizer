@@ -1,8 +1,8 @@
-// OnnxBackend 契约测试：Task 5 的管线只吃这个抽象，本文件把「替身必须满足的语义」
+// OnnxBackend 契约测试：端侧管线只吃这个抽象，本文件把「替身必须满足的语义」
 // 钉死（数据长度与形状一致、runGen 输出为行优先、像素步长 3 的 RGB、值域 [-1,1]），
-// 这样 Task 5 测试里 FakeBackend 与真实 OrtOnnxBackend 的输出布局保持一致。
+// 这样管线测试里 FakeBackend 与真实 OrtOnnxBackend 的输出布局保持一致。
 // 真实后端在本机不执行任何 ORT 调用（无设备/无原生库）：只验证类型可用性与
-// 纯 Dart 的 CHW→HWC 归一化布局，它正是真实后端返回给 Task 5 的那份缓冲。
+// 纯 Dart 的 CHW→HWC 归一化布局，它正是真实后端返回给管线的那份缓冲。
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
@@ -140,7 +140,7 @@ void main() {
     });
 
     test('名字缺失但键非空 → null（调用方抛错），绝不按位置拿错 tensor', () {
-      // 这是评审指出的静默错色路径：旧实现会返回 keys[0]，把 level1 当 level0。
+      // 这是必须堵死的静默错色路径：按位置回退会返回 keys[0]，把 level1 当 level0。
       expect(
           pickOutputKey(
               keys: ['output__0_add_1', 'output__1_add_1'],
@@ -213,7 +213,7 @@ void main() {
           throwsA(isA<ArgumentError>()));
     });
 
-    test('runGen 拒绝非 s² 灰度平面（Task 5 若传成 3·s² 必须在这炸）', () async {
+    test('runGen 拒绝非 s² 灰度平面（尺寸传成 3·s² 必须在这炸）', () async {
       await expectLater(
           FakeBackend().runGen(Float32List(3 * 4 * 4), 4, feat, feat1),
           throwsA(isA<ArgumentError>()));

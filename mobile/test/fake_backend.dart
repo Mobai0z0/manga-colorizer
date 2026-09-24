@@ -4,11 +4,11 @@ import 'package:manga_colorizer_mobile/onnx/backend.dart';
 /// 常数场替身: 特征固定形状, rgb 输出按像素 x 左红右蓝。
 ///
 /// 输入守卫与真实后端 OrtOnnxBackend 共用同一组函数（requireSamInput /
-/// requireGrayPlane / requirePlanar）：Task 5 若把缓冲尺寸算错（例如给 runGen 传
+/// requireGrayPlane / requirePlanar）：管线若把缓冲尺寸算错（例如给 runGen 传
 /// 3·S² 而非 S²，或特征元组被截断），宿主测试就会炸，而不是只换到真机才失败。
 class FakeBackend implements OnnxBackend {
-  /// 默认值必须是**可变**列表：`const []` 会让 `calls.add` 在 `FakeBackend()`
-  /// 的默认用法下抛 UnsupportedError（计划原文即如此，Task 5 的用例必踩）。
+  /// 默认值必须是**可变**列表：换成 `const []` 会让最常见的 `FakeBackend()`
+  /// 默认用法在第一次 `calls.add` 就抛 UnsupportedError，全部管线用例连坐。
   FakeBackend({List<String>? calls}) : calls = calls ?? [];
   final List<String> calls;
   bool throwOnGen = false;

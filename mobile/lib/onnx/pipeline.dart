@@ -95,7 +95,7 @@ Future<Uint8List> _inferPatch(
     Uint8List patch, int pw, int ph, int infer, OnnxBackend b) async {
   // image 包 Interpolation.average：目标像素＝源像素整数窗口均值，
   // 与 cv2 INTER_AREA 同族（非整数比例时 cv2 按面积加权、这里有微小出入，
-  // 计划定版接受：真机对拍门槛在 Step 0/T0，而非宿主语义测试）。
+  // 属已知偏差：像素级对拍归并后真机验收清单，宿主语义测试不覆盖该差异）。
   // 注意 fromBytes 对传入缓冲做 Uint8List.view——必须先复制出独立缓冲，
   // 不让 Image 与调用方共享 patch（可能本身是别的缓冲的视图）。
   final src = imglib.Image.fromBytes(
@@ -131,7 +131,7 @@ Future<Uint8List> _inferPatch(
   final big = imglib.copyResize(mid,
       width: pw,
       height: ph,
-      // 计划写 catmullRom（4.3 的枚举名）；workspace 解析到 4.10.1，同名核
+      // image 4.3 的枚举名 catmullRom 在 4.10（本 workspace 解析到的 4.10.1）
       // 改叫 Interpolation.cubic（getPixelCubic＝0.5 系数 Catmull-Rom，
       // 与 cv2 INTER_CUBIC 同族 Keys 三次卷积，a=-0.5 vs -0.75）。
       interpolation: imglib.Interpolation.cubic);

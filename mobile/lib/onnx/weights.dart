@@ -1,8 +1,10 @@
 // 权重仓储：首启下载（Range 断点续传 + sha256 校验）。权重 CC BY-NC-SA 4.0，
-// 不随 APK 分发，由使用者自行下载；镜像站 hf-mirror 供国内网络直连。
+// 不随 APK 分发，由使用者自行下载；清单中的 hf-mirror 镜像地址为预留，
+// 当前版本固定从主站下载。
 import 'dart:io';
 import 'package:crypto/crypto.dart';
 
+/// 单个权重文件的清单条目（大小/哈希/URL 均为逐字定值，改动即视同换版本）。
 class WeightFile {
   const WeightFile({
     required this.name,
@@ -11,13 +13,24 @@ class WeightFile {
     required this.url,
     required this.mirrorUrl,
   });
+
+  /// 文件名，同时是权重目录下的落盘名。
   final String name;
+
+  /// 精确字节数：就绪探测与下载进度 total 都以此为准（不打开文件算哈希）。
   final int size;
+
+  /// 小写十六进制 sha256，下载完成后流式校验，通过才晋升为正式文件。
   final String sha256;
+
+  /// 主站（huggingface.co）resolve 直链。
   final String url;
+
+  /// 镜像站（hf-mirror.com）直链——当前版本仅作预留，不参与选路。
   final String mirrorUrl;
 }
 
+/// 端侧全自动模式需要的两个权重（generator + SAM encoder），合计约 300 MB。
 const kWeightFiles = <WeightFile>[
   WeightFile(
     name: 'v6_generator.onnx',
@@ -39,6 +52,8 @@ const kWeightFiles = <WeightFile>[
   ),
 ];
 
+/// 权重仓储的唯一对外异常类型：HTTP 非 2xx、传输中断（折叠原始错误文本）、
+/// 大小不符、sha256 校验失败都只以它出现，调用方无需感知底层异常。
 class WeightsException implements Exception {
   WeightsException(this.message);
   final String message;
@@ -46,18 +61,29 @@ class WeightsException implements Exception {
   String toString() => 'WeightsException: $message';
 }
 
+/// 权重仓储：在 [dir] 下管理 [kWeightFiles] 的就绪探测与断点续传下载。
+/// 不读不写内存缓存，状态全部以磁盘上的正式文件 / `<name>.part` 为准。
 class WeightsStore {
   WeightsStore({required this.dir, required this.mirrorPreferred});
+
+  /// 权重目录（应用私有存储路径，[download] 时按需创建）。
   final Directory dir;
+
+  /// 对主站 URL 是否优先改走镜像；生产恒 false（直连 huggingface.co），
+  /// 镜像地址仅作为清单预留字段。
   final bool Function(String url) mirrorPreferred;
 
+  /// 权重文件的落盘路径（不校验存在性）。
   String pathOf(WeightFile f) => '${dir.path}/${f.name}';
 
+  /// 单个文件是否就绪：存在且字节数 == [WeightFile.size]。
+  /// 只看大小、不校验哈希（哈希在 [download] 收尾做）。
   bool readyFor(WeightFile f) {
     final x = File(pathOf(f));
     return x.existsSync() && x.lengthSync() == f.size;
   }
 
+  /// [kWeightFiles] 是否全部就绪（逐项 [readyFor]）。
   Future<bool> get ready async {
     for (final f in kWeightFiles) {
       if (!readyFor(f)) return false;
@@ -65,6 +91,11 @@ class WeightsStore {
     return true;
   }
 
+  /// 下载单个权重到 [pathOf]，可续传且幂等：
+  /// 半截进度落 `<name>.part`，带 `Range: bytes=<offset>-` 续传；服务端回
+  /// 416 或收尾大小不符 → 丢弃 .part 整段重来（至多一次）；流式 sha256
+  /// 校验通过后 rename **晋升**为正式文件（先删同名旧档），失败则删 .part
+  /// 并抛 [WeightsException]，正式文件永不会出现半截状态。
   Future<void> download(
     WeightFile f, {
     void Function(int done, int total)? onProgress,
@@ -162,9 +193,10 @@ class WeightsStore {
     } on WeightsException {
       rethrow;
     } on Object catch (e) {
-      // 传输层错误（SocketException/HttpException 等）不得逃逸本契约：Task 4/6
-      // 只按 WeightsException 处理。已收到的字节随 .part 保留在磁盘，下次调用
-      // 从该 offset 续传；原始错误文本并入 message 以便排查。
+      // 传输层错误（SocketException/HttpException 等）不得逃逸本契约：调用方
+      // （下载 UI / isolate 服务）只按 WeightsException 处理。已收到的字节随
+      // .part 保留在磁盘，下次调用从该 offset 续传；原始错误文本并入 message
+      // 以便排查。
       try {
         await sink?.close(); // flush 已缓冲字节后落盘
       } on Object catch (_) {

@@ -1,6 +1,7 @@
-// ONNX 推理层的抽象出口：Task 5 的管线与 Task 6 的 isolate 服务只依赖本文件，
-// flutter_onnxruntime 的绑定差异全部封闭在同目录的 backend.dart 里（宿主测试用
-// test/fake_backend.dart 替身驱动，永不触碰真实 ORT）。
+// ONNX 推理层的抽象出口：端侧管线（pipeline.dart）与 isolate 服务
+// （auto_service.dart）只依赖本文件，flutter_onnxruntime 的绑定差异全部封闭在
+// 同目录的 backend.dart 里（宿主测试用 test/fake_backend.dart 替身驱动，
+// 永不触碰真实 ORT）。
 import 'dart:typed_data';
 
 /// 两 session（SAM encoder → generator）的最小推理后端契约。
@@ -23,8 +24,8 @@ abstract class OnnxBackend {
   /// 值域约定（约 [-1,1]）与 `clip((y+1)*127.5)` 都由调用方负责。
   ///
   /// 注意：模型原生输出是 CHW（`rgb_pred [1,3,S,S]`），本接口刻意转成行优先 HWC
-  /// 再返回，因为消费方（Task 5 的 Lab 融合）按像素遍历；转换发生在后端内部，
-  /// 替身与真实后端布局一致，Task 5 无需感知。
+  /// 再返回，因为消费方（管线的 Lab 融合）按像素遍历；转换发生在后端内部，
+  /// 替身与真实后端布局一致，管线层无需感知。
   Future<Float32List> runGen(Float32List grayPlane, int s,
       (Float32List, List<int>) sam0, (Float32List, List<int>) sam1);
 
@@ -32,7 +33,9 @@ abstract class OnnxBackend {
   Future<void> dispose();
 }
 
-/// 用户取消导致的中断信号（管线/服务在检查到取消后抛出或返回）。
+/// 预留的取消契约信号：当前管线的取消语义是**返回 null**（见 autoColorize），
+/// 本类型今天不会被管线抛出——保留它是为未来需要显式区分"取消 vs 失败"的
+/// 消费方，属于契约的一部分，删除前须同步审视整条调用链。
 class OnnxCancelled implements Exception {
   const OnnxCancelled();
 
