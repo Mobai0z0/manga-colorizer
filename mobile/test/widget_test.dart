@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:manga_colorizer_mobile/app_settings.dart';
 import 'package:manga_colorizer_mobile/auto_panel.dart';
 import 'package:manga_colorizer_mobile/main.dart';
 import 'package:manga_colorizer_mobile/onnx/auto_service.dart';
@@ -62,6 +63,7 @@ void main() {
           home: Scaffold(
             body: AutoTab(
               engine: AutoEngine(),
+              controller: SettingsController(AppSettings.defaults(), base: dir),
               resolveDir: () async => dir,
               downloadOne: downloadOne,
             ),

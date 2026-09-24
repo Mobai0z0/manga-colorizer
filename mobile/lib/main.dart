@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
 
+import 'package:dynamic_color/dynamic_color.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:image_picker/image_picker.dart';
@@ -11,8 +12,11 @@ import 'package:share_plus/share_plus.dart';
 
 import 'package:manga_colorizer_core/manga_colorizer_core.dart';
 
+import 'app_settings.dart';
+import 'app_theme.dart';
 import 'auto_panel.dart';
 import 'onnx/auto_service.dart';
+import 'settings_sheet.dart';
 
 /// 移动端工作台：两个页签——
 ///   · 提示点：选图 → 提示点上色（纯 Dart 引擎 manga_colorizer_core，
@@ -20,23 +24,68 @@ import 'onnx/auto_service.dart';
 ///   · 全自动：ONNX 端侧推理（AutoEngine 工作 isolate，见 onnx/auto_service.dart）。
 void main() => runApp(const MangaColorizerApp());
 
-const _accent = Color(0xFF2F6D5E);
-
 /// Color 通道（0..1 double）→ 8bit 整数。替代已弃用的 `.red/.green/.blue`
 /// 访问器（其弃用说明给出的等价式即 `(*.c * 255.0).round().clamp(0, 255)`；
 /// 对本应用的 8bit 调色板色二者逐值相同）。
 int _channel(double v) => (v * 255.0).round().clamp(0, 255).toInt();
 
-class MangaColorizerApp extends StatelessWidget {
+/// 设置目录：应用私有存储下的 manga-light-colorizer（与权重目录同名同址，
+/// settings.json 与权重落同一处）。
+Future<Directory> appSettingsDir() async {
+  final base = await getApplicationSupportDirectory();
+  return Directory('${base.path}${Platform.pathSeparator}manga-light-colorizer');
+}
+
+class MangaColorizerApp extends StatefulWidget {
   const MangaColorizerApp({super.key});
 
   @override
+  State<MangaColorizerApp> createState() => _MangaColorizerAppState();
+}
+
+class _MangaColorizerAppState extends State<MangaColorizerApp> {
+  final SettingsController _controller = SettingsController(AppSettings.defaults());
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadSettings());
+  }
+
+  /// 启动读取磁盘设置；path_provider 不可用（如宿主测试）时静默保留默认值。
+  Future<void> _loadSettings() async {
+    try {
+      final dir = await appSettingsDir();
+      _controller.attachBase(dir);
+      _controller.update(AppSettings.load(dir));
+    } on Object {
+      // 无法解析/读取设置目录：以内存默认值继续，不阻塞启动。
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final scheme = ColorScheme.fromSeed(seedColor: _accent);
-    return MaterialApp(
-      title: 'Manga Colorizer',
-      theme: ThemeData(colorScheme: scheme, useMaterial3: true),
-      home: const WorkbenchPage(),
+    return ListenableBuilder(
+      listenable: _controller,
+      builder: (context, _) {
+        final s = _controller.settings;
+        return DynamicColorBuilder(
+          builder: (lightDynamic, darkDynamic) {
+            final dyn = s.themePreset == ThemePreset.dynamic;
+            return MaterialApp(
+              title: 'Manga Colorizer',
+              themeMode: s.themeMode.themeMode,
+              theme: dyn && lightDynamic != null
+                  ? ThemeData(useMaterial3: true, colorScheme: lightDynamic)
+                  : buildAppTheme(s.themePreset, Brightness.light),
+              darkTheme: dyn && darkDynamic != null
+                  ? ThemeData(useMaterial3: true, colorScheme: darkDynamic)
+                  : buildAppTheme(s.themePreset, Brightness.dark),
+              home: WorkbenchPage(controller: _controller),
+            );
+          },
+        );
+      },
     );
   }
 }
@@ -48,7 +97,10 @@ class _HintPoint {
 }
 
 class WorkbenchPage extends StatefulWidget {
-  const WorkbenchPage({super.key});
+  const WorkbenchPage({super.key, required this.controller});
+
+  /// 全局设置控制器（主题 + 下载源），由 [MangaColorizerApp] 持有并下发。
+  final SettingsController controller;
 
   @override
   State<WorkbenchPage> createState() => _WorkbenchPageState();
@@ -249,6 +301,10 @@ class _WorkbenchPageState extends State<WorkbenchPage>
                 onPressed: _busy ? null : _loadBundledSample,
                 icon: const Icon(Icons.image_outlined),
                 tooltip: '内置样例'),
+          IconButton(
+              onPressed: () => showAppSettings(context, widget.controller),
+              icon: const Icon(Icons.settings_outlined),
+              tooltip: '设置'),
         ],
         bottom: TabBar(
           controller: _tabs,
@@ -265,7 +321,7 @@ class _WorkbenchPageState extends State<WorkbenchPage>
           _buildToolbar(),
         ]),
         // 页签 2：全自动（ONNX 端侧推理）。
-        AutoPanel(engine: _engine),
+        AutoPanel(engine: _engine, controller: widget.controller),
       ]),
     );
   }
