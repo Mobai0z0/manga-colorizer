@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 import '../app_settings.dart';
 import '../gallery/gallery_store.dart';
+import '../logs/log_bus.dart';
 import '../screens/auto_screen.dart';
 import '../screens/colorize_screen.dart';
 import '../screens/gallery_screen.dart';
@@ -37,7 +38,8 @@ class _AppShellState extends State<AppShell> {
           ColorizeScreen(controller: widget.controller, gallery: widget.gallery),
           AutoScreen(controller: widget.controller, gallery: widget.gallery),
           GalleryScreen(controller: widget.controller, gallery: widget.gallery),
-          LogsScreen(controller: widget.controller),
+          // Task 4 会把这里的临时 LogBus() 换成注入实例。
+          LogsScreen(controller: widget.controller, logs: LogBus()),
         ],
       ),
       bottomNavigationBar: NavigationBar(
