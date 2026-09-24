@@ -1,8 +1,19 @@
 // 权重仓储：首启下载（Range 断点续传 + sha256 校验）。权重 CC BY-NC-SA 4.0，
-// 不随 APK 分发，由使用者自行下载；清单中的 hf-mirror 镜像地址为预留，
-// 当前版本固定从主站下载。
+// 不随 APK 分发，由使用者自行下载；下载源可选主站/镜像/自动（自动=主站失败回退镜像）。
 import 'dart:io';
 import 'package:crypto/crypto.dart';
+
+/// 权重下载源选择。
+enum DownloadSource {
+  /// 优先主站（huggingface.co），传输失败自动回退镜像（hf-mirror.com）。
+  auto,
+
+  /// 仅走主站，不回退。
+  primary,
+
+  /// 仅走镜像。
+  mirror,
+}
 
 /// 单个权重文件的清单条目（大小/哈希/URL 均为逐字定值，改动即视同换版本）。
 class WeightFile {
@@ -26,7 +37,7 @@ class WeightFile {
   /// 主站（huggingface.co）resolve 直链。
   final String url;
 
-  /// 镜像站（hf-mirror.com）直链——当前版本仅作预留，不参与选路。
+  /// 镜像站（hf-mirror.com）直链——`auto` 回退与 `mirror` 源使用。
   final String mirrorUrl;
 }
 
@@ -61,17 +72,16 @@ class WeightsException implements Exception {
   String toString() => 'WeightsException: $message';
 }
 
-/// 权重仓储：在 [dir] 下管理 [kWeightFiles] 的就绪探测与断点续传下载。
+/// 权重仓储：在 [dir] 下按 [source] 管理 [kWeightFiles] 的就绪探测与断点续传下载。
 /// 不读不写内存缓存，状态全部以磁盘上的正式文件 / `<name>.part` 为准。
 class WeightsStore {
-  WeightsStore({required this.dir, required this.mirrorPreferred});
+  WeightsStore({required this.dir, this.source = DownloadSource.auto});
 
   /// 权重目录（应用私有存储路径，[download] 时按需创建）。
   final Directory dir;
 
-  /// 对主站 URL 是否优先改走镜像；生产恒 false（直连 huggingface.co），
-  /// 镜像地址仅作为清单预留字段。
-  final bool Function(String url) mirrorPreferred;
+  /// 下载源策略，见 [DownloadSource]。
+  final DownloadSource source;
 
   /// 权重文件的落盘路径（不校验存在性）。
   String pathOf(WeightFile f) => '${dir.path}/${f.name}';
@@ -91,57 +101,89 @@ class WeightsStore {
     return true;
   }
 
+  /// 按 [source] 得到候选 URL 的尝试顺序；主站与镜像相同则去重。
+  List<String> _urlsFor(WeightFile f) {
+    switch (source) {
+      case DownloadSource.primary:
+        return [f.url];
+      case DownloadSource.mirror:
+        return [f.mirrorUrl];
+      case DownloadSource.auto:
+        return f.url == f.mirrorUrl ? [f.url] : [f.url, f.mirrorUrl];
+    }
+  }
+
   /// 下载单个权重到 [pathOf]，可续传且幂等：
   /// 半截进度落 `<name>.part`，带 `Range: bytes=<offset>-` 续传；服务端回
   /// 416 或收尾大小不符 → 丢弃 .part 整段重来（至多一次）；流式 sha256
-  /// 校验通过后 rename **晋升**为正式文件（先删同名旧档），失败则删 .part
-  /// 并抛 [WeightsException]，正式文件永不会出现半截状态。
+  /// 校验通过后 rename **晋升**为正式文件（先删同名旧档），失败则删 .part。
+  /// [source] 为 auto 时，前一个 URL 传输失败会以剩余 .part 续传改试下一个 URL，
+  /// 仅当所有候选 URL 都失败才抛出最后一个 [WeightsException]。
   Future<void> download(
     WeightFile f, {
     void Function(int done, int total)? onProgress,
   }) async {
+    final urls = _urlsFor(f);
+    for (var i = 0; i < urls.length; i++) {
+      final client = HttpClient();
+      try {
+        await _downloadFrom(client, Uri.parse(urls[i]), f, onProgress);
+        return;
+      } on WeightsException {
+        if (i == urls.length - 1) rethrow;
+        // 尚有候选 URL（auto 回退）：静默切到下一个。传输中断时 .part 已保留，
+        // 下一轮从中续传；若上一轮因大小/sha 失败，_downloadFrom 已删 .part，
+        // 下一轮从 0 整段重下。
+      } finally {
+        client.close(force: true);
+      }
+    }
+  }
+
+  /// 用单个 [url] 完成一次下载尝试（含完整大小 .part 的晋升短路）。
+  /// 成功即晋升并返回；任何契约内失败以 [WeightsException] 抛出，且已按语义
+  /// 处理 .part（保留以便续传，或丢弃以便整段重来）。
+  Future<void> _downloadFrom(
+    HttpClient client,
+    Uri url,
+    WeightFile f,
+    void Function(int done, int total)? onProgress,
+  ) async {
     final part = File('${pathOf(f)}.part');
     var start = part.existsSync() ? part.lengthSync() : 0;
     if (start > f.size) {
       await part.delete();
       start = 0;
     }
-    final client = HttpClient();
-    try {
-      final url = mirrorPreferred(f.url) ? f.mirrorUrl : f.url;
-      // 上次进程若在写完最后一字节后、流式哈希完成前被杀死，.part 已是完整大小：
-      // 再发 `Range: bytes=<size>-` 只会收到 416 而永久卡死（桌面侧
-      // downloader.rs 对非 206 一律丢弃重开）。这里先校验并晋升，内容不对则
-      // 走下面的 416/大小不符路径整段重来。
-      if (start == f.size && start > 0 && await _shaOf(part) == f.sha256) {
-        await _promote(part, f);
-        return;
-      }
-      var done =
-          await _fetch(client, Uri.parse(url), part, start, f, onProgress);
-      if (done < 0) {
-        // 416：服务端不认这个 offset → 丢弃 .part 整段重来（同桌面语义）
-        await part.delete();
-        done = await _fetch(client, Uri.parse(url), part, 0, f, onProgress);
-      }
-      if (done != f.size) {
-        // .part 可能过期损坏：整段重下一次（唯一一次），仍不对则抛
-        await part.delete();
-        done = await _fetch(client, Uri.parse(url), part, 0, f, onProgress);
-        if (done != f.size) {
-          await part.delete();
-          throw WeightsException('${f.name}: 大小 $done != ${f.size}');
-        }
-      }
-      // 流式 sha256 校验（大文件不整读进内存）
-      if (await _shaOf(part) != f.sha256) {
-        await part.delete();
-        throw WeightsException('${f.name}: sha256 校验失败');
-      }
+    // 上次进程若在写完最后一字节后、流式哈希完成前被杀死，.part 已是完整大小：
+    // 再发 `Range: bytes=<size>-` 只会收到 416 而永久卡死（桌面侧
+    // downloader.rs 对非 206 一律丢弃重开）。这里先校验并晋升，内容不对则
+    // 走下面的 416/大小不符路径整段重来。
+    if (start == f.size && start > 0 && await _shaOf(part) == f.sha256) {
       await _promote(part, f);
-    } finally {
-      client.close(force: true);
+      return;
     }
+    var done = await _fetch(client, url, part, start, f, onProgress);
+    if (done < 0) {
+      // 416：服务端不认这个 offset → 丢弃 .part 整段重来（同桌面语义）
+      await part.delete();
+      done = await _fetch(client, url, part, 0, f, onProgress);
+    }
+    if (done != f.size) {
+      // .part 可能过期损坏：整段重下一次（唯一一次），仍不对则抛
+      await part.delete();
+      done = await _fetch(client, url, part, 0, f, onProgress);
+      if (done != f.size) {
+        await part.delete();
+        throw WeightsException('${f.name}: 大小 $done != ${f.size}');
+      }
+    }
+    // 流式 sha256 校验（大文件不整读进内存）
+    if (await _shaOf(part) != f.sha256) {
+      await part.delete();
+      throw WeightsException('${f.name}: sha256 校验失败');
+    }
+    await _promote(part, f);
   }
 
   Future<String> _shaOf(File f) async =>

@@ -74,7 +74,9 @@ void main() {
     }
   });
 
-  WeightsStore store() => WeightsStore(dir: dir, mirrorPreferred: (_) => false);
+  // 既有分块/续传用例的主站与镜像 URL 相同（见 setUp 的 f），auto 会去重为单
+  // URL，故与旧的"仅主站"语义逐字节一致；显式用 primary 更贴合意图。
+  WeightsStore store() => WeightsStore(dir: dir, source: DownloadSource.primary);
   File partFile() => File('${dir.path}/gen.onnx.part');
   File finalFile() => File(store().pathOf(f));
 
@@ -166,5 +168,52 @@ void main() {
         mirrorUrl: f.mirrorUrl);
     await expectLater(store().download(bad), throwsA(isA<WeightsException>()));
     expect(partFile().existsSync(), isFalse);
+  });
+
+  // 返回 500 的故障服务器：任何请求都以非 2xx 结束，触发下载器的传输失败路径。
+  Future<HttpServer> errorServer() async {
+    final s = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    s.listen((req) async {
+      req.response.statusCode = HttpStatus.internalServerError;
+      await req.response.close();
+    });
+    return s;
+  }
+  String urlOf(HttpServer s) => 'http://127.0.0.1:${s.port}/gen.onnx';
+  String goodUrl() => 'http://127.0.0.1:${server.port}/gen.onnx';
+  WeightFile fileWith({required String primary, required String mirror}) =>
+      WeightFile(
+          name: 'gen.onnx',
+          size: payload.length,
+          sha256: sha,
+          url: primary,
+          mirrorUrl: mirror);
+
+  test('auto：主站 500 → 自动回退镜像成功并晋升', () async {
+    final bad = await errorServer();
+    addTearDown(() => bad.close(force: true));
+    final f2 = fileWith(primary: urlOf(bad), mirror: goodUrl());
+    final autoStore =
+        WeightsStore(dir: dir, source: DownloadSource.auto);
+    await autoStore.download(f2);
+    expect(finalFile().readAsBytesSync(), payload);
+    expect(autoStore.readyFor(f2), isTrue);
+    expect(partFile().existsSync(), isFalse);
+  });
+
+  test('primary 源只连主站：主站故障即失败，不回退镜像', () async {
+    final bad = await errorServer();
+    addTearDown(() => bad.close(force: true));
+    final f2 = fileWith(primary: urlOf(bad), mirror: goodUrl());
+    final s = WeightsStore(dir: dir, source: DownloadSource.primary);
+    await expectLater(s.download(f2), throwsA(isA<WeightsException>()));
+  });
+
+  test('mirror 源只连镜像：镜像故障即失败，不回退主站', () async {
+    final bad = await errorServer();
+    addTearDown(() => bad.close(force: true));
+    final f2 = fileWith(primary: goodUrl(), mirror: urlOf(bad));
+    final s = WeightsStore(dir: dir, source: DownloadSource.mirror);
+    await expectLater(s.download(f2), throwsA(isA<WeightsException>()));
   });
 }

@@ -50,7 +50,13 @@ void main() {
     late Directory dir;
 
     setUp(() => dir = Directory.systemTemp.createTempSync('mc-weights'));
-    tearDown(() => dir.deleteSync(recursive: true));
+    tearDown(() {
+      try {
+        dir.deleteSync(recursive: true);
+      } on FileSystemException catch (_) {
+        // Windows 上句柄可能尚未释放，清理失败不影响断言。
+      }
+    });
 
     Widget tab({DownloadOne? downloadOne}) => MaterialApp(
           home: Scaffold(
@@ -104,6 +110,24 @@ void main() {
       expect(downloaded, kWeightFiles.map((f) => f.name).toList());
       expect(find.text('下载权重(~300MB)'), findsNothing);
       expect(find.textContaining('权重就绪'), findsOneWidget);
+    });
+
+    testWidgets('下载源选择器：切到仅镜像 → 标签更新并落盘 settings.json',
+        (tester) async {
+      await tester.pumpWidget(tab());
+      await tester.pumpAndSettle();
+
+      expect(find.text('下载源：自动（推荐）'), findsOneWidget);
+      await tester.tap(find.text('下载源：自动（推荐）'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.textContaining('仅镜像'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('下载源：仅镜像 (hf-mirror.com)'), findsOneWidget);
+      final saved =
+          File('${dir.path}/settings.json').readAsStringSync();
+      expect(saved, contains('mirror'));
     });
   });
 

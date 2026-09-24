@@ -15,6 +15,7 @@ import 'package:share_plus/share_plus.dart';
 
 import 'onnx/auto_service.dart';
 import 'onnx/weights.dart';
+import 'app_settings.dart';
 
 /// 单文件下载的注入接缝：默认走 WeightsStore.download（真实网络），
 /// 宿主测试替换成假下载器（测试不得访问真实网络）。
@@ -68,6 +69,7 @@ class _AutoTabState extends State<AutoTab> {
   bool _weightsMissing = true;
   Directory? _dir;
   WeightsStore? _store;
+  DownloadSource _source = DownloadSource.auto;
 
   bool _busy = false;
   bool _downloading = false;
@@ -98,12 +100,14 @@ class _AutoTabState extends State<AutoTab> {
   Future<void> _init() async {
     try {
       final dir = await (widget.resolveDir ?? _appWeightsDir)();
-      final store = WeightsStore(dir: dir, mirrorPreferred: (u) => false);
+      final settings = AppSettings.load(dir);
+      final store = WeightsStore(dir: dir, source: settings.downloadSource);
       final ok = await store.ready;
       if (!mounted) return;
       setState(() {
         _checking = false;
         _dir = dir;
+        _source = settings.downloadSource;
         _store = store;
         _weightsMissing = !ok;
         _status = ok ? '权重就绪。' : '权重未下载，请先看下方说明。';
@@ -118,6 +122,61 @@ class _AutoTabState extends State<AutoTab> {
       });
     }
   }
+
+  /// 切换下载源：立即以新 [source] 重建 store 并重绘（选择即时生效），并同步落盘。
+  void _applySource(DownloadSource source) {
+    final dir = _dir;
+    if (dir == null || !mounted) return;
+    setState(() {
+      _source = source;
+      _store = WeightsStore(dir: dir, source: source);
+    });
+    try {
+      dir.createSync(recursive: true);
+      AppSettings(downloadSource: source).saveSync(dir);
+    } on Object catch (_) {
+      // 写盘失败不影响本次会话的选择（目录/存储异常时静默降级）。
+    }
+  }
+
+  Future<void> _pickSource() async {
+    final chosen = await showDialog<DownloadSource>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('模型下载源'),
+        children: [
+          RadioGroup<DownloadSource>(
+            groupValue: _source,
+            onChanged: (v) => Navigator.of(ctx).pop(v),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (final s in DownloadSource.values)
+                  RadioListTile<DownloadSource>(
+                    value: s,
+                    title: Text(_sourceLabel(s)),
+                    subtitle: Text(_sourceHint(s)),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+    if (chosen != null && chosen != _source) _applySource(chosen);
+  }
+
+  static String _sourceLabel(DownloadSource s) => switch (s) {
+        DownloadSource.auto => '自动（推荐）',
+        DownloadSource.primary => '仅主站 (huggingface.co)',
+        DownloadSource.mirror => '仅镜像 (hf-mirror.com)',
+      };
+
+  static String _sourceHint(DownloadSource s) => switch (s) {
+        DownloadSource.auto => '主站优先，失败自动改走镜像续传',
+        DownloadSource.primary => '国内网络通常无法直连，可能失败',
+        DownloadSource.mirror => '直连镜像站，不经主站',
+      };
 
   Future<void> _download() async {
     final store = _store;
@@ -189,7 +248,9 @@ class _AutoTabState extends State<AutoTab> {
       _status = '读取图片…';
     });
     try {
-      final bytes = await File(file.path).readAsBytes();
+      // readAsBytes 而非 File(path)：相册 content:// URI 在部分设备上
+      // XFile.path 不是真实文件路径，须经平台通道解析。
+      final bytes = await file.readAsBytes();
       final decoded = await Isolate.run(() {
         final d = MangaImageIO.decodeGrayscale(bytes);
         final n = d.width * d.height;
@@ -291,6 +352,15 @@ class _AutoTabState extends State<AutoTab> {
       padding: const EdgeInsets.all(16),
       children: [
         Text(_status, style: Theme.of(context).textTheme.bodyMedium),
+        const SizedBox(height: 4),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(
+            onPressed: _busy ? null : _pickSource,
+            icon: const Icon(Icons.tune),
+            label: Text('下载源：${_sourceLabel(_source)}'),
+          ),
+        ),
         const SizedBox(height: 12),
         if (!_checking && _weightsMissing) ..._guide(context, totalMb),
         if (!_weightsMissing && !_checking) ..._ready(context),

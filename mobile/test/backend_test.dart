@@ -75,8 +75,7 @@ void main() {
 
     setUp(() async {
       dir = await Directory.systemTemp.createTemp('backend');
-      backend =
-          OrtOnnxBackend(WeightsStore(dir: dir, mirrorPreferred: (_) => false));
+      backend = OrtOnnxBackend(WeightsStore(dir: dir));
     });
 
     tearDown(() => dir.deleteSync(recursive: true));
