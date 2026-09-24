@@ -1,7 +1,8 @@
 // 端侧图库唯一真源：账本 gallery.jsonl（一行一条 GalleryEntry）+ 平铺图片文件。
 // 每次成功上色/全自动经 add() 非阻塞入库；删除经 delete() 逐项移除。
-// 所有磁盘 IO 失败一律静默降级（绝不打断调用方，如上色屏）；add/delete 经内部
-// Future 链串行化，避免并发写账本相互覆盖。dir 由宿主异步解析后 attachDir 注入
+// 所有磁盘 IO 失败一律降级、绝不打断调用方（如上色屏），仅经 [LogBus.current]
+// 记一条运行日志供事后排查；add/delete 经内部 Future 链串行化，避免并发写账本
+// 相互覆盖。dir 由宿主异步解析后 attachDir 注入
 // （宿主测试可直接传入临时目录，绕开 path_provider）。
 import 'dart:convert';
 import 'dart:io';
@@ -11,6 +12,7 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as img;
 
+import '../logs/log_bus.dart';
 import 'gallery_entry.dart';
 
 /// 软上限：超过仅提示用户手动清理，绝不自动删除。
@@ -81,7 +83,8 @@ class GalleryStore extends ChangeNotifier {
     }
   }
 
-  /// 非阻塞入库：写三文件 + 追账本 + 更新缓存 + 广播。任何 IO 失败静默吞掉。
+  /// 非阻塞入库：写三文件 + 追账本 + 更新缓存 + 广播。
+  /// 任何 IO 失败只记运行日志、绝不向调用方抛出。
   Future<void> add({
     required Uint8List resultPng,
     required Uint8List sourcePng,
@@ -130,7 +133,10 @@ class GalleryStore extends ChangeNotifier {
       await File(pathOf(resultFile)).writeAsBytes(resultPng, flush: true);
       await File(pathOf(sourceFile)).writeAsBytes(sourcePng, flush: true);
       final thumb = _makeThumb(resultPng);
-      if (thumb == null) return; // 无法编码缩略图则整条不入库（保持一致）
+      if (thumb == null) {
+        LogBus.current?.warn('gallery', '缩略图编码失败，本条未入库');
+        return; // 无法编码缩略图则整条不入库（保持一致）
+      }
       await File(pathOf(thumbFile)).writeAsBytes(thumb, flush: true);
       final entry = GalleryEntry(
         id: id,
@@ -149,7 +155,8 @@ class GalleryStore extends ChangeNotifier {
           '${jsonEncode(entry.toJson())}\n', mode: FileMode.append, flush: true);
       _chronological.add(entry);
       notifyListeners();
-    } on Object {
+    } on Object catch (e) {
+      LogBus.current?.error('gallery', '入库失败：$e');
       // 入库失败静默：上色结果照常展示。
     }
   }
@@ -174,7 +181,8 @@ class GalleryStore extends ChangeNotifier {
           .join();
       await File(tmpPath).writeAsString(rewritten, flush: true);
       await File(tmpPath).rename(_ledger.path);
-    } on Object {
+    } on Object catch (e) {
+      LogBus.current?.warn('gallery', '账本重写降级：$e');
       // 账本重写失败：内存已删，下次 load 以磁盘为准可能复活，可接受降级。
     }
     for (final e in target) {

@@ -158,6 +158,8 @@ void main() {
       final pos = consolePosition(tester);
       expect(pos.maxScrollExtent - pos.pixels, lessThan(40),
           reason: '前置条件：距底不足 40px');
+      expect(pos.maxScrollExtent - pos.pixels, greaterThan(0),
+          reason: '前置条件：30px 拖动确实离开了底部');
       logs.warn('auto', 'NEAR_TAIL');
       await tester.pump();
       await tester.pumpAndSettle();
