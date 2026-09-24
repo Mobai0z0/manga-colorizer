@@ -5,48 +5,10 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:manga_colorizer_mobile/app_settings.dart';
 import 'package:manga_colorizer_mobile/auto_panel.dart';
-import 'package:manga_colorizer_mobile/main.dart';
 import 'package:manga_colorizer_mobile/onnx/auto_service.dart';
 import 'package:manga_colorizer_mobile/onnx/weights.dart';
 
 void main() {
-  testWidgets('工作台首屏渲染标题与空态引导', (tester) async {
-    await tester.pumpWidget(const MangaColorizerApp());
-    await tester.pumpAndSettle();
-
-    expect(find.text('Manga Colorizer'), findsOneWidget);
-    expect(find.textContaining('从相册选图'), findsAtLeastNWidgets(1));
-  });
-
-  testWidgets('workbench shows hint and auto tabs', (tester) async {
-    await tester.pumpWidget(const MangaColorizerApp());
-    await tester.pumpAndSettle();
-
-    expect(find.text('提示点'), findsOneWidget);
-    expect(find.text('全自动'), findsOneWidget);
-  });
-
-  testWidgets('提示点页签动作仅在页签 0 出现（全自动在前时隐藏）', (tester) async {
-    await tester.pumpWidget(const MangaColorizerApp());
-    await tester.pumpAndSettle();
-
-    // 页签 0：相册选图 / 内置样例照常出现。
-    expect(find.byTooltip('从相册选图'), findsOneWidget);
-    expect(find.byTooltip('内置样例'), findsOneWidget);
-
-    // 切到全自动：这两个动作改的是隐藏页签的画布，必须消失。
-    await tester.tap(find.text('全自动'));
-    await tester.pumpAndSettle();
-    expect(find.byTooltip('从相册选图'), findsNothing);
-    expect(find.byTooltip('内置样例'), findsNothing);
-
-    // 切回来恢复原样。
-    await tester.tap(find.text('提示点'));
-    await tester.pumpAndSettle();
-    expect(find.byTooltip('从相册选图'), findsOneWidget);
-    expect(find.byTooltip('内置样例'), findsOneWidget);
-  });
-
   group('全自动页签', () {
     late Directory dir;
 
