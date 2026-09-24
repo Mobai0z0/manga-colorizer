@@ -1,4 +1,4 @@
-// 首页：hero + 四张直达功能卡 + 关于/许可。E-壳的对齐入口（spec §6）。
+// 首页：hero + 四张直达功能卡 + 关于/许可，作为壳层导航各目的地的对齐入口。
 import 'package:flutter/material.dart';
 import '../app_settings.dart';
 import '../shell/destinations.dart';
