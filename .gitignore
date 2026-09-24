@@ -32,6 +32,9 @@ mobile/.dart_tool/
 mobile/android/.gradle/
 **/flutter_export_environment.sh
 
+# superpowers 本地开发文档（spec/plan 仅评审与计划输入，不纳入仓库）
+docs/superpowers/
+
 # Android release signing — DO NOT COMMIT (private key + passwords)
 mobile/android/key.properties
 mobile/android/upload-keystore.jks
