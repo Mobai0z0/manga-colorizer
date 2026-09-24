@@ -14,6 +14,12 @@ on:
 permissions:
   contents: write
 
+# 修复「推 main + 推 v* tag」时同一提交触发两次并行构建的问题：
+# 用 workflow 名 + commit SHA 作为并发组，后到的运行会排队等待而非同时跑。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.sha }}
+  cancel-in-progress: false
+
 jobs:
   desktop:
     name: Windows desktop (Tauri NSIS) + sidecar
@@ -122,6 +128,15 @@ jobs:
             echo "storeFile=upload-keystore.jks"
           } > mobile/android/key.properties
           echo "签名配置已写入（alias=$ALIAS）。"
+          # 签名自检：用给定 store/key 密码立即验证能读出该别名，
+          # 避免跑完 4 分钟 gradle 才在 packageRelease 报 "Failed to read key ... : null"
+          KT="$JAVA_HOME/bin/keytool"
+          if [ ! -x "$KT" ]; then KT=keytool; fi
+          if ! "$KT" -list -alias "$ALIAS" -keystore "$KS" -storepass "$STORE_PW" -keypass "$KEY_PW" >/dev/null 2>&1; then
+            echo "::error::签名自检失败：用 ANDROID_STORE_PASSWORD / ANDROID_KEY_PASSWORD 读不出别名 '$ALIAS'。请确认 4 个 secret 来自同一份 keystore（base64、store 密码、key 密码、alias 必须一致）。"
+            exit 1
+          fi
+          echo "签名自检通过（alias=$ALIAS 可读）。"
 
       - name: Build APK (release)
         working-directory: mobile
