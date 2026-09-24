@@ -14,6 +14,13 @@ int _gamma(double c) {
   return (v.clamp(0.0, 1.0) * 255).round();
 }
 
+/// sRGB(8bit) → Lab(D65)，逐值对齐 cv2.COLOR_RGB2LAB 的 8bit 打包语义：
+/// L 按 **0..100 缩放存成 0..255**，a/b 为真实值 **+128 偏置** 后四舍五入并
+/// 截断到 0..255；[rgb]/返回值为行优先 n*3 字节，[n] 是**像素数**（非字节数）。
+///
+/// 注意：8bit Lab 是对饱和色的有损编码（色度出域会被截断），与 [labToRgb]
+/// 的完整往返存在量化地板误差（cv2 自家往返实测同量级）——对拍结论与容差
+/// 依据见本包 `test/goldens/` 金样与 `test/lab_test.dart`。
 Uint8List rgbToLab(Uint8List rgb, int n) {
   final out = Uint8List(n * 3);
   for (var i = 0; i < n; i++) {
@@ -31,6 +38,10 @@ Uint8List rgbToLab(Uint8List rgb, int n) {
   return out;
 }
 
+/// [rgbToLab] 的逆变换，对齐 cv2.COLOR_LAB2RGB 的 8bit 语义：L 按 /255*100
+/// 还原，a/b 减 128 偏置；[lab] 为行优先 n*3 字节，[n] 是像素数。
+/// 与正向同为逐值对拍金样（单步差 ≤2 判对齐，见 `test/lab_test.dart`）；
+/// 经 8bit Lab 的完整往返有损，勿按逐比特一致对待。
 Uint8List labToRgb(Uint8List lab, int n) {
   final out = Uint8List(n * 3);
   for (var i = 0; i < n; i++) {

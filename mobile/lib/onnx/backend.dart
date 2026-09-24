@@ -90,7 +90,7 @@ String? pickOutputKey({
 ///
 /// identity 快路径：已是 Float32List 时原样返回。没有它，1024² 的 sam_level0
 /// （≈16 MB / 419 万元素）每次都要再复制一份并做 419 万次动态下标读取——
-/// Step 0 在真机上量峰值 RSS，这个常数因子直接进测量。
+/// 真机验收要量峰值 RSS，这个常数因子直接进测量。
 @visibleForTesting
 (Float32List, List<int>) flattenToFloat32(
     List<dynamic> raw, List<int> shape, String label) {
