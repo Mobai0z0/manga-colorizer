@@ -101,13 +101,27 @@ jobs:
         if: ${{ env.KEYSTORE_B64 != '' }}
         shell: bash
         run: |
-          echo "$KEYSTORE_B64" | base64 -d > mobile/android/upload-keystore.jks
+          set -euo pipefail
+          # 用 printf 而非 echo，避免 base64 中特殊字符被解释
+          printf '%s' "$KEYSTORE_B64" | base64 -d > mobile/android/upload-keystore.jks
+          KS=mobile/android/upload-keystore.jks
+          if [ ! -s "$KS" ]; then
+            echo "::error::解码后的 keystore 为空，ANDROID_KEYSTORE_BASE64 secret 无效（可能为空或不是正确的 base64）"
+            exit 1
+          fi
+          # 魔数校验：PKCS12 以 30 82 开头，JKS 以 fe ed fe ed 开头
+          MAGIC=$(head -c 2 "$KS" | od -An -tx1 | tr -d ' \n')
+          if [ "$MAGIC" != "3082" ] && [ "$MAGIC" != "feed" ]; then
+            echo "::error::解码后的 keystore 格式无法识别（magic=$MAGIC）。请用 .jks/.p12 文件重新导出 ANDROID_KEYSTORE_BASE64"
+            exit 1
+          fi
           {
             echo "storePassword=$STORE_PW"
             echo "keyPassword=$KEY_PW"
             echo "keyAlias=$ALIAS"
             echo "storeFile=upload-keystore.jks"
           } > mobile/android/key.properties
+          echo "签名配置已写入（alias=$ALIAS）。"
 
       - name: Build APK (release)
         working-directory: mobile
