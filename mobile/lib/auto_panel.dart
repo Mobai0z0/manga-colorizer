@@ -23,6 +23,14 @@ import 'app_settings.dart';
 typedef DownloadOne = Future<void> Function(
     WeightFile f, void Function(int done, int total) onProgress);
 
+/// 全自动成功回调：把结果/原图交给外部（图库入库），不在此 import store。
+typedef AutoOnCompleted = void Function({
+  required Uint8List resultPng,
+  required Uint8List sourcePng,
+  required int width,
+  required int height,
+});
+
 /// 下载进度节流：`WeightsStore.download` 按**网络分块**触发 onProgress，逐条
 /// setState 会拖垮 UI。只在整百分比前进时返回新值；total<=0 或百分比未前进
 /// 返回 null（不重绘）。
@@ -43,6 +51,7 @@ class AutoTab extends StatefulWidget {
     required this.controller,
     this.resolveDir,
     this.downloadOne,
+    this.onCompleted,
   });
 
   final AutoEngine engine;
@@ -54,6 +63,9 @@ class AutoTab extends StatefulWidget {
   /// （与桌面 weights 布局同名）；测试注入临时目录（path_provider 在宿主测试不可用）。
   final Future<Directory> Function()? resolveDir;
   final DownloadOne? downloadOne;
+
+  /// 全自动成功回调：成功产出结果 PNG 后把结果/原图交给外部（图库入库）。
+  final AutoOnCompleted? onCompleted;
 
   @override
   State<AutoTab> createState() => _AutoTabState();
@@ -310,6 +322,11 @@ class _AutoTabState extends State<AutoTab> {
         _resultPng = png;
         _status = '完成。可预览或分享。';
       });
+      final src = _sourcePng;
+      if (src != null) {
+        widget.onCompleted?.call(
+            resultPng: png, sourcePng: src, width: w, height: h);
+      }
     } on Object catch (e) {
       if (mounted) setState(() => _status = '全自动失败：$e');
     } finally {

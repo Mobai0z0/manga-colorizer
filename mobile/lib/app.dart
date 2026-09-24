@@ -1,5 +1,5 @@
-// 应用根：持有 SettingsController 与主题装配（含 DynamicColorBuilder 的 Material You
-// 动态取色分支），home 为多页壳 AppShell。
+// 应用根：持有 SettingsController 与 GalleryStore 及主题装配（含 DynamicColorBuilder
+// 的 Material You 动态取色分支），home 为多页壳 AppShell。
 import 'dart:async';
 import 'dart:io';
 
@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'app_settings.dart';
 import 'app_theme.dart';
+import 'gallery/gallery_store.dart';
 import 'shell/app_shell.dart';
 
 /// 设置目录：应用私有存储下的 manga-light-colorizer（与权重目录同名同址，
@@ -28,6 +29,9 @@ class MangaColorizerApp extends StatefulWidget {
 class _MangaColorizerAppState extends State<MangaColorizerApp> {
   final SettingsController _controller = SettingsController(AppSettings.defaults());
 
+  /// 端侧图库唯一真源：解析到设置目录后 attachDir + load，透传给各屏。
+  final GalleryStore _gallery = GalleryStore();
+
   @override
   void initState() {
     super.initState();
@@ -40,6 +44,10 @@ class _MangaColorizerAppState extends State<MangaColorizerApp> {
       final dir = await appSettingsDir();
       _controller.attachBase(dir);
       _controller.update(AppSettings.load(dir));
+      // dir = .../manga-light-colorizer；store 内部再拼 gallery 子目录，
+      // 与 attachBase 传同一基目录，账本/图片落在其 gallery 子目录。
+      _gallery.attachDir(dir);
+      await _gallery.load();
     } on Object {
       // 无法解析/读取设置目录：以内存默认值继续，不阻塞启动。
     }
@@ -63,7 +71,7 @@ class _MangaColorizerAppState extends State<MangaColorizerApp> {
               darkTheme: dyn && darkDynamic != null
                   ? ThemeData(useMaterial3: true, colorScheme: darkDynamic)
                   : buildAppTheme(s.themePreset, Brightness.dark),
-              home: AppShell(controller: _controller),
+              home: AppShell(controller: _controller, gallery: _gallery),
             );
           },
         );
