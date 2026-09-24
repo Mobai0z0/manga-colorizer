@@ -57,9 +57,13 @@ class WorkbenchPage extends StatefulWidget {
 enum _ViewMode { original, colorized }
 
 class _WorkbenchPageState extends State<WorkbenchPage>
-    with WidgetsBindingObserver {
+    with WidgetsBindingObserver, SingleTickerProviderStateMixin {
   final ImagePicker _picker = ImagePicker();
   final List<_HintPoint> _hints = [];
+
+  /// 页签控制器：AppBar 的相册选图/内置样例动作只作用于提示点页签的画布，
+  /// 需据此在其它页签隐藏（见 build）。
+  late final TabController _tabs = TabController(length: 2, vsync: this);
 
   /// 「全自动」页签的常驻引擎（两页签共享；退到后台即释放模型归还内存）。
   final AutoEngine _engine = AutoEngine();
@@ -74,36 +78,56 @@ class _WorkbenchPageState extends State<WorkbenchPage>
   String? _elapsed;
 
   static const _palette = <Color>[
-    Color(0xFF1E88E5), Color(0xFFE53935), Color(0xFFFDD835),
-    Color(0xFF43A047), Color(0xFF8E24AA), Color(0xFFF48FB1),
-    Color(0xFF6D4C41), Color(0xFF212121),
+    Color(0xFF1E88E5),
+    Color(0xFFE53935),
+    Color(0xFFFDD835),
+    Color(0xFF43A047),
+    Color(0xFF8E24AA),
+    Color(0xFFF48FB1),
+    Color(0xFF6D4C41),
+    Color(0xFF212121),
   ];
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _tabs.addListener(_onTabChanged);
   }
 
   @override
   void dispose() {
+    _tabs.removeListener(_onTabChanged);
+    _tabs.dispose();
     WidgetsBinding.instance.removeObserver(this);
     unawaited(_engine.shutdown());
     super.dispose();
   }
 
+  /// 切页签要重绘 AppBar actions（提示点动作仅在页签 0 出现）。
+  void _onTabChanged() {
+    if (mounted) setState(() {});
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // spec §4 空闲释放的后台侧：退到后台立即 dispose 后端 + 回收工作 isolate。
+    // 空闲释放的后台侧：退到后台立即 dispose 后端 + 回收工作 isolate。
     if (state == AppLifecycleState.paused) unawaited(_engine.shutdown());
   }
 
   Future<void> _loadBytes(List<int> bytes, String label) async {
-    setState(() { _busy = true; _status = '读取图片…'; _resultPng = null; _hints.clear(); _mode = _ViewMode.original; });
+    setState(() {
+      _busy = true;
+      _status = '读取图片…';
+      _resultPng = null;
+      _hints.clear();
+      _mode = _ViewMode.original;
+    });
     try {
-      final decoded = await Isolate.run(() => MangaImageIO.decodeGrayscale(bytes));
-      final png = await Isolate.run(() =>
-          MangaImageIO.encodePng(rgb: decoded.rgb, width: decoded.width, height: decoded.height));
+      final decoded =
+          await Isolate.run(() => MangaImageIO.decodeGrayscale(bytes));
+      final png = await Isolate.run(() => MangaImageIO.encodePng(
+          rgb: decoded.rgb, width: decoded.width, height: decoded.height));
       setState(() {
         _source = decoded;
         _sourcePng = png;
@@ -124,7 +148,9 @@ class _WorkbenchPageState extends State<WorkbenchPage>
 
   Future<void> _loadBundledSample() async {
     final bytes = await rootBundle.load('assets/sample_bw.png');
-    await _loadBytes(bytes.buffer.asUint8List(bytes.offsetInBytes, bytes.lengthInBytes), '内置样例已加载');
+    await _loadBytes(
+        bytes.buffer.asUint8List(bytes.offsetInBytes, bytes.lengthInBytes),
+        '内置样例已加载');
   }
 
   Future<void> _colorize() async {
@@ -139,7 +165,10 @@ class _WorkbenchPageState extends State<WorkbenchPage>
               b: _channel(h.color.b),
             ))
         .toList();
-    setState(() { _busy = true; _status = '上色中（色度扩散求解，亮度完整保留）…'; });
+    setState(() {
+      _busy = true;
+      _status = '上色中（色度扩散求解，亮度完整保留）…';
+    });
     final sw = Stopwatch()..start();
     try {
       final png = await Isolate.run(() {
@@ -150,7 +179,8 @@ class _WorkbenchPageState extends State<WorkbenchPage>
           hints: hints,
         );
         return (
-          bytes: MangaImageIO.encodePng(rgb: result.rgb, width: result.width, height: result.height),
+          bytes: MangaImageIO.encodePng(
+              rgb: result.rgb, width: result.width, height: result.height),
           iterations: result.iterations,
           hintCount: result.hintCount,
         );
@@ -176,7 +206,8 @@ class _WorkbenchPageState extends State<WorkbenchPage>
     if (png == null) return;
     try {
       final dir = await getTemporaryDirectory();
-      final f = File('${dir.path}/colorized_${DateTime.now().millisecondsSinceEpoch}.png');
+      final f = File(
+          '${dir.path}/colorized_${DateTime.now().millisecondsSinceEpoch}.png');
       await f.writeAsBytes(png);
       await Share.shareXFiles([XFile(f.path)], text: 'Manga Colorizer 上色结果');
     } catch (e) {
@@ -187,38 +218,52 @@ class _WorkbenchPageState extends State<WorkbenchPage>
   Rect _imageRect(Size box, int iw, int ih) {
     final a = iw / ih;
     var w = box.width, h = box.width / a;
-    if (h > box.height) { h = box.height; w = h * a; }
+    if (h > box.height) {
+      h = box.height;
+      w = h * a;
+    }
     return Rect.fromLTWH((box.width - w) / 2, (box.height - h) / 2, w, h);
   }
 
   @override
   Widget build(BuildContext context) {
     final src = _source;
-    return DefaultTabController(
-      length: 2,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('Manga Colorizer'),
-          backgroundColor: Theme.of(context).colorScheme.surface,
-          actions: [
-            IconButton(onPressed: _busy ? null : _pickImage, icon: const Icon(Icons.photo_library_outlined), tooltip: '从相册选图'),
-            IconButton(onPressed: _busy ? null : _loadBundledSample, icon: const Icon(Icons.image_outlined), tooltip: '内置样例'),
-          ],
-          bottom: const TabBar(tabs: [
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Manga Colorizer'),
+        backgroundColor: Theme.of(context).colorScheme.surface,
+        // 「相册选图 / 内置样例」经 _loadBytes 改写的是提示点页签的画布
+        // （清提示点、切预览态）——全自动页签在前时这两个动作会静默改
+        // 隐藏页签的状态，故仅在页签 0 显示。
+        actions: [
+          if (_tabs.index == 0)
+            IconButton(
+                onPressed: _busy ? null : _pickImage,
+                icon: const Icon(Icons.photo_library_outlined),
+                tooltip: '从相册选图'),
+          if (_tabs.index == 0)
+            IconButton(
+                onPressed: _busy ? null : _loadBundledSample,
+                icon: const Icon(Icons.image_outlined),
+                tooltip: '内置样例'),
+        ],
+        bottom: TabBar(
+          controller: _tabs,
+          tabs: const [
             Tab(text: '提示点'),
             Tab(text: '全自动'),
-          ]),
+          ],
         ),
-        body: TabBarView(children: [
-          // 页签 1：提示点（原有工作台，原样保留）。
-          Column(children: [
-            Expanded(child: src == null ? _buildEmpty() : _buildCanvas(src)),
-            _buildToolbar(),
-          ]),
-          // 页签 2：全自动（ONNX 端侧推理）。
-          AutoPanel(engine: _engine),
-        ]),
       ),
+      body: TabBarView(controller: _tabs, children: [
+        // 页签 1：提示点（原有工作台，原样保留）。
+        Column(children: [
+          Expanded(child: src == null ? _buildEmpty() : _buildCanvas(src)),
+          _buildToolbar(),
+        ]),
+        // 页签 2：全自动（ONNX 端侧推理）。
+        AutoPanel(engine: _engine),
+      ]),
     );
   }
 
@@ -227,11 +272,19 @@ class _WorkbenchPageState extends State<WorkbenchPage>
       child: Padding(
         padding: const EdgeInsets.all(32),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Icon(Icons.palette_outlined, size: 56, color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.4)),
+          Icon(Icons.palette_outlined,
+              size: 56,
+              color:
+                  Theme.of(context).colorScheme.primary.withValues(alpha: 0.4)),
           const SizedBox(height: 16),
-          Text(_status, textAlign: TextAlign.center, style: Theme.of(context).textTheme.bodyMedium),
+          Text(_status,
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodyMedium),
           const SizedBox(height: 16),
-          OutlinedButton.icon(onPressed: _busy ? null : _loadBundledSample, icon: const Icon(Icons.image_outlined), label: const Text('加载内置样例试试')),
+          OutlinedButton.icon(
+              onPressed: _busy ? null : _loadBundledSample,
+              icon: const Icon(Icons.image_outlined),
+              label: const Text('加载内置样例试试')),
         ]),
       ),
     );
@@ -249,14 +302,18 @@ class _WorkbenchPageState extends State<WorkbenchPage>
         final ny = ((local.dy - rect.top) / rect.height).clamp(0.0, 1.0);
         setState(() => _hints.add(_HintPoint(Offset(nx, ny), _brush)));
       }
+
       return GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onTapUp: (d) { if (!_busy) placeHint(d.globalPosition); },
+        onTapUp: (d) {
+          if (!_busy) placeHint(d.globalPosition);
+        },
         onDoubleTapDown: (d) {
           final ro = context.findRenderObject()! as RenderBox;
           final local = ro.globalToLocal(d.globalPosition);
           if (!rect.contains(local)) return;
-          final p = Offset((local.dx - rect.left) / rect.width, (local.dy - rect.top) / rect.height);
+          final p = Offset((local.dx - rect.left) / rect.width,
+              (local.dy - rect.top) / rect.height);
           _hints.removeWhere((h) => (h.pos - p).distance < 0.045);
           setState(() {});
         },
@@ -264,15 +321,18 @@ class _WorkbenchPageState extends State<WorkbenchPage>
           Positioned.fromRect(
             rect: rect,
             child: _mode == _ViewMode.colorized && _resultPng != null
-                ? Image.memory(_resultPng!, fit: BoxFit.fill, gaplessPlayback: true)
-                : Image.memory(_sourcePng!, fit: BoxFit.fill, gaplessPlayback: true),
+                ? Image.memory(_resultPng!,
+                    fit: BoxFit.fill, gaplessPlayback: true)
+                : Image.memory(_sourcePng!,
+                    fit: BoxFit.fill, gaplessPlayback: true),
           ),
           ..._hints.map((h) => Positioned(
                 left: rect.left + h.pos.dx * rect.width - 9,
                 top: rect.top + h.pos.dy * rect.height - 9,
                 child: IgnorePointer(
                   child: Container(
-                    width: 18, height: 18,
+                    width: 18,
+                    height: 18,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
                       color: h.color.withValues(alpha: 0.85),
@@ -282,13 +342,18 @@ class _WorkbenchPageState extends State<WorkbenchPage>
                 ),
               )),
           Positioned(
-            left: 0, top: 0, right: 0,
-            child: IgnorePointer(child: Container(
+            left: 0,
+            top: 0,
+            right: 0,
+            child: IgnorePointer(
+                child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
               child: Row(children: [
                 if (_mode == _ViewMode.colorized)
-                  Text('上色结果', style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: Theme.of(context).colorScheme.primary, fontWeight: FontWeight.w600)),
+                  Text('上色结果',
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: Theme.of(context).colorScheme.primary,
+                          fontWeight: FontWeight.w600)),
               ]),
             )),
           ),
@@ -303,61 +368,82 @@ class _WorkbenchPageState extends State<WorkbenchPage>
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
         decoration: BoxDecoration(
           color: Theme.of(context).colorScheme.surface,
-          border: Border(top: BorderSide(color: Theme.of(context).dividerColor)),
+          border:
+              Border(top: BorderSide(color: Theme.of(context).dividerColor)),
         ),
-        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Row(children: [
-            for (final c in _palette)
-              GestureDetector(
-                onTap: () => setState(() => _brush = c),
-                child: Container(width: 26, height: 26, margin: const EdgeInsets.symmetric(horizontal: 3),
-                  decoration: BoxDecoration(shape: BoxShape.circle, color: c,
-                    border: Border.all(
-                      color: _brush == c ? Theme.of(context).colorScheme.primary : Colors.transparent,
-                      width: 2.5))),
-              ),
-            const Spacer(),
-            Text(_elapsed ?? '', style: Theme.of(context).textTheme.labelSmall),
-          ]),
-          const SizedBox(height: 8),
-          Row(children: [
-            Expanded(
-              child: FilledButton.icon(
-                onPressed: (_source == null || _busy) ? null : _colorize,
-                icon: _busy
-                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                    : const Icon(Icons.palette_outlined),
-                label: Text(_busy ? '处理中…' : '上色'),
-              ),
-            ),
-            const SizedBox(width: 8),
-            IconButton.filledTonal(
-              onPressed: (_resultPng == null || _busy) ? null : _shareResult,
-              icon: const Icon(Icons.ios_share),
-              tooltip: '分享 / 保存',
-            ),
-            IconButton.filledTonal(
-              onPressed: (_resultPng == null || _busy)
-                  ? null
-                  : () => setState(() => _mode = _mode == _ViewMode.original ? _ViewMode.colorized : _ViewMode.original),
-              icon: Icon(_mode == _ViewMode.original ? Icons.auto_fix_high : Icons.image_outlined),
-              tooltip: '原图 / 上色切换',
-            ),
-            Badge(
-              isLabelVisible: _hints.isNotEmpty,
-              label: Text('${_hints.length}'),
-              child: IconButton.filledTonal(
-                onPressed: _hints.isEmpty ? null : () => setState(() => _hints.clear()),
-                icon: const Icon(Icons.layers_clear_outlined),
-                tooltip: '清空提示点',
-              ),
-            ),
-          ]),
-          const SizedBox(height: 6),
-          Text(_status, style: Theme.of(context).textTheme.bodySmall),
-        ]),
+        child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(children: [
+                for (final c in _palette)
+                  GestureDetector(
+                    onTap: () => setState(() => _brush = c),
+                    child: Container(
+                        width: 26,
+                        height: 26,
+                        margin: const EdgeInsets.symmetric(horizontal: 3),
+                        decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: c,
+                            border: Border.all(
+                                color: _brush == c
+                                    ? Theme.of(context).colorScheme.primary
+                                    : Colors.transparent,
+                                width: 2.5))),
+                  ),
+                const Spacer(),
+                Text(_elapsed ?? '',
+                    style: Theme.of(context).textTheme.labelSmall),
+              ]),
+              const SizedBox(height: 8),
+              Row(children: [
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: (_source == null || _busy) ? null : _colorize,
+                    icon: _busy
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.palette_outlined),
+                    label: Text(_busy ? '处理中…' : '上色'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton.filledTonal(
+                  onPressed:
+                      (_resultPng == null || _busy) ? null : _shareResult,
+                  icon: const Icon(Icons.ios_share),
+                  tooltip: '分享 / 保存',
+                ),
+                IconButton.filledTonal(
+                  onPressed: (_resultPng == null || _busy)
+                      ? null
+                      : () => setState(() => _mode = _mode == _ViewMode.original
+                          ? _ViewMode.colorized
+                          : _ViewMode.original),
+                  icon: Icon(_mode == _ViewMode.original
+                      ? Icons.auto_fix_high
+                      : Icons.image_outlined),
+                  tooltip: '原图 / 上色切换',
+                ),
+                Badge(
+                  isLabelVisible: _hints.isNotEmpty,
+                  label: Text('${_hints.length}'),
+                  child: IconButton.filledTonal(
+                    onPressed: _hints.isEmpty
+                        ? null
+                        : () => setState(() => _hints.clear()),
+                    icon: const Icon(Icons.layers_clear_outlined),
+                    tooltip: '清空提示点',
+                  ),
+                ),
+              ]),
+              const SizedBox(height: 6),
+              Text(_status, style: Theme.of(context).textTheme.bodySmall),
+            ]),
       ),
     );
   }
 }
-

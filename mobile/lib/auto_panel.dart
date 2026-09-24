@@ -1,7 +1,7 @@
 // 「全自动」页签：权重缺失 → 许可提示 + 引导下载；就绪 → 选图 → isolate 推理
 // （进度条 + 取消）→ 预览/分享。推理本身在 AutoEngine（见 onnx/auto_service.dart），
 // 本页签只做编排：权重目录经 path_provider 解析，下载进度按 ~1% 节流重绘。
-// 不写任何端侧性能承诺（真机耗时未测，Task 7 文档侧说明）。
+// 不写任何端侧性能承诺（真机耗时未测，属合并后真机验收清单，见 docs 已知限制）。
 import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
@@ -181,6 +181,9 @@ class _AutoTabState extends State<AutoTab> {
     if (_busy) return;
     final XFile? file = await _picker.pickImage(source: ImageSource.gallery);
     if (file == null) return;
+    // 相册选择是异步挂起：期间页签可能被销毁，setState 前须验 mounted
+    // （与本文件其余 post-await setState 的守卫一致）。
+    if (!mounted) return;
     setState(() {
       _busy = true;
       _status = '读取图片…';

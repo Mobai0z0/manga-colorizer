@@ -2,13 +2,17 @@
 // 事件协议（worker→main）: ['progress', double] | ['result', Uint8List?] | ['error', String]
 // 命令协议（main→worker）: ['dir', String] | ['job', Uint8List, int, int] | ['stop']
 //
-// 设计要点（计划定版，勿改）：
+// 设计不变量（改动须保持 RPC/生命周期测试全绿）：
 //   · hint 模式的 `Isolate.run` 是一次性闭包，撑不起常驻引擎——这里用
 //     spawn + ReceivePort 的 RPC，工作 isolate 跨任务存活，模型只加载一次；
 //   · 空闲 60s（自上次任务结束起）自动 shutdown()：先 ['stop'] 让 worker
 //     dispose() session，再回收 isolate（硬约束「空闲即 dispose()」）；
 //   · cancel() 直接杀工作 isolate：kill 是即时的，worker 内当前块的
 //     原生推理随 isolate 终止一并释放，进行中的 job 以 null 完结；
+//   · worker 循环绝不静默死亡：畸形消息被解码守卫拦下（跳过并回
+//     ['error']，在飞 job 得以完单）；isolate 意外退出由 spawn 挂的
+//     onError/退出监听口捕获，引擎将在飞 job 报错完结并标记已死，
+//     ensureStarted 可复活；
 //   · 真实后端构造封在 ortAutoBackendFactory 一处；宿主测试经
 //     startInProcessAutoWorker + autoBackendFactory 两个 @visibleForTesting
 //     接缝在同一 isolate 里跑同一份 worker 消息循环（OrtOnnxBackend 依赖
@@ -27,7 +31,7 @@ import 'weights.dart';
 /// 后端工厂：由权重目录构造一个未 load() 的 OnnxBackend。
 typedef AutoBackendFactory = OnnxBackend Function(String weightsDir);
 
-/// 生产默认工厂：OrtOnnxBackend + WeightsStore（镜像策略与 brief 定版一致，
+/// 生产默认工厂：OrtOnnxBackend + WeightsStore（镜像策略固定：
 /// mirrorPreferred 恒 false＝直连主站）。
 OnnxBackend ortAutoBackendFactory(String weightsDir) => OrtOnnxBackend(
       WeightsStore(dir: Directory(weightsDir), mirrorPreferred: (u) => false),
@@ -39,7 +43,7 @@ OnnxBackend ortAutoBackendFactory(String weightsDir) => OrtOnnxBackend(
 @visibleForTesting
 AutoBackendFactory autoBackendFactory = ortAutoBackendFactory;
 
-/// worker 侧分块参数：默认与桌面 /colorize_auto 定版一致（1024/256）。
+/// worker 侧分块参数：默认与桌面 /colorize_auto 一致（1024/256）。
 /// 测试调小以便毫秒级跑完多块路径；真机不改。
 @visibleForTesting
 int autoInfer = 1024;
@@ -52,8 +56,11 @@ abstract interface class AutoWorkerHandle {
   Future<void> kill();
 }
 
-/// 启动 worker：传入"worker 回报事件/握手用的主 isolate 端口"。
-typedef SpawnAutoWorker = Future<AutoWorkerHandle> Function(SendPort toMain);
+/// 启动 worker：传入"worker 回报事件/握手用的主 isolate 端口"和 `onDied`——
+/// worker 意外死亡（生产＝isolate 退出/未捕获致命错；测试接缝＝自行斟酌
+/// 触发）时调用，引擎据此让在飞 job 报错完结并标记 worker 已死。
+typedef SpawnAutoWorker = Future<AutoWorkerHandle> Function(SendPort toMain,
+    {void Function(Object error)? onDied});
 
 /// 工作 isolate 入口（Isolate.spawn 要求静态/顶层函数）。
 void autoWorkerMain(SendPort main) {
@@ -62,30 +69,55 @@ void autoWorkerMain(SendPort main) {
   unawaited(_runAutoWorker(rx, main));
 }
 
-/// 生产 spawn：真后台 isolate。
-Future<AutoWorkerHandle> spawnIsolateAutoWorker(SendPort toMain) async {
-  final iso =
-      await Isolate.spawn(autoWorkerMain, toMain, debugName: 'auto-engine');
-  return _IsolateHandle(iso);
+/// 生产 spawn：真后台 isolate。`onError`（未捕获错误）+ `addOnExitListener`
+/// （isolate 任意终结：崩溃/被系统回收/正常退出——`Isolate.spawn` 没有
+/// spawnUri 式 exitCode 参数，退出监听是等价通道）两个回报口兜住 worker
+/// 的意外死亡——任一事件都经 [onDied] 通知引擎，让在飞 job 报错完结、
+/// 引擎可被 ensureStarted 复活。
+Future<AutoWorkerHandle> spawnIsolateAutoWorker(SendPort toMain,
+    {void Function(Object error)? onDied}) async {
+  final errRx = ReceivePort();
+  final exitRx = ReceivePort();
+  errRx.listen((e) => onDied?.call('worker isolate 未捕获错误: $e'));
+  exitRx.listen((_) => onDied?.call('worker isolate 已退出'));
+  final Isolate iso;
+  try {
+    iso = await Isolate.spawn(autoWorkerMain, toMain,
+        debugName: 'auto-engine', onError: errRx.sendPort);
+    iso.addOnExitListener(exitRx.sendPort);
+  } on Object {
+    errRx.close();
+    exitRx.close();
+    rethrow;
+  }
+  return _IsolateHandle(iso, errRx, exitRx);
 }
 
 class _IsolateHandle implements AutoWorkerHandle {
-  _IsolateHandle(this._iso);
+  _IsolateHandle(this._iso, this._errRx, this._exitRx);
   final Isolate _iso;
+  final ReceivePort _errRx;
+  final ReceivePort _exitRx;
   @override
   Future<void> kill() async {
     // kill 是即时的：worker 内当前块的原生推理随 isolate 终止释放。
     _iso.kill(priority: Isolate.beforeNextEvent);
+    _errRx.close();
+    _exitRx.close();
   }
 }
 
 /// 测试接缝：在**当前 isolate**跑同一份 _runAutoWorker 消息循环。
 /// 消息经真 ReceivePort/SendPort 投递（异步、带复制语义），协议行为与
 /// 真 isolate 路径一致；后端由 autoBackendFactory 注入。
+/// in-process 循环没有 isolate 退出事件，[onDied] 由测试自行触发以模拟
+/// worker 死亡（生产路径的 onError/退出监听接线见 spawnIsolateAutoWorker）。
 @visibleForTesting
-Future<AutoWorkerHandle> startInProcessAutoWorker(SendPort toMain) async {
+Future<AutoWorkerHandle> startInProcessAutoWorker(SendPort toMain,
+    {void Function(Object error)? onDied}) async {
   final rx = ReceivePort();
-  // _runAutoWorker 内部吞掉全部异常（逐 job try/catch），不会被 await 也无主。
+  // _runAutoWorker 内部吞掉全部异常（畸形消息有守卫 + 逐 job try/catch），
+  // 不会被 await 也无主。
   final loop = _runAutoWorker(rx, toMain);
   toMain.send(rx.sendPort);
   return _InProcessHandle(rx, loop);
@@ -103,13 +135,20 @@ class _InProcessHandle implements AutoWorkerHandle {
 }
 
 /// worker 消息循环：dir/stop/job 三种命令，事件回主 isolate。
-/// 循环整体不抛出（否则 in-process 句柄无从 await），dispose 兜底在 finally。
+/// 循环整体不抛出（否则 in-process 句柄无从 await，真 isolate 也会静默死亡、
+/// 引擎侧 _job 永挂），dispose 兜底在 finally。
 Future<void> _runAutoWorker(ReceivePort rx, SendPort main) async {
   OnnxBackend? b;
   String? dirPath;
   try {
     await for (final msg in rx) {
-      final m = msg as List;
+      // 畸形消息（非 List / 空命令）绝不让循环猝死：回 ['error', …]——
+      // 若引擎侧有在飞 job 即报错完结（无则被忽略），跳过该消息继续。
+      if (msg is! List || msg.isEmpty) {
+        main.send(['error', 'auto worker 收到畸形消息: $msg']);
+        continue;
+      }
+      final m = msg;
       if (m[0] == 'dir') {
         dirPath = m[1] as String;
         continue;
@@ -192,7 +231,7 @@ class AutoEngine {
     });
     AutoWorkerHandle? spawned;
     try {
-      spawned = await _spawn(rx.sendPort);
+      spawned = await _spawn(rx.sendPort, onDied: _onWorkerDied);
       final to = await ready.future;
       _rx = rx;
       _sub = sub;
@@ -270,6 +309,20 @@ class AutoEngine {
     _onProgress = null;
     job?.complete(null);
     await _teardown();
+  }
+
+  /// worker 意外死亡（生产＝退出监听/未捕获错误事件；测试＝onDied 直调）：
+  /// 在飞 job 以错误完结（防 UI 永挂），引擎即刻拆净标记已死，
+  /// 下次 [ensureStarted] 重新 spawn。cancel/shutdown 先拆的话此处成空转。
+  void _onWorkerDied(Object why) {
+    if (!alive) return;
+    _idle?.cancel();
+    _to = null; // 同步标记已死：后续死亡事件/拆机动作都在此短路
+    final job = _job;
+    _job = null;
+    _onProgress = null;
+    job?.completeError(Exception('auto worker 意外终止: $why'));
+    unawaited(_teardown());
   }
 
   Future<void> _teardown() async {
