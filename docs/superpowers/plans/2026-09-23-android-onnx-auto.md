@@ -21,6 +21,7 @@
 - `packages/manga_colorizer_core` 保持无 `dart:io`、无新依赖；既有 25 项测试全绿是每任务底线
 - 并发 1、进度按块上报、可取消、空闲即 `dispose()` session
 - Step 0 放行线（spec §6）：arm64 真机单块 1024² ≤120 s 且峰值 RSS ≤4 GB；不达标 **STOP 回 spec 分叉**，不得继续 Task 1+
+  - （2026-09-24 记）门槛经用户裁决推迟为合并后真机验收，见文末勘误
 - win32 + Git Bash 环境；`dart analyze` 因既有 pub-workspace 配置不可用，以 `flutter analyze mobile` + `dart format` + 测试为准
 
 ---
@@ -1120,3 +1121,22 @@ cd /e/manga-colorizer && git add mobile && git commit -m "feat(mobile): 全自�
 - Spec 覆盖：§4 各文件（weights/backend/pipeline/auto_service/核心 lab/几何 tiles/UI）→ Task 3/4/5/6/1/2/6；§5 测试 → 各任务 TDD 步 + Task 6 Step 6；§6 门槛 → Task 0；§7 许可 → Task 3 文案 + Task 6 许可提示 + Task 7 NOTICE；§8 文档/版本 → Task 7。
 - 类型一致性：Task 4 定版 `runSam` 返回两级特征元组（Task 5 注记统一修正），`OnnxBackend` 三方法签名贯穿 Task 4/5/6 一致；`WeightsStore.pathOf/readyFor/ready/download` 与 Task 6 使用一致；`tileBounds/featherWeight` 与 Task 5 一致。
 - 已知占位风险点（均附「执行者必读」定版说明，非 TBD）：Task 4 绑定方法名以 Step 0 为准（接口三方法签名不变是硬约束）；Task 5 `_inferPatch` 尾段按注记定版重写；Task 6 `_boot` 按注记走 spawn 传路径。
+
+---
+
+## 勘误（Errata，2026-09-24，whole-branch 终审后回填）
+
+终审在计划草图/定稿文字里发现以下缺陷（实现均按修正后的语义落地，代码为准）：
+
+1. **Task 1 lab 草图的 L 通道换算错**：`out[i*3] = (116*y-16)` 漏掉了 cv2 8bit 打包的 `×255/100` 缩放（L 0..100 存成 0..255）；草图与自身"对拍 cv2 金样"的目标矛盾，实现按 `((116*y-16)*255/100)` 修正。
+2. **Task 4 的 `^1.4.0` 与 API 表述不符实**：草图写 `flutter_onnxruntime: ^1.4.0` 并引用 `createSessionFromFile/run 顺序输出/release/OrtValue.value`；实际验证面是 1.8.5——只有 `createSession`、`run()` 返回 `Map<String, OrtValue>`、`close()`、数据经 `asFlattenedList()`。pubspec 下界已按 1.8.5 提级。
+3. **草图 matcher 拼写错**：`lessThanOrEqual(...)` 在 matcher 包中不存在，实际为 `lessThanOrEqualTo(...)`。
+4. **Task 2 断言自相矛盾**：`featherWeight(0, 300, 256)[150] == 1.0`——偶数 300 时 `lo=(300~/2)=150`，两斜坡恰好铺满 0..299，`w[150]=149/150≠1.0`（与同一草图"偶数无平台"的注记冲突）；实测改以奇数 301 的平台点 `[150]==1.0` 断言。
+5. **Task 6 草图的空闲计时与 shutdown 挂死**：`_touchIdle()` 只在任务开始 arm，长任务（>60 s）会被中途 shutdown；且 `shutdown()` 不完结在飞 `_job`，await 方永挂。实现改为"空闲计时自上次任务结束起 arm"且 shutdown/cancel 一律以 null 完结在飞 job（终审修复轮又补：worker 消息解码守卫 + isolate 退出/未捕获错误回报，堵死 worker 静默死亡导致的另一条永挂路径）。
+6. **`run()` 输出顺序假设错**：Task 4 "退化为顺序 [0]/[1]（Step 0 spike 已验证顺序）"不成立——该 Map 由原生 Java HashMap 灌入，迭代序＝字符串哈希序而非图声明序；实现只按名字取输出（`pickOutputKey`），位置回退仅保留在**输入**侧。
+
+经用户裁决的偏离（非缺陷，记录在案）：
+
+- **runGen 契约改为行优先 HWC 返回**：计划草图按模型原生 CHW 透传设想；实现把 CHW→HWC 转置封闭在后端内部（消费方按像素遍历，替身与真实后端布局一致），接口三方法签名硬约束未破。
+- **Step 0 真机门槛推迟**：用户 2026-09-24 裁决本分支不等真机 spike、先合并；门槛数字/取消循环 RSS 增长检查/与桌面目检对拍全部转为合并后真机验收清单（见 spec §6 附记）。返工边界不变：真机数字不达标仍回 §6 分叉（MNN/量化/512²/暂停）。
+

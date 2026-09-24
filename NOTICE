@@ -28,6 +28,8 @@ Third-party components:
   - ONNX Runtime Android binaries pulled in by it
     (com.microsoft.onnxruntime:onnxruntime-android) — MIT, Copyright Microsoft.
     https://github.com/microsoft/onnxruntime
+    The AAR artifact bundles its own ThirdPartyNotices.txt inside, which applies
+    to the third-party components shipped within those binaries.
 
   - image (pub.dev) — MIT per the LICENSE shipped with the package
     (Copyright (c) 2013-2022 Brendan Duncan), with additional third-party

@@ -47,12 +47,13 @@ NVIDIA CUDA 路径：`python -m pip install -r tool/colorizer_service/requiremen
 
 ## 方式四：Android 应用（端侧全自动）
 
-在 `mobile/` 下用 Flutter 从源码构建（`flutter build apk --debug`，本分支实现时验证通过），
+在 `mobile/` 下用 Flutter 从源码构建（`flutter build apk --debug`，构建验证通过），
 或等 Releases 的正式 APK。
 
 1. 安装并打开应用，切到「全自动」页签。
-2. 权重不随 APK 分发（CC BY-NC-SA），首次使用由应用内引导下载（约 300MB，一次性），
-   支持断点续传与 SHA-256 校验；manifest 内置 hf-mirror 镜像源备选（国内网络）。
+2. 权重不随 APK 分发（CC BY-NC-SA），首次使用由应用内引导下载（约 300 MB，即 286 MiB，
+   一次性），支持断点续传与 SHA-256 校验；manifest 中的 hf-mirror 镜像地址为预留，
+   当前版本固定从主站 huggingface.co 下载。
 3. 就绪后选图开始全自动上色，结果可在应用内分享/保存。「提示点上色」页签不受影响，
    无需权重、完全离线可用。
 
