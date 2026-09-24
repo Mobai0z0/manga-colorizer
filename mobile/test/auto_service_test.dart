@@ -2,8 +2,9 @@
 //   · 用 startInProcessAutoWorker 在同一 isolate 里跑**与真机完全相同**的 worker
 //     消息循环，后端经 autoBackendFactory 换成 FakeBackend —— 真实 ORT/网络/
 //     path_provider 一律不触碰（OrtOnnxBackend 在宿主测试里根本无法构造）。
-//   · RPC 线格式逐字断言（spec）：命令 ['dir',p] / ['job',g,w,h] / ['stop']；
+//   · RPC 线格式逐字断言：命令 ['dir',p] / ['job',g,w,h] / ['stop']；
 //     事件 ['progress',double] / ['result',Uint8List?] / ['error',String]。
+//   · 死亡兜底（畸形消息解码守卫 / 退出·未捕获错误→onDied）也经同一接缝驱动。
 import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
@@ -104,9 +105,9 @@ void main() {
     var spawns = 0;
     autoBackendFactory = (_) => FakeBackend();
     final engine = AutoEngine(
-        spawn: (main) {
+        spawn: (main, {onDied}) {
           spawns++;
-          return startInProcessAutoWorker(main);
+          return startInProcessAutoWorker(main, onDied: onDied);
         },
         idleRelease: const Duration(minutes: 5));
     await engine.ensureStarted(Directory.systemTemp.path);
@@ -199,7 +200,7 @@ void main() {
     late SendPort engineMain; // worker→引擎 事件口
     final engine = AutoEngine(
         idleRelease: const Duration(minutes: 5),
-        spawn: (toMain) async {
+        spawn: (toMain, {onDied}) async {
           final rx = ReceivePort();
           rx.listen(received.add);
           toMain.send(rx.sendPort); // 握手：worker 交还命令口
@@ -236,5 +237,95 @@ void main() {
     await engine.shutdown();
     await pumpEventQueue();
     expect(received.last, ['stop']);
+  });
+
+  test('shutdown with an in-flight job resolves it with null (no hang)',
+      () async {
+    final fake = _GatedBackend(gate: Completer<void>());
+    autoBackendFactory = (_) => fake;
+    final engine = AutoEngine(
+        spawn: startInProcessAutoWorker,
+        idleRelease: const Duration(minutes: 5));
+    await engine.ensureStarted(Directory.systemTemp.path);
+    final pending = engine.colorize(gray40x16(), 40, 16);
+    await waitUntil(() => fake.entered, why: 'worker 进入 runGen');
+    // 优雅关闭：在飞 job 以 null 完结（UI 侧语义＝"已取消"，绝不永挂）。
+    await engine.shutdown();
+    expect(await pending, isNull);
+    expect(engine.alive, isFalse);
+    fake.gate.complete(); // 放闸让旧循环收尾（真机随 isolate 死亡）
+    await waitUntil(() => fake.calls.contains('dispose'),
+        why: '循环退出时 dispose 兜底');
+  });
+
+  test(
+      'malformed worker messages are answered with error and never kill '
+      'the loop', () async {
+    autoBackendFactory = (_) => FakeBackend();
+    late SendPort cmd; // worker 命令口（仅测试注入畸形消息用）
+    late ReceivePort relay;
+    final workerEvents = <Object?>[];
+    final engine = AutoEngine(
+        spawn: (toMain, {onDied}) async {
+          relay = ReceivePort();
+          relay.listen((m) {
+            if (m is SendPort) {
+              cmd = m;
+            } else {
+              workerEvents.add(m);
+            }
+            toMain.send(m); // 原样中继：引擎看到的就是 worker 真实事件
+          });
+          return startInProcessAutoWorker(relay.sendPort, onDied: onDied);
+        },
+        idleRelease: const Duration(minutes: 5));
+    await engine.ensureStarted(Directory.systemTemp.path);
+    cmd
+      ..send(123) // 非 List
+      ..send(<Object?>[]); // 空命令（m[0] 会越界）
+    await pumpEventQueue();
+    // 每条畸形消息回一条 error 事件（有在飞 job 即报错完结；此处无则被
+    // 引擎忽略），且解码守卫接住异常后循环继续运转。
+    expect(workerEvents, hasLength(2));
+    for (final e in workerEvents) {
+      expect(e, isA<List<Object?>>().having((l) => l[0], 'kind', 'error'));
+    }
+    // 循环没静默死亡的证明：之后仍能完整跑通一个 job。
+    expect(await engine.colorize(gray40x16(), 40, 16), isNotNull);
+    await engine.shutdown();
+    relay.close();
+  });
+
+  test(
+      'worker death (exit/onError path) fails the in-flight job and '
+      'lets ensureStarted respawn', () async {
+    final fake = _GatedBackend(gate: Completer<void>());
+    autoBackendFactory = (_) => fake;
+    late void Function(Object why) notifyDied;
+    final engine = AutoEngine(
+        spawn: (toMain, {onDied}) {
+          // 生产路径里 onDied 由 spawnIsolateAutoWorker 挂的 onError/退出监听
+          // 口驱动；in-process 循环没有退出事件，测试直接触发同一回调。
+          notifyDied = (why) => onDied!(why);
+          return startInProcessAutoWorker(toMain, onDied: onDied);
+        },
+        idleRelease: const Duration(minutes: 5));
+    await engine.ensureStarted(Directory.systemTemp.path);
+    final pending = engine.colorize(gray40x16(), 40, 16);
+    // 监听器必须先于错误完结挂上（见 RPC 测试注释的 Completer 语义）。
+    final pendingCheck = expectLater(
+        pending,
+        throwsA(isA<Exception>()
+            .having((e) => e.toString(), 'msg', contains('意外终止'))));
+    await waitUntil(() => fake.entered, why: 'worker 进入 runGen');
+    notifyDied('worker isolate 已退出');
+    await pendingCheck; // 在飞 job 报错完结，不再永挂
+    expect(engine.alive, isFalse); // 引擎已标记死亡并拆净
+    fake.gate.complete(); // 放闸让旧循环收尾（真机随 isolate 死亡）
+    await pumpEventQueue();
+    // 复活：ensureStarted 重新 spawn 后可再次完整跑通。
+    await engine.ensureStarted(Directory.systemTemp.path);
+    expect(await engine.colorize(gray40x16(), 40, 16), isNotNull);
+    await engine.shutdown();
   });
 }
