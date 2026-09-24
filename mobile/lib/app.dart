@@ -40,7 +40,9 @@ class _MangaColorizerAppState extends State<MangaColorizerApp> {
   @override
   void initState() {
     super.initState();
-    LogBus.current = _logs; // 早于 _loadSettings，令启动埋点有处可写。
+    // 先于异步加载把总线置入静态指针：加载调用图深处的写入方拿不到注入参数，
+    // 只能经 LogBus.current 取总线，须保证它们运行时指针已就绪。
+    LogBus.current = _logs;
     unawaited(_loadSettings());
   }
 
