@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:manga_colorizer_mobile/app_settings.dart';
 import 'package:manga_colorizer_mobile/gallery/gallery_store.dart';
+import 'package:manga_colorizer_mobile/logs/log_bus.dart';
 import 'package:manga_colorizer_mobile/screens/colorize_screen.dart';
 
 void main() {
@@ -9,7 +10,8 @@ void main() {
     await tester.pumpWidget(MaterialApp(
       home: ColorizeScreen(
           controller: SettingsController(AppSettings.defaults()),
-          gallery: GalleryStore()),
+          gallery: GalleryStore(),
+          logs: LogBus()),
     ));
     await tester.pumpAndSettle();
     // AppBar 动作（不再依赖页签 index）

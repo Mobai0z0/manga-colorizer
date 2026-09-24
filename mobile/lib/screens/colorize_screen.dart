@@ -19,6 +19,7 @@ import 'package:manga_colorizer_core/manga_colorizer_core.dart';
 
 import '../app_settings.dart';
 import '../gallery/gallery_store.dart';
+import '../logs/log_bus.dart';
 import '../shell/screen_chrome.dart';
 
 /// Color 通道（0..1 double）→ 8bit 整数。替代已弃用的 `.red/.green/.blue`
@@ -37,6 +38,7 @@ class ColorizeScreen extends StatefulWidget {
     super.key,
     required this.controller,
     required this.gallery,
+    required this.logs,
   });
 
   /// 全局设置控制器（主题 + 下载源），由壳/宿主持有并下发。
@@ -44,6 +46,9 @@ class ColorizeScreen extends StatefulWidget {
 
   /// 端侧图库：上色成功后非阻塞入库。由壳/宿主持有并下发。
   final GalleryStore gallery;
+
+  /// 端侧运行日志总线：由应用根持有并下发，本屏只写入不释放。
+  final LogBus logs;
 
   @override
   State<ColorizeScreen> createState() => _ColorizeScreenState();
@@ -94,6 +99,7 @@ class _ColorizeScreenState extends State<ColorizeScreen> {
         _status = '$label ${decoded.width}×${decoded.height}。点按图片落提示点，然后「上色」。';
       });
     } catch (e) {
+      widget.logs.error('hints', '读取图片失败：$e');
       setState(() => _status = '读取失败：$e');
     } finally {
       setState(() => _busy = false);
@@ -157,6 +163,8 @@ class _ColorizeScreenState extends State<ColorizeScreen> {
             ? '完成（无提示点，输出为原图）。请落点后重新上色。'
             : '上色完成：${png.hintCount} 个提示点，迭代 ${png.iterations} 次。';
       });
+      widget.logs.info('hints',
+          '提示点上色完成 ${src.width}×${src.height}，${png.hintCount} 个提示点，耗时 $_elapsed');
       // 有提示点才入库：0 提示点的输出即原图，存进去只是噪音，故跳过。
       final srcImg = _source;
       final srcPng = _sourcePng;
@@ -172,6 +180,7 @@ class _ColorizeScreenState extends State<ColorizeScreen> {
         ));
       }
     } catch (e) {
+      widget.logs.error('hints', '上色失败：$e');
       setState(() => _status = '上色失败：$e');
     } finally {
       setState(() => _busy = false);

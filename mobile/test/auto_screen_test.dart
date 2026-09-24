@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:manga_colorizer_mobile/app_settings.dart';
 import 'package:manga_colorizer_mobile/gallery/gallery_store.dart';
+import 'package:manga_colorizer_mobile/logs/log_bus.dart';
 import 'package:manga_colorizer_mobile/screens/auto_screen.dart';
 
 void main() {
@@ -16,7 +17,8 @@ void main() {
     await tester.pumpWidget(MaterialApp(
       home: AutoScreen(
           controller: SettingsController(AppSettings.defaults()),
-          gallery: GalleryStore()),
+          gallery: GalleryStore(),
+          logs: LogBus()),
     ));
     await tester.pump(); // 不 pumpAndSettle：AutoTab 首帧显示“检查权重…”
     expect(find.text('检查权重…'), findsOneWidget);

@@ -3,13 +3,15 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:manga_colorizer_mobile/shell/app_shell.dart';
 import 'package:manga_colorizer_mobile/app_settings.dart';
 import 'package:manga_colorizer_mobile/gallery/gallery_store.dart';
+import 'package:manga_colorizer_mobile/logs/log_bus.dart';
 import 'package:manga_colorizer_mobile/shell/destinations.dart';
 
 void main() {
   Widget boot() => MaterialApp(
       home: AppShell(
           controller: SettingsController(AppSettings.defaults()),
-          gallery: GalleryStore()));
+          gallery: GalleryStore(),
+          logs: LogBus()));
 
   testWidgets('底栏 5 目的地，默认首页', (tester) async {
     await tester.pumpWidget(boot());
