@@ -30,11 +30,12 @@ class AutoScreen extends StatefulWidget {
 }
 
 class _AutoScreenState extends State<AutoScreen> with WidgetsBindingObserver {
-  final AutoEngine _engine = AutoEngine();
+  late final AutoEngine _engine;
 
   @override
   void initState() {
     super.initState();
+    _engine = AutoEngine(logBus: widget.logs);
     WidgetsBinding.instance.addObserver(this);
   }
 
@@ -57,12 +58,14 @@ class _AutoScreenState extends State<AutoScreen> with WidgetsBindingObserver {
       body: AutoTab(
         engine: _engine,
         controller: widget.controller,
+        logs: widget.logs,
         onCompleted: ({
           required Uint8List resultPng,
           required Uint8List sourcePng,
           required int width,
           required int height,
         }) {
+          widget.logs.info('auto', '全自动完成 $width×$height');
           unawaited(widget.gallery.add(
             resultPng: resultPng,
             sourcePng: sourcePng,

@@ -5,6 +5,8 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:manga_colorizer_mobile/app_settings.dart';
 import 'package:manga_colorizer_mobile/auto_panel.dart';
+import 'package:manga_colorizer_mobile/logs/log_bus.dart';
+import 'package:manga_colorizer_mobile/logs/log_entry.dart';
 import 'package:manga_colorizer_mobile/onnx/auto_service.dart';
 import 'package:manga_colorizer_mobile/onnx/weights.dart';
 
@@ -21,13 +23,14 @@ void main() {
       }
     });
 
-    Widget tab({DownloadOne? downloadOne}) => MaterialApp(
+    Widget tab({DownloadOne? downloadOne, LogBus? logs}) => MaterialApp(
           home: Scaffold(
             body: AutoTab(
               engine: AutoEngine(),
               controller: SettingsController(AppSettings.defaults(), base: dir),
               resolveDir: () async => dir,
               downloadOne: downloadOne,
+              logs: logs ?? LogBus(),
             ),
           ),
         );
@@ -42,9 +45,11 @@ void main() {
     });
 
     testWidgets('下载失败 → WeightsException 文案入状态且可重试', (tester) async {
+      final bus = LogBus();
       await tester.pumpWidget(tab(
         downloadOne: (f, _) async =>
             throw WeightsException('${f.name}: 传输中断: mock'),
+        logs: bus,
       ));
       await tester.pumpAndSettle();
 
@@ -54,10 +59,15 @@ void main() {
       expect(find.textContaining('下载失败'), findsOneWidget);
       expect(find.textContaining('传输中断'), findsOneWidget);
       expect(find.text('下载权重(~300MB)'), findsOneWidget); // 仍可重试
+      // 终态失败记一条 error，且失败的文件不该有"下载完成"里程碑。
+      expect(bus.entries.where((e) => e.message.contains('下载完成')), isEmpty);
+      expect(bus.entries.last.level, LogLevel.error);
+      expect(bus.entries.last.message, contains('传输中断'));
     });
 
     testWidgets('下载成功 → 就绪态显示选图引导，按钮消失', (tester) async {
       final downloaded = <String>[];
+      final bus = LogBus();
       await tester.pumpWidget(tab(
         downloadOne: (f, onProgress) async {
           downloaded.add(f.name);
@@ -65,6 +75,7 @@ void main() {
             onProgress(f.size * i ~/ 10, f.size); // 模拟密集回调
           }
         },
+        logs: bus,
       ));
       await tester.pumpAndSettle();
 
@@ -74,6 +85,11 @@ void main() {
       expect(downloaded, kWeightFiles.map((f) => f.name).toList());
       expect(find.text('下载权重(~300MB)'), findsNothing);
       expect(find.textContaining('权重就绪'), findsOneWidget);
+      // 每个权重各记一条下载完成里程碑，全部就绪后再记一条收尾。
+      expect(bus.entries.where((e) => e.message.contains('下载完成')).length,
+          kWeightFiles.length);
+      expect(bus.entries.last.message, '权重全部就绪');
+      expect(bus.entries.last.level, LogLevel.info);
     });
 
     testWidgets('下载源选择器：切到仅镜像 → 标签更新并落盘 settings.json',
