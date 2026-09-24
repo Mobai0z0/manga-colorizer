@@ -54,13 +54,14 @@ CUDA is unavailable the service errors out explicitly instead of silently fallin
 
 ## Option 4: Android app (on-device fully automatic)
 
-Build from source with Flutter under `mobile/` (`flutter build apk --debug`, green at
-implementation time on this branch), or wait for the official APK in Releases.
+Build from source with Flutter under `mobile/` (`flutter build apk --debug`, build
+verified), or wait for the official APK in Releases.
 
 1. Install and open the app, switch to the "Fully automatic" tab.
 2. Weights are not shipped inside the APK (CC BY-NC-SA); on first use the app guides you
-   through downloading them (~300 MB, one-time), with resume support and SHA-256
-   verification; the manifest carries an hf-mirror fallback source for mainland-China networks.
+   through downloading them (~300 MB, i.e. 286 MiB, one-time), with resume support and
+   SHA-256 verification; the hf-mirror address in the manifest is reserved — this version
+   always downloads from huggingface.co.
 3. Once ready, pick an image and start fully automatic colorization; results can be
    shared/saved from inside the app. The "Hint colorization" tab is unaffected — it needs no
    weights and works fully offline.
