@@ -3,6 +3,8 @@ import 'package:manga_colorizer_mobile/logs/log_bus.dart';
 import 'package:manga_colorizer_mobile/logs/log_entry.dart';
 
 void main() {
+  tearDown(() => LogBus.current = null);
+
   test('追加正序、seq 单调从 1 起', () {
     final b = LogBus();
     b.info('startup', 'a');
@@ -75,5 +77,15 @@ void main() {
     final b = LogBus();
     b.dispose();
     expect(() => b.info('startup', 'after'), returnsNormally);
+  });
+
+  test('dispose 只解绑自己，不清空他宿主的 current', () {
+    final host = LogBus();
+    final temp = LogBus();
+    LogBus.current = host;
+    temp.dispose(); // 弃用一个并非 current 的临时实例
+    expect(LogBus.current, same(host)); // 宿主的日志通道不该被静默切断
+    host.dispose();
+    expect(LogBus.current, isNull); // 只有 current 自身 dispose 才解绑
   });
 }
