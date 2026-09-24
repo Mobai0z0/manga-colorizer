@@ -35,22 +35,28 @@ int? nextDownloadPercent(int done, int total, int? lastPercent) {
 
 /// 「全自动」页签入口（挂在 WorkbenchPage 的第二个 Tab 上）。
 class AutoPanel extends StatelessWidget {
-  const AutoPanel({super.key, required this.engine});
+  const AutoPanel({super.key, required this.engine, required this.controller});
   final AutoEngine engine;
+  final SettingsController controller;
 
   @override
-  Widget build(BuildContext context) => AutoTab(engine: engine);
+  Widget build(BuildContext context) =>
+      AutoTab(engine: engine, controller: controller);
 }
 
 class AutoTab extends StatefulWidget {
   const AutoTab({
     super.key,
     required this.engine,
+    required this.controller,
     this.resolveDir,
     this.downloadOne,
   });
 
   final AutoEngine engine;
+
+  /// 全局设置控制器：下载源从此读取、经它落盘（与主题共享同一 settings.json）。
+  final SettingsController controller;
 
   /// 权重目录解析：生产默认 getApplicationSupportDirectory()/manga-light-colorizer
   /// （与桌面 weights 布局同名）；测试注入临时目录（path_provider 在宿主测试不可用）。
@@ -100,14 +106,14 @@ class _AutoTabState extends State<AutoTab> {
   Future<void> _init() async {
     try {
       final dir = await (widget.resolveDir ?? _appWeightsDir)();
-      final settings = AppSettings.load(dir);
-      final store = WeightsStore(dir: dir, source: settings.downloadSource);
+      final source = widget.controller.settings.downloadSource;
+      final store = WeightsStore(dir: dir, source: source);
       final ok = await store.ready;
       if (!mounted) return;
       setState(() {
         _checking = false;
         _dir = dir;
-        _source = settings.downloadSource;
+        _source = source;
         _store = store;
         _weightsMissing = !ok;
         _status = ok ? '权重就绪。' : '权重未下载，请先看下方说明。';
@@ -123,7 +129,8 @@ class _AutoTabState extends State<AutoTab> {
     }
   }
 
-  /// 切换下载源：立即以新 [source] 重建 store 并重绘（选择即时生效），并同步落盘。
+  /// 切换下载源：本地立即以新 [source] 重建 store 并重绘（选择即时生效），
+  /// 并经全局控制器落盘（与主题共享同一 settings.json，写失败由控制器降级）。
   void _applySource(DownloadSource source) {
     final dir = _dir;
     if (dir == null || !mounted) return;
@@ -131,12 +138,8 @@ class _AutoTabState extends State<AutoTab> {
       _source = source;
       _store = WeightsStore(dir: dir, source: source);
     });
-    try {
-      dir.createSync(recursive: true);
-      AppSettings(downloadSource: source).saveSync(dir);
-    } on Object catch (_) {
-      // 写盘失败不影响本次会话的选择（目录/存储异常时静默降级）。
-    }
+    widget.controller.update(
+        widget.controller.settings.copyWith(downloadSource: source));
   }
 
   Future<void> _pickSource() async {

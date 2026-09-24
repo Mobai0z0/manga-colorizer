@@ -11,6 +11,9 @@ dependencies:
   flutter:
     sdk: flutter
   crypto: ^3.0.3
+  # Material You「跟随设备取色」：Flutter 3.47 移除了 MaterialApp.dynamicColorBuilder，
+  # 改由该包的 DynamicColorBuilder widget 提供设备调色板（不支持时回退固定种子）。
+  dynamic_color: ^1.7.0
   # 本仓的绑定调用（createSession/OrtSession.close/OrtValue.asFlattenedList）
   # 与 flutter_onnxruntime 的 Android 16KB 页要求均在 1.8.5 源码上逐个核对过，
   # 故下界取实际验证版本，避免解析出未核对过的旧绑定。
