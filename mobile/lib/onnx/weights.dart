@@ -122,6 +122,8 @@ class WeightsStore {
   Future<void> download(
     WeightFile f, {
     void Function(int done, int total)? onProgress,
+    void Function(WeightFile file, String failedUrl, String nextUrl, String reason)?
+        onFallback,
   }) async {
     final urls = _urlsFor(f);
     for (var i = 0; i < urls.length; i++) {
@@ -129,11 +131,12 @@ class WeightsStore {
       try {
         await _downloadFrom(client, Uri.parse(urls[i]), f, onProgress);
         return;
-      } on WeightsException {
+      } on WeightsException catch (e) {
         if (i == urls.length - 1) rethrow;
-        // 尚有候选 URL（auto 回退）：静默切到下一个。传输中断时 .part 已保留，
-        // 下一轮从中续传；若上一轮因大小/sha 失败，_downloadFrom 已删 .part，
-        // 下一轮从 0 整段重下。
+        // 尚有候选 URL（auto 回退）：记一条回退告警再静默切到下一个。
+        // 传输中断时 .part 已保留，下一轮从中续传；若上一轮因大小/sha 失败，
+        // _downloadFrom 已删 .part，下一轮从 0 整段重下。
+        onFallback?.call(f, urls[i], urls[i + 1], e.message);
       } finally {
         client.close(force: true);
       }

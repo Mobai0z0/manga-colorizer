@@ -24,6 +24,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
 
+import '../logs/log_bus.dart';
 import 'backend.dart';
 import 'pipeline.dart';
 import 'weights.dart';
@@ -197,12 +198,14 @@ Future<void> _runAutoWorker(ReceivePort rx, SendPort main) async {
 
 /// 主 isolate 门面：工作 isolate 常驻，空闲 60s 自动释放后端。
 class AutoEngine {
-  AutoEngine({SpawnAutoWorker? spawn, Duration? idleRelease})
+  AutoEngine({SpawnAutoWorker? spawn, Duration? idleRelease, LogBus? logBus})
       : _spawn = spawn ?? spawnIsolateAutoWorker,
-        _idleRelease = idleRelease ?? const Duration(seconds: 60);
+        _idleRelease = idleRelease ?? const Duration(seconds: 60),
+        _logBus = logBus;
 
   final SpawnAutoWorker _spawn;
   final Duration _idleRelease;
+  final LogBus? _logBus;
 
   AutoWorkerHandle? _handle;
   SendPort? _to;
@@ -239,6 +242,7 @@ class AutoEngine {
       _to = to;
       _to!.send(['dir', dirPath]);
       _armIdle(); // 从没用过也要能到期自释放
+      _logBus?.info('auto', '引擎已启动（worker 握手完成）');
     } on Object {
       await sub.cancel();
       rx.close();
@@ -316,6 +320,7 @@ class AutoEngine {
   /// 下次 [ensureStarted] 重新 spawn。cancel/shutdown 先拆的话此处成空转。
   void _onWorkerDied(Object why) {
     if (!alive) return;
+    _logBus?.error('auto', 'worker isolate 意外终止: $why');
     _idle?.cancel();
     _to = null; // 同步标记已死：后续死亡事件/拆机动作都在此短路
     final job = _job;

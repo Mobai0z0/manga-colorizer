@@ -17,6 +17,7 @@ import 'package:share_plus/share_plus.dart';
 import 'onnx/auto_service.dart';
 import 'onnx/weights.dart';
 import 'app_settings.dart';
+import 'logs/log_bus.dart';
 
 /// 单文件下载的注入接缝：默认走 WeightsStore.download（真实网络），
 /// 宿主测试替换成假下载器（测试不得访问真实网络）。
@@ -49,6 +50,7 @@ class AutoTab extends StatefulWidget {
     super.key,
     required this.engine,
     required this.controller,
+    required this.logs,
     this.resolveDir,
     this.downloadOne,
     this.onCompleted,
@@ -58,6 +60,9 @@ class AutoTab extends StatefulWidget {
 
   /// 全局设置控制器：下载源从此读取、经它落盘（与主题共享同一 settings.json）。
   final SettingsController controller;
+
+  /// 端侧运行日志总线：由 [AutoScreen] 注入，本视图只写入、不释放。
+  final LogBus logs;
 
   /// 权重目录解析：生产默认 getApplicationSupportDirectory()/manga-light-colorizer
   /// （与桌面 weights 布局同名）；测试注入临时目录（path_provider 在宿主测试不可用）。
@@ -218,18 +223,26 @@ class _AutoTabState extends State<AutoTab> {
         if (injected != null) {
           await injected(f, onProgress);
         } else {
-          await store.download(f, onProgress: onProgress);
+          await store.download(f,
+              onProgress: onProgress,
+              onFallback: (file, from, next, why) => widget.logs.warn(
+                  'weights',
+                  '权重 ${file.name} 主站失败，回退镜像：'
+                  '${Uri.parse(from).host}→${Uri.parse(next).host}：$why'));
         }
+        widget.logs.info('weights', '权重 ${f.name} 下载完成（${f.size} 字节）');
       }
       if (mounted) {
         setState(() {
           _weightsMissing = false;
           _status = '权重就绪。';
         });
+        widget.logs.info('weights', '权重全部就绪');
       }
     } on WeightsException catch (e) {
       // 契约：下载器的传输失败只会以 WeightsException 出现。
       if (mounted) setState(() => _status = '下载失败：${e.message}');
+      widget.logs.error('weights', '下载失败：${e.message}');
     } on Object catch (e) {
       if (mounted) setState(() => _status = '下载失败：$e');
     } finally {
@@ -300,6 +313,7 @@ class _AutoTabState extends State<AutoTab> {
       _resultPng = null;
       _status = '加载模型并分块上色中…';
     });
+    widget.logs.info('auto', '全自动任务开始 $_w×$_h');
     try {
       await widget.engine.ensureStarted(dir.path);
       final out = await widget.engine.colorize(gray, _w, _h, onProgress: (p) {
@@ -311,6 +325,7 @@ class _AutoTabState extends State<AutoTab> {
       });
       if (out == null) {
         if (mounted) setState(() => _status = '已取消。');
+        widget.logs.info('auto', '全自动任务已取消');
         return;
       }
       if (mounted) setState(() => _status = '编码 PNG…');
@@ -329,6 +344,7 @@ class _AutoTabState extends State<AutoTab> {
       }
     } on Object catch (e) {
       if (mounted) setState(() => _status = '全自动失败：$e');
+      widget.logs.error('auto', '全自动失败：$e');
     } finally {
       if (mounted) {
         setState(() {
