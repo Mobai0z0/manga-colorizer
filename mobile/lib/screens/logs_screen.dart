@@ -39,7 +39,9 @@ class _LogsScreenState extends State<LogsScreen> {
           _scroll.position.maxScrollExtent - 40;
 
   void _followIfNeeded(bool wasAtBottom) {
-    if (!wasAtBottom || !_scroll.hasClients) return;
+    if (!wasAtBottom) return;
+    // 首帧的定位就靠这个延迟：builder 跑完时 Scrollable 还没挂上 position，
+    // 等到帧后再跳，才有 maxScrollExtent 可跳。
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scroll.hasClients) {
         _scroll.jumpTo(_scroll.position.maxScrollExtent);

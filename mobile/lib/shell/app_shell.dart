@@ -26,6 +26,16 @@ class AppShell extends StatefulWidget {
 class _AppShellState extends State<AppShell> {
   int _index = 0;
 
+  // 临时：AppShell 尚未接收注入的 LogBus，此处构造本地实例，故日志屏在
+  // 接线完成前恒为空态。放在 State 上以免每次 build 都换新总线。
+  late final LogBus _logs = LogBus();
+
+  @override
+  void dispose() {
+    _logs.dispose();
+    super.dispose();
+  }
+
   void _go(AppDestination dest) => setState(() => _index = dest.index);
 
   @override
@@ -38,8 +48,7 @@ class _AppShellState extends State<AppShell> {
           ColorizeScreen(controller: widget.controller, gallery: widget.gallery),
           AutoScreen(controller: widget.controller, gallery: widget.gallery),
           GalleryScreen(controller: widget.controller, gallery: widget.gallery),
-          // Task 4 会把这里的临时 LogBus() 换成注入实例。
-          LogsScreen(controller: widget.controller, logs: LogBus()),
+          LogsScreen(controller: widget.controller, logs: _logs),
         ],
       ),
       bottomNavigationBar: NavigationBar(
