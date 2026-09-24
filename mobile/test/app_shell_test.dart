@@ -2,11 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:manga_colorizer_mobile/shell/app_shell.dart';
 import 'package:manga_colorizer_mobile/app_settings.dart';
+import 'package:manga_colorizer_mobile/gallery/gallery_store.dart';
 import 'package:manga_colorizer_mobile/shell/destinations.dart';
 
 void main() {
   Widget boot() => MaterialApp(
-      home: AppShell(controller: SettingsController(AppSettings.defaults())));
+      home: AppShell(
+          controller: SettingsController(AppSettings.defaults()),
+          gallery: GalleryStore()));
 
   testWidgets('底栏 5 目的地，默认首页', (tester) async {
     await tester.pumpWidget(boot());
@@ -34,6 +37,6 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('图库').first); // 首页卡
     await tester.pumpAndSettle();
-    expect(find.text('还没有已保存的作品'), findsOneWidget);
+    expect(find.text('还没有作品'), findsOneWidget);
   });
 }

@@ -1,7 +1,8 @@
 // 上色目的地（E-壳阶段）：提示点纯 Dart 引擎工作台。
 //   · 选图 → 在画布上落彩色提示点 → isolate 中运行 manga_colorizer_core
 //     的色度扩散求解（亮度完整保留）→ 保存/分享结果。
-// 本屏只负责单张图的「落点 → 上色 → 分享」；引擎生命周期属 AutoScreen，
+// 本屏只负责单张图的「落点 → 上色 → 分享」，并在有效上色成功后非阻塞入库
+// （经注入的 GalleryStore）；引擎生命周期属 AutoScreen，
 // 顶部导航与切页属 AppShell，故此处无全局导航态耦合。
 import 'dart:async';
 import 'dart:io';
@@ -17,6 +18,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:manga_colorizer_core/manga_colorizer_core.dart';
 
 import '../app_settings.dart';
+import '../gallery/gallery_store.dart';
 import '../shell/screen_chrome.dart';
 
 /// Color 通道（0..1 double）→ 8bit 整数。替代已弃用的 `.red/.green/.blue`
@@ -31,10 +33,17 @@ class _HintPoint {
 }
 
 class ColorizeScreen extends StatefulWidget {
-  const ColorizeScreen({super.key, required this.controller});
+  const ColorizeScreen({
+    super.key,
+    required this.controller,
+    required this.gallery,
+  });
 
   /// 全局设置控制器（主题 + 下载源），由壳/宿主持有并下发。
   final SettingsController controller;
+
+  /// 端侧图库：上色成功后非阻塞入库。由壳/宿主持有并下发。
+  final GalleryStore gallery;
 
   @override
   State<ColorizeScreen> createState() => _ColorizeScreenState();
@@ -148,6 +157,20 @@ class _ColorizeScreenState extends State<ColorizeScreen> {
             ? '完成（无提示点，输出为原图）。请落点后重新上色。'
             : '上色完成：${png.hintCount} 个提示点，迭代 ${png.iterations} 次。';
       });
+      // 有提示点才入库：0 提示点的输出即原图，存进去只是噪音，故跳过。
+      final srcImg = _source;
+      final srcPng = _sourcePng;
+      if (png.hintCount > 0 && srcImg != null && srcPng != null) {
+        unawaited(widget.gallery.add(
+          resultPng: png.bytes,
+          sourcePng: srcPng,
+          width: srcImg.width,
+          height: srcImg.height,
+          mode: 'hints',
+          elapsedS: sw.elapsedMilliseconds / 1000.0,
+          hintCount: png.hintCount,
+        ));
+      }
     } catch (e) {
       setState(() => _status = '上色失败：$e');
     } finally {
