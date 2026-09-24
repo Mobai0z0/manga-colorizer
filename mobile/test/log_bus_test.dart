@@ -57,6 +57,20 @@ void main() {
     b.dispose();
   });
 
+  test('entries 是只读快照：调用方改不动内部环', () {
+    final b = LogBus();
+    b.info('auto', 'x');
+    final snap = b.entries;
+    expect(() => snap.add(LogEntry(
+        seq: 99, time: DateTime.now(), level: LogLevel.info, tag: 't', message: 'm')),
+        throwsUnsupportedError);
+    expect(() => snap[0] = LogEntry(
+        seq: 98, time: DateTime.now(), level: LogLevel.info, tag: 't', message: 'm'),
+        throwsUnsupportedError);
+    expect(b.entries.single.message, 'x'); // 内部环未受影响
+    b.dispose();
+  });
+
   test('dispose 后追加不抛（重入保护）', () {
     final b = LogBus();
     b.dispose();
