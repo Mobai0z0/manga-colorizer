@@ -260,6 +260,9 @@ class AutoEngine {
 
   bool get alive => _to != null;
 
+  /// 是否有在飞任务：内存压力回调据此决定「释放会话」还是「绝不动推理」。
+  bool get working => _job != null;
+
   /// dirPath 由主 isolate 的 getApplicationSupportDirectory()/manga-light-colorizer
   /// 传入；intraThreads/useArena 来自 ResourceTier 设备分级，随 ['dir'] 带给 worker。
   Future<void> ensureStarted(String dirPath,
