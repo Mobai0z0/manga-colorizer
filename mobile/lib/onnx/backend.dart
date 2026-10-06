@@ -1,15 +1,22 @@
 // ONNX Runtime 推理层的唯一出入口：桌面管线同款两 session（SAM encoder → generator）。
 //
-// 绑定事实（flutter_onnxruntime 1.8.5，按 pub 缓存源码核对，非文档记忆）：
-//   · 加载：OnnxRuntime().createSession(path)（无 createSessionFromFile）
+// 绑定事实（flutter_onnxruntime 1.9.0，按 pub 缓存源码逐条核对，非文档记忆；
+// 1.9.0 起 ORT 原生层为 1.28.x）：
+//   · 加载：OnnxRuntime().createSession(path)（无 createSessionFromFile）；
+//     Kotlin 层 createSession(modelPath, options) 路径直达 ORT，无字节双拷贝
 //   · 类型：OrtSession（非 InferenceSession），有 inputNames/outputNames/close()
-//   · run() 返回 Map<String, OrtValue>（键为输出名）。注意：该 Map 由原生侧 Java
-//     HashMap 灌入（FlutterOnnxruntimePlugin.kt:438），Dart 侧迭代顺序＝字符串哈希序，
-//     **不是**图声明顺序，因此输出只允许按名字取（见 pickOutputKey）。
+//   · run() 返回 Map<String, OrtValue>（键为输出名）。注意：该 Map 由原生侧
+//     Java HashMap 灌入，Dart 侧迭代顺序＝字符串哈希序，**不是**图声明顺序，
+//     因此输出只允许按名字取（见 pickOutputKey）。
 //     输入侧不同：session.inputNames 是 ORT 实得的声明顺序，_remapInputs 可按位置回退。
 //   · OrtValue 无 .value：数据要 await value.asFlattenedList() 取回；shape 已是 List<int>
 //   · OrtValue 持有原生张量，必须显式 dispose()，否则原生内存泄漏
-//   · 释放 session 用 close()（无 release()）
+//   · 释放 session 用 close()（无 release()）；closeSession **不清** Kotlin 全局
+//     ortValues 缓存（只有引擎 detach 才清）——fromList 出来的值必须逐个 dispose
+//   · session options：intraOpNumThreads/interOpNumThreads/providers/useArena/
+//     deviceId/sessionConfigs（1.9.0 新增，Kotlin 逐条 addConfigEntry）；
+//     run() 另有可选 OrtRunOptions（仅 log/terminate，无 config entries——
+//     arena shrinkage 因此只能走 sessionConfigs）
 // 模型图签名（onnx 解析实得）：encoder 输入 rgb_input[batch,3,1024,1024] →
 // sam_level0[batch,256,h,w] + sam_level1[batch,256,h,w]；generator 输入
 // L_bw[batch,1,h,w]、sam_level0、sam_level1、wd14_embedding[batch,1024]（全 float32）
@@ -124,12 +131,13 @@ String? pickOutputKey({
 /// ResourceTier 降到 2（构造参数传入）。
 const kDefaultIntraThreads = 4;
 
-/// ORT CPU arena allocator 开关（flutter_onnxruntime 的 useArena → Kotlin
-/// `setCPUArenaAllocator`，pub 缓存源码 FlutterOnnxruntimePlugin.kt:246 实核）。
-/// arena 默认开启：为 1024² 卷积工作区涨到数百 MB 且在两次推理之间常驻不还
-/// ——关闭后每次张量分配走普通 malloc/free，原生峰值显著更低，代价是块间
-/// 无法复用 arena、逐块推理变慢。真机以 auto 日志的每块耗时数据验收此开关。
-const _kUseArena = false;
+/// arena 策略（v0.5.6）：arena 开启保证块内分配零 malloc 开销，同时经 session
+/// config entry 打开 **arena shrinkage**——每次 Run 后把工作区还给 OS，块间
+/// RSS 回落。这替换了 v0.5.5 的 useArena:false（全程 malloc、逐块变慢）：
+/// 块内同样快、块间同样低，是内存/速度的两全解（ORT RunOptions config 键
+/// memory.enable_memory_arena_shrinkage，值=要收缩的 device，cpu:0）。
+/// 若 ORT 拒绝该键（版本行为差异），[load] 的降级阶梯自动退回 useArena:false。
+const _kShrinkageConfigs = {'memory.enable_memory_arena_shrinkage': 'cpu:0'};
 
 class OrtOnnxBackend implements OnnxBackend {
   OrtOnnxBackend(this._store, {this.intraThreads = kDefaultIntraThreads});
@@ -146,14 +154,12 @@ class OrtOnnxBackend implements OnnxBackend {
   Future<void> load() async {
     if (_sam != null) return;
     final ort = OnnxRuntime();
-    // 权重绝不入 APK/assets：只从 WeightsStore 的下载目录按文件路径加载。
-    final sam = await ort.createSession(_store.pathOf(kWeightFiles[1]),
-        options: OrtSessionOptions(
-            intraOpNumThreads: intraThreads, useArena: _kUseArena));
+    // 权重绝不入 APK/assets：只从 WeightsStore 的下载目录按文件路径加载
+    // （插件 Kotlin 层 createSession(modelPath, options)——路径直达 ORT，
+    // 不经 Java 字节数组双拷贝）。
+    final sam = await _createSession(ort, kWeightFiles[1]);
     try {
-      _gen = await ort.createSession(_store.pathOf(kWeightFiles[0]),
-          options: OrtSessionOptions(
-              intraOpNumThreads: intraThreads, useArena: _kUseArena));
+      _gen = await _createSession(ort, kWeightFiles[0]);
       _sam = sam;
     } on Object {
       // generator 加载失败不能把 encoder 的 100MB+ 原生内存留在进程里。
@@ -161,6 +167,24 @@ class OrtOnnxBackend implements OnnxBackend {
       _sam = null;
       _gen = null;
       rethrow;
+    }
+  }
+
+  /// 会话创建的降级阶梯：arena+shrinkage（首选，内存/速度两全）→
+  /// arena 关闭（v0.5.5 验证过的内存安全配置）。绝不静默落到「arena 常驻
+  /// 不还」的默认行为——那是低内存设备被系统杀进程的直接原因。
+  Future<OrtSession> _createSession(OnnxRuntime ort, WeightFile weight) async {
+    final path = _store.pathOf(weight);
+    try {
+      return await ort.createSession(path,
+          options: OrtSessionOptions(
+              intraOpNumThreads: intraThreads,
+              useArena: true,
+              sessionConfigs: _kShrinkageConfigs));
+    } on Object {
+      return await ort.createSession(path,
+          options: OrtSessionOptions(
+              intraOpNumThreads: intraThreads, useArena: false));
     }
   }
 
@@ -196,7 +220,7 @@ class OrtOnnxBackend implements OnnxBackend {
     requirePlanar(sam1, _kSam1);
     // feed 的构建必须在 try 内并登记每个已建 OrtValue：OrtValue.fromList 一旦把原生
     // 张量注册进插件全局缓存（Kotlin `ortValues`），只有其 Dart 包装被 dispose 才会
-    // 移除，而 closeSession 并不清该缓存（FlutterOnnxruntimePlugin.kt:477-489）。
+    // 移除，而 closeSession 并不清该缓存（1.9.0 源码复核仍如此，见文件头绑定事实）。
     // 若第 2~4 个 fromList 抛出（真实触发：16 MB 的 sam_level0 原生 OOM），map 字面量
     // 整体失败、feed 根本不存在，未登记的张量将活到进程结束。
     final created = <OrtValue>[];

@@ -10,7 +10,6 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:manga_colorizer_core/manga_colorizer_core.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -18,6 +17,7 @@ import 'onnx/auto_service.dart';
 import 'onnx/weights.dart';
 import 'image_cap.dart';
 import 'mem_info.dart';
+import 'png_encode.dart';
 import 'resource_tier.dart';
 import 'app_settings.dart';
 import 'logs/log_bus.dart';
@@ -264,38 +264,18 @@ class _AutoTabState extends State<AutoTab> {
   // context 父链连 _AutoTabState（整棵 widget 树）一起走，抛 "object is
   // unsendable"，选图/编码必失败（v0.5.1 真机必现）。static 作用域无 this 可捕。
 
-  /// 灰度化 + 原稿 PNG 编码（在工作 isolate 执行）。RGBA 由主 isolate 的
-  /// capDecodeRgba 按目标尺寸产出（见 image_cap.dart），isolate 内不再出现
-  /// 全分辨率位图——旧路径对 50MP 原图的兜底解码瞬时可达 ~300MB。
-  static Future<
-      ({
-        Uint8List gray,
-        int width,
-        int height,
-        Uint8List png,
-        int? origWidth,
-        int? origHeight,
-      })> _decodePick(
-      Uint8List rgba, int width, int height, int? origWidth, int? origHeight) {
-    return Isolate.run(() {
-      final planes = rgbaToGrayPlanes(rgba);
-      final png = MangaImageIO.encodePng(
-          rgb: planes.grayRgb, width: width, height: height);
-      return (
-        gray: planes.gray,
-        width: width,
-        height: height,
-        png: png,
-        origWidth: origWidth,
-        origHeight: origHeight,
-      );
-    });
+  /// 灰度单通道化（在工作 isolate 执行）：RGBA 由主 isolate 的 capDecodeRgba
+  /// 按目标尺寸产出（见 image_cap.dart），isolate 内不再出现全分辨率位图——
+  /// 旧路径对 50MP 原图的兜底解码瞬时可达 ~300MB。
+  /// 源稿 PNG 不在这里编码：改走引擎线程原生编码（png_encode.dart），纯 Dart
+  /// zlib 在 2048² 上可达秒级。
+  static Future<Uint8List> _decodeGray(Uint8List rgba) {
+    return Isolate.run(() => rgbaToGray(rgba));
   }
 
-  /// RGB 像素编码为 PNG（在工作 isolate 执行）。
+  /// 结果 RGB → PNG（引擎线程原生编码，主 isolate await）。
   static Future<Uint8List> _encodePng(Uint8List rgb, int width, int height) {
-    return Isolate.run(
-        () => MangaImageIO.encodePng(rgb: rgb, width: width, height: height));
+    return encodePngFromRgb(rgb, width, height);
   }
 
   Future<void> _pick() async {
@@ -327,22 +307,26 @@ class _AutoTabState extends State<AutoTab> {
       // XFile.path 不是真实文件路径，须经平台通道解析。
       final bytes = await file.readAsBytes();
       final cap = await capDecodeRgba(bytes, maxSide: tier.maxPickSide);
-      final decoded = await _decodePick(cap.rgba, cap.width, cap.height,
-          cap.origWidth, cap.origHeight);
+      // 灰度（工作 isolate）与源稿 PNG（引擎线程）并行产出。
+      final grayFuture = _decodeGray(cap.rgba);
+      final pngFuture =
+          encodePngFromRgba(cap.rgba, cap.width, cap.height);
+      final gray = await grayFuture;
+      final png = await pngFuture;
       if (!mounted) return;
-      final origW = decoded.origWidth;
+      final origW = cap.origWidth;
       if (origW != null) {
         widget.logs.info('auto',
-            '原图 $origW×${decoded.origHeight} 超过端侧长边上限 '
-            '${tier.maxPickSide}，已缩放至 ${decoded.width}×${decoded.height}');
+            '原图 $origW×${cap.origHeight} 超过端侧长边上限 '
+            '${tier.maxPickSide}，已缩放至 ${cap.width}×${cap.height}');
       }
       setState(() {
-        _gray = decoded.gray;
-        _w = decoded.width;
-        _h = decoded.height;
-        _sourcePng = decoded.png;
+        _gray = gray;
+        _w = cap.width;
+        _h = cap.height;
+        _sourcePng = png;
         _resultPng = null;
-        _status = '已加载 ${decoded.width}×${decoded.height}。';
+        _status = '已加载 ${cap.width}×${cap.height}。';
       });
     } on Object catch (e) {
       if (mounted) setState(() => _status = '读取失败：$e');
