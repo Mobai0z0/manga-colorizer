@@ -19,6 +19,7 @@ import 'package:manga_colorizer_core/manga_colorizer_core.dart';
 
 import '../app_settings.dart';
 import '../gallery/gallery_store.dart';
+import '../image_cap.dart';
 import '../logs/log_bus.dart';
 import '../shell/screen_chrome.dart';
 
@@ -86,13 +87,25 @@ class _ColorizeScreenState extends State<ColorizeScreen> {
   // 选图/上色必失败。static 作用域无 this 可捕。
 
   /// 解码 + 灰度 + 原稿 PNG 编码，合并在一个工作 isolate 内完成。
-  static Future<({DecodedImage decoded, Uint8List png})> _loadImageIsolate(
-      Uint8List bytes) {
+  /// 长边超过 kMaxPickSide 先缩到上限（端侧内存分级，见 image_cap.dart）。
+  static Future<
+      ({
+        DecodedImage decoded,
+        Uint8List png,
+        int? origWidth,
+        int? origHeight,
+      })> _loadImageIsolate(Uint8List bytes) {
     return Isolate.run(() {
-      final decoded = MangaImageIO.decodeGrayscale(bytes);
+      final capped = capDecodeGrayscale(bytes);
+      final d = capped.image;
       final png = MangaImageIO.encodePng(
-          rgb: decoded.rgb, width: decoded.width, height: decoded.height);
-      return (decoded: decoded, png: png);
+          rgb: d.rgb, width: d.width, height: d.height);
+      return (
+        decoded: d,
+        png: png,
+        origWidth: capped.origWidth,
+        origHeight: capped.origHeight,
+      );
     });
   }
 
@@ -125,6 +138,12 @@ class _ColorizeScreenState extends State<ColorizeScreen> {
     });
     try {
       final loaded = await _loadImageIsolate(bytes);
+      final origW = loaded.origWidth;
+      if (origW != null) {
+        widget.logs.info('hints',
+            '原图 $origW×${loaded.origHeight} 超过端侧长边上限 '
+            '$kMaxPickSide，已缩放至 ${loaded.decoded.width}×${loaded.decoded.height}');
+      }
       setState(() {
         _source = loaded.decoded;
         _sourcePng = loaded.png;
@@ -140,7 +159,12 @@ class _ColorizeScreenState extends State<ColorizeScreen> {
   }
 
   Future<void> _pickImage() async {
-    final XFile? file = await _picker.pickImage(source: ImageSource.gallery);
+    // maxWidth/maxHeight：让相册在原生侧就缩到长边上限（不落全分辨率位图，
+    // 见 image_cap.dart）；未生效时 _loadImageIsolate 的兜底缩放会再拦一次。
+    final XFile? file = await _picker.pickImage(
+        source: ImageSource.gallery,
+        maxWidth: kMaxPickSide.toDouble(),
+        maxHeight: kMaxPickSide.toDouble());
     if (file == null) return;
     // 用 XFile.readAsBytes 而非 File(path).readAsBytes：部分 Android 设备上
     // 相册返回的是 content:// URI，XFile.path 并非真实文件路径，直接 File()

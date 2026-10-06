@@ -118,6 +118,11 @@ String? pickOutputKey({
   return (data, List<int>.unmodifiable(shape));
 }
 
+/// ORT CPU EP 的 intra-op 线程上限：ORT 默认按可用大核数开线程，每线程各持
+/// 执行缓冲与栈；手机端限 4 压原生内存峰值，也避免与 Flutter UI 线程抢核。
+/// 分块推理是串行的（并发 1），4 线程已足够喂饱 1024² 单块。
+const _kIntraThreads = 4;
+
 class OrtOnnxBackend implements OnnxBackend {
   OrtOnnxBackend(this._store);
 
@@ -130,9 +135,11 @@ class OrtOnnxBackend implements OnnxBackend {
     if (_sam != null) return;
     final ort = OnnxRuntime();
     // 权重绝不入 APK/assets：只从 WeightsStore 的下载目录按文件路径加载。
-    final sam = await ort.createSession(_store.pathOf(kWeightFiles[1]));
+    final sam = await ort.createSession(_store.pathOf(kWeightFiles[1]),
+        options: OrtSessionOptions(intraOpNumThreads: _kIntraThreads));
     try {
-      _gen = await ort.createSession(_store.pathOf(kWeightFiles[0]));
+      _gen = await ort.createSession(_store.pathOf(kWeightFiles[0]),
+          options: OrtSessionOptions(intraOpNumThreads: _kIntraThreads));
       _sam = sam;
     } on Object {
       // generator 加载失败不能把 encoder 的 100MB+ 原生内存留在进程里。

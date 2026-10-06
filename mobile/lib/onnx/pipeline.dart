@@ -60,12 +60,14 @@ Future<Uint8List?> autoColorize({
       onProgress?.call(done / total);
     }
   }
-  // L 恒取原稿: gray→(r=g=b)→Lab 的 L + 融合后的 a/b（service.py:393-397）。
-  final refLab = rgbToLab(_expand3(gray), n);
+  // L 恒取原稿：单通道直接算 Lab 的 L（灰度退化 RGB 的 a/b 恒为偏置 128，
+  // 数值与 rgbToLab(展开三通道) 逐值一致，见 lab.dart grayToLabL），免建 3n
+  // 展开缓冲；a/b 用融合后的色度（service.py:393-397）。
+  final refL = grayToLabL(gray);
   final outLab = Uint8List(n * 3);
   for (var p = 0; p < n; p++) {
     final ww = weight[p] < 1e-6 ? 1e-6 : weight[p];
-    outLab[p * 3] = refLab[p * 3];
+    outLab[p * 3] = refL[p];
     outLab[p * 3 + 1] = (chroma[p * 2] / ww).clamp(0.0, 255.0).round();
     outLab[p * 3 + 2] = (chroma[p * 2 + 1] / ww).clamp(0.0, 255.0).round();
   }
@@ -76,14 +78,6 @@ Uint8List _crop(Uint8List g, int gw, int x0, int y0, int w, int h) {
   final o = Uint8List(w * h);
   for (var y = 0; y < h; y++) {
     o.setRange(y * w, y * w + w, g, (y0 + y) * gw + x0);
-  }
-  return o;
-}
-
-Uint8List _expand3(Uint8List g) {
-  final o = Uint8List(g.length * 3);
-  for (var i = 0; i < g.length; i++) {
-    o[i * 3] = o[i * 3 + 1] = o[i * 3 + 2] = g[i];
   }
   return o;
 }

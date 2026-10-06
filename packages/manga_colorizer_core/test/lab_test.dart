@@ -42,4 +42,22 @@ void main() {
       }
     });
   }
+
+  test('grayToLabL 与 rgbToLab 在灰度输入下逐值一致（全 256 值）', () {
+    // 灰度退化 RGB（R=G=B）的 a/b 恒为偏置 128，L 只依赖灰度值；grayToLabL
+    // 的系数求和顺序与 rgbToLab 一致，256 个 8bit 输入必须逐位相等。
+    final gray = Uint8List(256);
+    final rgb = Uint8List(256 * 3);
+    for (var g = 0; g < 256; g++) {
+      gray[g] = g;
+      rgb[g * 3] = rgb[g * 3 + 1] = rgb[g * 3 + 2] = g;
+    }
+    final lab = rgbToLab(rgb, 256);
+    final l = grayToLabL(gray);
+    for (var g = 0; g < 256; g++) {
+      expect(lab[g * 3 + 1], 128, reason: 'a 偏置 g=$g');
+      expect(lab[g * 3 + 2], 128, reason: 'b 偏置 g=$g');
+      expect(l[g], lab[g * 3], reason: 'L g=$g');
+    }
+  });
 }
