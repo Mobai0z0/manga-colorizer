@@ -26,8 +26,9 @@ Feature set: fully automatic ONNX semantic colorization (SAM guidance + generato
 canvas refinement, reference-image color transfer, batch queue (up to 32 images at a time, a
 single failure does not block the rest), automatic tiled inference for long images, luminance
 fidelity (all modes write only the Lab a/b chroma; the L channel is always written back from the
-original), and automatic GPU acceleration (DirectML preferred on Windows, CUDA available on
-NVIDIA, automatic fallback to CPU when no GPU is present).
+original), color finishing (chroma gain + out-of-gamut equal-ratio shrink mapping, see the
+Chinese doc section「色彩收尾」), and automatic GPU acceleration (DirectML preferred on Windows,
+CUDA available on NVIDIA, automatic fallback to CPU when no GPU is present).
 
 ## Frontend (web/dist)
 
@@ -103,6 +104,7 @@ are always `{"error": "..."}`).
 | `COLORIZER_LOG_FILE` | — | Append-only log file |
 | `COLORIZER_PRELOAD` | `1` | Background model warm-up at startup (load + dummy inference); `0` disables it to save memory, at the cost of an extra 10-20s wait on the first colorization |
 | `COLORIZER_IDLE_UNLOAD` | `600` | How many seconds of idle before releasing the model (memory + VRAM returned to the system; the next colorization wakes it automatically); `0` = keep it resident, never release |
+| `COLORIZER_CHROMA_GAIN` | `1.2` | Chroma gain applied to the fully automatic output (before quantization, clamped to 0.5-2.0); `1.0` = gain off, only the gamut mapping remains |
 
 ## Dart engine (packages/manga_colorizer_core)
 
@@ -111,7 +113,7 @@ path:
 
 ```bash
 dart pub get
-dart test                                      # 25 engine regression tests
+dart test                                      # 35 engine regression tests
 dart run tool/colorize_auto_client.dart -i 漫画.png -o 输出.png
 dart run manga_colorizer_cli:colorize -i 原稿.png -o 输出.png --hints hints.json
 ```
@@ -133,7 +135,11 @@ A lightweight Android-side workbench (Flutter) with two tabs:
 - **Fully automatic**: on-device ONNX fully-automatic colorization, with
   pipeline semantics aligned to the desktop `/colorize_auto` — the same weight
   pair (v6_sam_encoder + v6_generator), tile 1024 / overlap 256 linear
-  feathering, and the L channel always taken from the original gray image.
+  feathering, the L channel always taken from the original gray image, and the
+  same color finishing math (gain constant `kAutoChromaGain` matching the
+  desktop default; the desktop tiled path feeds float chroma straight into the
+  finish, while on-device it goes through 8-bit a/b quantization first,
+  ≤0.5 Lab units — same order as the resize interpolation deviation).
   Weights are not shipped inside the APK (CC BY-NC-SA); they are downloaded
   on first use inside the app, with resume support and SHA-256 verification,
   and the manifest carries an hf-mirror fallback source for mainland-China
