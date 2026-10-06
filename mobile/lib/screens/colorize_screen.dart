@@ -21,6 +21,7 @@ import '../app_settings.dart';
 import '../gallery/gallery_store.dart';
 import '../image_cap.dart';
 import '../logs/log_bus.dart';
+import '../png_encode.dart';
 import '../resource_tier.dart';
 import '../shell/screen_chrome.dart';
 
@@ -87,32 +88,26 @@ class _ColorizeScreenState extends State<ColorizeScreen> {
   // context 父链连 State（整棵 widget 树）一起走，抛 "object is unsendable"，
   // 选图/上色必失败。static 作用域无 this 可捕。
 
-  /// 灰度化 + 原稿 PNG 编码，合并在一个工作 isolate 内完成。RGBA 由主 isolate
-  /// 的 capDecodeRgba 按目标尺寸产出（见 image_cap.dart），isolate 内不再出现
-  /// 全分辨率位图——旧路径对 50MP 原图的兜底解码瞬时可达 ~300MB。
-  static Future<
-      ({
-        DecodedImage decoded,
-        Uint8List png,
-        int? origWidth,
-        int? origHeight,
-      })> _loadImageIsolate(
+  /// 灰度化（工作 isolate）：RGBA 由主 isolate 的 capDecodeRgba 按目标尺寸
+  /// 产出（见 image_cap.dart），isolate 内不再出现全分辨率位图——旧路径对
+  /// 50MP 原图的兜底解码瞬时可达 ~300MB。源稿 PNG 不在这里编码：改走引擎
+  /// 线程原生编码（png_encode.dart）。
+  static Future<({DecodedImage decoded, int? origWidth, int? origHeight})>
+      _loadImageIsolate(
       Uint8List rgba, int width, int height, int? origWidth, int? origHeight) {
     return Isolate.run(() {
       final planes = rgbaToGrayPlanes(rgba);
-      final png = MangaImageIO.encodePng(
-          rgb: planes.grayRgb, width: width, height: height);
       return (
         decoded: DecodedImage(width, height, planes.grayRgb),
-        png: png,
         origWidth: origWidth,
         origHeight: origHeight,
       );
     });
   }
 
-  /// 色度扩散求解 + 结果 PNG 编码（在工作 isolate 执行）。
-  static Future<({Uint8List bytes, int iterations, int hintCount})>
+  /// 色度扩散求解（工作 isolate）：只回 RGB 与统计，PNG 编码移到主 isolate
+  /// 走引擎线程（png_encode.dart），Dart zlib 不再占用工作 isolate。
+  static Future<({Uint8List rgb, int iterations, int hintCount})>
       _colorizeIsolate(DecodedImage src, List<ColorHint> hints) {
     return Isolate.run(() {
       final result = colorizeManga(
@@ -122,8 +117,7 @@ class _ColorizeScreenState extends State<ColorizeScreen> {
         hints: hints,
       );
       return (
-        bytes: MangaImageIO.encodePng(
-            rgb: result.rgb, width: result.width, height: result.height),
+        rgb: result.rgb,
         iterations: result.iterations,
         hintCount: result.hintCount,
       );
@@ -145,8 +139,12 @@ class _ColorizeScreenState extends State<ColorizeScreen> {
       // 设备分级档位：picker 与解码兜底共用同一上限（detect 有缓存）。
       final tier = await ResourceTier.detect();
       final cap = await capDecodeRgba(bytes, maxSide: tier.maxPickSide);
-      final loaded = await _loadImageIsolate(
+      // 灰度（工作 isolate）与源稿 PNG（引擎线程）并行产出。
+      final loadedFuture = _loadImageIsolate(
           cap.rgba, cap.width, cap.height, cap.origWidth, cap.origHeight);
+      final pngFuture = encodePngFromRgba(cap.rgba, cap.width, cap.height);
+      final loaded = await loadedFuture;
+      final png = await pngFuture;
       final origW = loaded.origWidth;
       if (origW != null) {
         widget.logs.info('hints',
@@ -155,7 +153,7 @@ class _ColorizeScreenState extends State<ColorizeScreen> {
       }
       setState(() {
         _source = loaded.decoded;
-        _sourcePng = loaded.png;
+        _sourcePng = png;
         _status =
             '$label ${loaded.decoded.width}×${loaded.decoded.height}。点按图片落提示点，然后「上色」。';
       });
@@ -208,30 +206,32 @@ class _ColorizeScreenState extends State<ColorizeScreen> {
     });
     final sw = Stopwatch()..start();
     try {
-      final png = await _colorizeIsolate(src, hints);
+      final out = await _colorizeIsolate(src, hints);
       sw.stop();
+      // 结果 PNG 走引擎线程原生编码（png_encode.dart），不再进 Dart zlib。
+      final png = await encodePngFromRgb(out.rgb, src.width, src.height);
       setState(() {
-        _resultPng = png.bytes;
+        _resultPng = png;
         _mode = _ViewMode.colorized;
         _elapsed = '${(sw.elapsedMilliseconds / 1000).toStringAsFixed(1)} s';
-        _status = png.hintCount == 0
+        _status = out.hintCount == 0
             ? '完成（无提示点，输出为原图）。请落点后重新上色。'
-            : '上色完成：${png.hintCount} 个提示点，迭代 ${png.iterations} 次。';
+            : '上色完成：${out.hintCount} 个提示点，迭代 ${out.iterations} 次。';
       });
       widget.logs.info('hints',
-          '提示点上色完成 ${src.width}×${src.height}，${png.hintCount} 个提示点，耗时 $_elapsed');
+          '提示点上色完成 ${src.width}×${src.height}，${out.hintCount} 个提示点，耗时 $_elapsed');
       // 有提示点才入库：0 提示点的输出即原图，存进去只是噪音，故跳过。
       final srcImg = _source;
       final srcPng = _sourcePng;
-      if (png.hintCount > 0 && srcImg != null && srcPng != null) {
+      if (out.hintCount > 0 && srcImg != null && srcPng != null) {
         unawaited(widget.gallery.add(
-          resultPng: png.bytes,
+          resultPng: png,
           sourcePng: srcPng,
           width: srcImg.width,
           height: srcImg.height,
           mode: 'hints',
           elapsedS: sw.elapsedMilliseconds / 1000.0,
-          hintCount: png.hintCount,
+          hintCount: out.hintCount,
         ));
       }
     } catch (e) {

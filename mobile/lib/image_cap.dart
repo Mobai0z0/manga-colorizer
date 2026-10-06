@@ -76,21 +76,30 @@ Future<({Uint8List rgba, int width, int height, int? origWidth, int? origHeight}
   }
 }
 
-/// RGBA（[capDecodeRgba] 产物）→ 灰度单通道 + 灰度 RGB 三通道
-/// （r=g=b=感知亮度）。亮度公式与 core 的 MangaImageIO.decodeGrayscale 逐位
-/// 一致（0.299/0.587/0.114 + round + clamp）；alpha 忽略——相册照片不透明，
-/// 与旧路径 decodeGrayscale 对 alpha 的行为一致。
-/// 在工作 isolate 调用：两个平面都是 ≤maxSide 大小，峰值只此一份。
-({Uint8List gray, Uint8List grayRgb}) rgbaToGrayPlanes(Uint8List rgba) {
+/// RGBA（[capDecodeRgba] 产物）→ 灰度单通道。亮度公式与 core 的
+/// MangaImageIO.decodeGrayscale 逐位一致（0.299/0.587/0.114 + round + clamp）；
+/// alpha 忽略——相册照片不透明，与旧路径 decodeGrayscale 对 alpha 的行为一致。
+/// 在工作 isolate 调用（4.2M 次循环放主 isolate 会掉帧）。
+Uint8List rgbaToGray(Uint8List rgba) {
   final n = rgba.length ~/ 4;
   final gray = Uint8List(n);
-  final rgb = Uint8List(n * 3);
   for (var i = 0; i < n; i++) {
     final o = i * 4;
-    final y = (0.299 * rgba[o] + 0.587 * rgba[o + 1] + 0.114 * rgba[o + 2])
+    gray[i] = (0.299 * rgba[o] + 0.587 * rgba[o + 1] + 0.114 * rgba[o + 2])
         .round()
         .clamp(0, 255);
-    gray[i] = y;
+  }
+  return gray;
+}
+
+/// RGBA（[capDecodeRgba] 产物）→ 灰度单通道 + 灰度 RGB 三通道
+/// （r=g=b=感知亮度，提示点求解器吃三通道）。同样在工作 isolate 调用。
+({Uint8List gray, Uint8List grayRgb}) rgbaToGrayPlanes(Uint8List rgba) {
+  final gray = rgbaToGray(rgba);
+  final n = gray.length;
+  final rgb = Uint8List(n * 3);
+  for (var i = 0; i < n; i++) {
+    final y = gray[i];
     rgb[i * 3] = y;
     rgb[i * 3 + 1] = y;
     rgb[i * 3 + 2] = y;
