@@ -1,4 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 权重下载需要联网。此权限只写在 main 清单：debug/profile 的清单由
+         Flutter 模板自带，但 release 合并后若缺它，所有 DNS 解析都会报
+         "Failed host lookup (errno = 7)"，表现与断网完全相同。 -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="Manga Colorizer"
         android:name="${applicationName}"
