@@ -7,7 +7,11 @@
         android:label="Manga Colorizer"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
-        android:roundIcon="@mipmap/ic_launcher_round">
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:largeHeap="true">
+        <!-- largeHeap：上色管线是重内存应用（相册解码 + ONNX 推理），抬高
+             Dalvik 堆上限给 picker 原生缩放的 Java 位图留余量；ORT 原生内存
+             不受此限，压峰主力在 ResourceTier 分级 + useArena 关闭。 -->
         <activity
             android:name=".MainActivity"
             android:exported="true"

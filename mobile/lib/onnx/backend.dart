@@ -118,15 +118,27 @@ String? pickOutputKey({
   return (data, List<int>.unmodifiable(shape));
 }
 
-/// ORT CPU EP 的 intra-op 线程上限：ORT 默认按可用大核数开线程，每线程各持
-/// 执行缓冲与栈；手机端限 4 压原生内存峰值，也避免与 Flutter UI 线程抢核。
-/// 分块推理是串行的（并发 1），4 线程已足够喂饱 1024² 单块。
-const _kIntraThreads = 4;
+/// ORT CPU EP 的 intra-op 线程默认上限：ORT 默认按可用大核数开线程，每线程
+/// 各持执行缓冲与栈；手机端限 4 压原生内存峰值，也避免与 Flutter UI 线程抢核。
+/// 分块推理是串行的（并发 1），4 线程已足够喂饱 1024² 单块。低内存设备由
+/// ResourceTier 降到 2（构造参数传入）。
+const kDefaultIntraThreads = 4;
+
+/// ORT CPU arena allocator 开关（flutter_onnxruntime 的 useArena → Kotlin
+/// `setCPUArenaAllocator`，pub 缓存源码 FlutterOnnxruntimePlugin.kt:246 实核）。
+/// arena 默认开启：为 1024² 卷积工作区涨到数百 MB 且在两次推理之间常驻不还
+/// ——关闭后每次张量分配走普通 malloc/free，原生峰值显著更低，代价是块间
+/// 无法复用 arena、逐块推理变慢。真机以 auto 日志的每块耗时数据验收此开关。
+const _kUseArena = false;
 
 class OrtOnnxBackend implements OnnxBackend {
-  OrtOnnxBackend(this._store);
+  OrtOnnxBackend(this._store, {this.intraThreads = kDefaultIntraThreads});
 
   final WeightsStore _store;
+
+  /// intra-op 线程上限：来自 ResourceTier 设备分级（低内存档 2，默认 4）。
+  final int intraThreads;
+
   OrtSession? _sam;
   OrtSession? _gen;
 
@@ -136,10 +148,12 @@ class OrtOnnxBackend implements OnnxBackend {
     final ort = OnnxRuntime();
     // 权重绝不入 APK/assets：只从 WeightsStore 的下载目录按文件路径加载。
     final sam = await ort.createSession(_store.pathOf(kWeightFiles[1]),
-        options: OrtSessionOptions(intraOpNumThreads: _kIntraThreads));
+        options: OrtSessionOptions(
+            intraOpNumThreads: intraThreads, useArena: _kUseArena));
     try {
       _gen = await ort.createSession(_store.pathOf(kWeightFiles[0]),
-          options: OrtSessionOptions(intraOpNumThreads: _kIntraThreads));
+          options: OrtSessionOptions(
+              intraOpNumThreads: intraThreads, useArena: _kUseArena));
       _sam = sam;
     } on Object {
       // generator 加载失败不能把 encoder 的 100MB+ 原生内存留在进程里。
