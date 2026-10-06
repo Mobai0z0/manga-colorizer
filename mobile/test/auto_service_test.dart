@@ -75,7 +75,7 @@ void main() {
       () async {
     final fake = FakeBackend();
     final seenDirs = <String>[];
-    autoBackendFactory = (dir) {
+    autoBackendFactory = (dir, {int? intraThreads}) {
       seenDirs.add(dir);
       return fake;
     };
@@ -103,7 +103,7 @@ void main() {
 
   test('ensureStarted is idempotent while alive', () async {
     var spawns = 0;
-    autoBackendFactory = (_) => FakeBackend();
+    autoBackendFactory = (_, {int? intraThreads}) => FakeBackend();
     final engine = AutoEngine(
         spawn: (main, {onDied}) {
           spawns++;
@@ -124,7 +124,7 @@ void main() {
   });
 
   test('worker errors surface as Exception on the job future', () async {
-    autoBackendFactory = (_) => throw StateError('weights missing');
+    autoBackendFactory = (_, {int? intraThreads}) => throw StateError('weights missing');
     final engine = AutoEngine(
         spawn: startInProcessAutoWorker,
         idleRelease: const Duration(minutes: 5));
@@ -134,7 +134,7 @@ void main() {
         throwsA(isA<Exception>()
             .having((e) => e.toString(), 'msg', contains('weights missing'))));
     // 出错不复位引擎：修好后同引擎可继续接单（worker 循环存活）。
-    autoBackendFactory = (_) => FakeBackend();
+    autoBackendFactory = (_, {int? intraThreads}) => FakeBackend();
     expect(await engine.colorize(gray40x16(), 40, 16), isNotNull);
     await engine.shutdown();
   });
@@ -142,7 +142,7 @@ void main() {
   test('cancel resolves running job with null and tears the worker down',
       () async {
     final fake = _GatedBackend(gate: Completer<void>());
-    autoBackendFactory = (_) => fake;
+    autoBackendFactory = (_, {int? intraThreads}) => fake;
     final engine = AutoEngine(
         spawn: startInProcessAutoWorker,
         idleRelease: const Duration(minutes: 5));
@@ -162,7 +162,7 @@ void main() {
 
   test('concurrency is 1: second colorize while busy throws', () async {
     final fake = _GatedBackend(gate: Completer<void>()..complete());
-    autoBackendFactory = (_) => fake;
+    autoBackendFactory = (_, {int? intraThreads}) => fake;
     final engine = AutoEngine(
         spawn: startInProcessAutoWorker,
         idleRelease: const Duration(minutes: 5));
@@ -177,7 +177,7 @@ void main() {
   test('idle release fires after idleRelease and disposes the backend',
       () async {
     final fake = FakeBackend();
-    autoBackendFactory = (_) => fake;
+    autoBackendFactory = (_, {int? intraThreads}) => fake;
     final engine = AutoEngine(
         spawn: startInProcessAutoWorker,
         idleRelease: const Duration(milliseconds: 40));
@@ -194,7 +194,8 @@ void main() {
     expect(engine.alive, isFalse);
   });
 
-  test('RPC wire format is exactly ["dir",p] / ["job",g,w,h] / ["stop"]',
+  test(
+      'RPC wire format is exactly ["dir",p,threads] / ["job",g,w,h] / ["stop"]',
       () async {
     final received = <Object?>[];
     late SendPort engineMain; // worker→引擎 事件口
@@ -212,9 +213,9 @@ void main() {
     final progress = <double>[];
     final job = engine.colorize(gray, 40, 16, onProgress: progress.add);
     await pumpEventQueue();
-    // 命令逐字对拍：
+    // 命令逐字对拍（threads＝设备分级的 intra-op 线程数，默认档 4）：
     expect(received, [
-      ['dir', '/tmp/weights-dir'],
+      ['dir', '/tmp/weights-dir', 4],
       ['job', gray, 40, 16],
     ]);
     // 事件逐字对拍（worker→main）：
@@ -242,7 +243,7 @@ void main() {
   test('shutdown with an in-flight job resolves it with null (no hang)',
       () async {
     final fake = _GatedBackend(gate: Completer<void>());
-    autoBackendFactory = (_) => fake;
+    autoBackendFactory = (_, {int? intraThreads}) => fake;
     final engine = AutoEngine(
         spawn: startInProcessAutoWorker,
         idleRelease: const Duration(minutes: 5));
@@ -261,7 +262,7 @@ void main() {
   test(
       'malformed worker messages are answered with error and never kill '
       'the loop', () async {
-    autoBackendFactory = (_) => FakeBackend();
+    autoBackendFactory = (_, {int? intraThreads}) => FakeBackend();
     late SendPort cmd; // worker 命令口（仅测试注入畸形消息用）
     late ReceivePort relay;
     final workerEvents = <Object?>[];
@@ -300,7 +301,7 @@ void main() {
       'worker death (exit/onError path) fails the in-flight job and '
       'lets ensureStarted respawn', () async {
     final fake = _GatedBackend(gate: Completer<void>());
-    autoBackendFactory = (_) => fake;
+    autoBackendFactory = (_, {int? intraThreads}) => fake;
     late void Function(Object why) notifyDied;
     final engine = AutoEngine(
         spawn: (toMain, {onDied}) {

@@ -1,6 +1,8 @@
 // 全自动推理的 isolate 门面：模型加载/推理都在工作 isolate；空闲 60s 释放后端归还内存。
-// 事件协议（worker→main）: ['progress', double] | ['result', Uint8List?] | ['error', String]
-// 命令协议（main→worker）: ['dir', String] | ['job', Uint8List, int, int] | ['stop']
+// 事件协议（worker→main）: ['progress', double] | ['result', Uint8List?] |
+//   ['error', String] | ['log', String]（worker 侧内存/耗时观测 → LogBus，
+//   工作 isolate 是新堆拿不到 LogBus 引用，只能走事件）
+// 命令协议（main→worker）: ['dir', String, int threads] | ['job', Uint8List, int, int] | ['stop']
 // spawn 引导（main→worker 首条消息）: _WorkerBoot(RootIsolateToken, SendPort)——
 // worker 进口先 BackgroundIsolateBinaryMessenger.ensureInitialized，平台通道才可用。
 //
@@ -29,17 +31,22 @@ import 'package:flutter/services.dart'
     show BackgroundIsolateBinaryMessenger, RootIsolateToken;
 
 import '../logs/log_bus.dart';
+import '../mem_info.dart';
 import 'backend.dart';
 import 'pipeline.dart';
 import 'weights.dart';
 
-/// 后端工厂：由权重目录构造一个未 load() 的 OnnxBackend。
-typedef AutoBackendFactory = OnnxBackend Function(String weightsDir);
+/// 后端工厂：由权重目录构造一个未 load() 的后端；intraThreads 来自设备分级
+/// （ResourceTier → ensureStarted → ['dir'] 消息 → worker），低内存档降为 2。
+typedef AutoBackendFactory = OnnxBackend Function(String weightsDir,
+    {int? intraThreads});
 
 /// 生产默认工厂：OrtOnnxBackend + WeightsStore（仅用于推理时按 pathOf 定位
 /// 已就绪权重，不参与下载选路，故下载源用默认值即可）。
-OnnxBackend ortAutoBackendFactory(String weightsDir) => OrtOnnxBackend(
+OnnxBackend ortAutoBackendFactory(String weightsDir, {int? intraThreads}) =>
+    OrtOnnxBackend(
       WeightsStore(dir: Directory(weightsDir)),
+      intraThreads: intraThreads ?? kDefaultIntraThreads,
     );
 
 /// worker 侧后端工厂。**可替换**：宿主测试在 setUp 里换成 FakeBackend 工厂
@@ -160,6 +167,8 @@ class _InProcessHandle implements AutoWorkerHandle {
 Future<void> _runAutoWorker(ReceivePort rx, SendPort main) async {
   OnnxBackend? b;
   String? dirPath;
+  // ['dir'] 消息携带设备分级的线程数（消息缺省时用默认档，兼容旧测试）。
+  int intraThreads = kDefaultIntraThreads;
   try {
     await for (final msg in rx) {
       // 畸形消息（非 List / 空命令）绝不让循环猝死：回 ['error', …]——
@@ -171,6 +180,7 @@ Future<void> _runAutoWorker(ReceivePort rx, SendPort main) async {
       final m = msg;
       if (m[0] == 'dir') {
         dirPath = m[1] as String;
+        if (m.length > 2) intraThreads = m[2] as int;
         continue;
       }
       if (m[0] == 'stop') {
@@ -181,14 +191,16 @@ Future<void> _runAutoWorker(ReceivePort rx, SendPort main) async {
           await cur?.dispose();
         } on Object catch (_) {
           // 尽力释放：dispose 失败不再回传（主侧已无待决 job，且会话对象
-          // 已弃用；杀 isolate 时原生资源随进程回收）。
+          // 已弃用；杀 isolate 时原生内存随 isolate 死亡回收）。
         }
         continue;
       }
       if (m[0] != 'job') continue;
       try {
-        final backend = b ??= autoBackendFactory(dirPath!);
+        final backend = b ??= autoBackendFactory(dirPath!,
+            intraThreads: intraThreads);
         await backend.load(); // 幂等；首次约模型大小级别的耗时
+        main.send(['log', '双 session 加载完成${rssSuffix()}']);
         final out = await autoColorize(
           gray: m[1] as Uint8List,
           width: m[2] as int,
@@ -197,6 +209,7 @@ Future<void> _runAutoWorker(ReceivePort rx, SendPort main) async {
           infer: autoInfer,
           overlap: autoOverlap,
           onProgress: (p) => main.send(['progress', p]),
+          onLog: (line) => main.send(['log', line]),
         );
         main.send(['result', out]);
       } on Object catch (e) {
@@ -236,8 +249,10 @@ class AutoEngine {
 
   bool get alive => _to != null;
 
-  /// dirPath 由主 isolate 的 getApplicationSupportDirectory()/manga-light-colorizer 传入
-  Future<void> ensureStarted(String dirPath) async {
+  /// dirPath 由主 isolate 的 getApplicationSupportDirectory()/manga-light-colorizer
+  /// 传入；intraThreads 来自 ResourceTier 设备分级，随 ['dir'] 带给 worker。
+  Future<void> ensureStarted(String dirPath,
+      {int intraThreads = kDefaultIntraThreads}) async {
     if (alive) return;
     _idle?.cancel();
     final rx = ReceivePort();
@@ -259,7 +274,7 @@ class AutoEngine {
       _sub = sub;
       _handle = spawned;
       _to = to;
-      _to!.send(['dir', dirPath]);
+      _to!.send(['dir', dirPath, intraThreads]);
       _armIdle(); // 从没用过也要能到期自释放
       _logBus?.info('auto', '引擎已启动（worker 握手完成）');
     } on Object {
@@ -277,6 +292,10 @@ class AutoEngine {
 
   void _onEvent(List<Object?> m) {
     switch (m[0]) {
+      case 'log':
+        // worker 侧观测（加载完成/每块耗时+RSS）：worker 是新堆拿不到
+        // LogBus 引用，只能走事件；bus 缺失（宿主测试）时静默丢弃。
+        _logBus?.info('auto', m[1] as String);
       case 'progress':
         _onProgress?.call(m[1] as double);
       case 'result':

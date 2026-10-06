@@ -21,6 +21,7 @@ import '../app_settings.dart';
 import '../gallery/gallery_store.dart';
 import '../image_cap.dart';
 import '../logs/log_bus.dart';
+import '../resource_tier.dart';
 import '../shell/screen_chrome.dart';
 
 /// Color 通道（0..1 double）→ 8bit 整数。替代已弃用的 `.red/.green/.blue`
@@ -86,25 +87,26 @@ class _ColorizeScreenState extends State<ColorizeScreen> {
   // context 父链连 State（整棵 widget 树）一起走，抛 "object is unsendable"，
   // 选图/上色必失败。static 作用域无 this 可捕。
 
-  /// 解码 + 灰度 + 原稿 PNG 编码，合并在一个工作 isolate 内完成。
-  /// 长边超过 kMaxPickSide 先缩到上限（端侧内存分级，见 image_cap.dart）。
+  /// 灰度化 + 原稿 PNG 编码，合并在一个工作 isolate 内完成。RGBA 由主 isolate
+  /// 的 capDecodeRgba 按目标尺寸产出（见 image_cap.dart），isolate 内不再出现
+  /// 全分辨率位图——旧路径对 50MP 原图的兜底解码瞬时可达 ~300MB。
   static Future<
       ({
         DecodedImage decoded,
         Uint8List png,
         int? origWidth,
         int? origHeight,
-      })> _loadImageIsolate(Uint8List bytes) {
+      })> _loadImageIsolate(
+      Uint8List rgba, int width, int height, int? origWidth, int? origHeight) {
     return Isolate.run(() {
-      final capped = capDecodeGrayscale(bytes);
-      final d = capped.image;
+      final planes = rgbaToGrayPlanes(rgba);
       final png = MangaImageIO.encodePng(
-          rgb: d.rgb, width: d.width, height: d.height);
+          rgb: planes.grayRgb, width: width, height: height);
       return (
-        decoded: d,
+        decoded: DecodedImage(width, height, planes.grayRgb),
         png: png,
-        origWidth: capped.origWidth,
-        origHeight: capped.origHeight,
+        origWidth: origWidth,
+        origHeight: origHeight,
       );
     });
   }
@@ -135,14 +137,21 @@ class _ColorizeScreenState extends State<ColorizeScreen> {
       _resultPng = null;
       _hints.clear();
       _mode = _ViewMode.original;
+      // 先丢上一张的整页缓冲：解码期间新旧两份不该同时在场。
+      _source = null;
+      _sourcePng = null;
     });
     try {
-      final loaded = await _loadImageIsolate(bytes);
+      // 设备分级档位：picker 与解码兜底共用同一上限（detect 有缓存）。
+      final tier = await ResourceTier.detect();
+      final cap = await capDecodeRgba(bytes, maxSide: tier.maxPickSide);
+      final loaded = await _loadImageIsolate(
+          cap.rgba, cap.width, cap.height, cap.origWidth, cap.origHeight);
       final origW = loaded.origWidth;
       if (origW != null) {
         widget.logs.info('hints',
             '原图 $origW×${loaded.origHeight} 超过端侧长边上限 '
-            '$kMaxPickSide，已缩放至 ${loaded.decoded.width}×${loaded.decoded.height}');
+            '${tier.maxPickSide}，已缩放至 ${loaded.decoded.width}×${loaded.decoded.height}');
       }
       setState(() {
         _source = loaded.decoded;
@@ -160,11 +169,13 @@ class _ColorizeScreenState extends State<ColorizeScreen> {
 
   Future<void> _pickImage() async {
     // maxWidth/maxHeight：让相册在原生侧就缩到长边上限（不落全分辨率位图，
-    // 见 image_cap.dart）；未生效时 _loadImageIsolate 的兜底缩放会再拦一次。
+    // 见 image_cap.dart）；未生效（部分 OEM 相册不认）时 capDecodeRgba 的按
+    // 目标尺寸解码会在主 isolate 拦下，绝不物化全分辨率位图。
+    final tier = await ResourceTier.detect();
     final XFile? file = await _picker.pickImage(
         source: ImageSource.gallery,
-        maxWidth: kMaxPickSide.toDouble(),
-        maxHeight: kMaxPickSide.toDouble());
+        maxWidth: tier.maxPickSide.toDouble(),
+        maxHeight: tier.maxPickSide.toDouble());
     if (file == null) return;
     // 用 XFile.readAsBytes 而非 File(path).readAsBytes：部分 Android 设备上
     // 相册返回的是 content:// URI，XFile.path 并非真实文件路径，直接 File()
@@ -338,9 +349,15 @@ class _ColorizeScreenState extends State<ColorizeScreen> {
             rect: rect,
             child: _mode == _ViewMode.colorized && _resultPng != null
                 ? Image.memory(_resultPng!,
-                    fit: BoxFit.fill, gaplessPlayback: true)
+                    fit: BoxFit.fill,
+                    // cacheWidth 限纹理：2048² 全尺寸解码一张 16.8MB，
+                    // 画布交互预览 1024 宽足够（分享/入库用原始 PNG 字节）。
+                    cacheWidth: 1024,
+                    gaplessPlayback: true)
                 : Image.memory(_sourcePng!,
-                    fit: BoxFit.fill, gaplessPlayback: true),
+                    fit: BoxFit.fill,
+                    cacheWidth: 1024,
+                    gaplessPlayback: true),
           ),
           ..._hints.map((h) => Positioned(
                 left: rect.left + h.pos.dx * rect.width - 9,

@@ -5,9 +5,13 @@
 //     每块独立 缩 infer² → SAM+generator → 只羽化融合 a/b 色度；L 恒取原稿。
 // 推理经 OnnxBackend 抽象（真机＝OrtOnnxBackend，宿主测试＝FakeBackend），
 // 全程并发 1（逐块 await），每块前查取消、每块后按块上报进度。
+// 内存压峰（v0.5.5）：浮点张量与整页累加缓冲的生命周期都收敛在子函数栈帧里——
+// _inferToRgb8 返回后每块 ~50MB 浮点缓冲出作用域；_inferTilesToLab 返回后
+// ~50MB 的 chroma/weight 累加缓冲出作用域，labToRgb/PNG 编码阶段不再背着它们。
 import 'dart:typed_data';
 import 'package:image/image.dart' as imglib;
 import 'package:manga_colorizer_core/manga_colorizer_core.dart';
+import '../mem_info.dart';
 import 'backend_api.dart';
 import 'tiles.dart';
 
@@ -21,9 +25,40 @@ Future<Uint8List?> autoColorize({
   int overlap = 256,
   void Function(double progress)? onProgress,
   bool Function()? cancelled,
+  void Function(String line)? onLog,
 }) async {
-  bool c() => cancelled?.call() ?? false;
-  if (c()) return null;
+  if (cancelled?.call() ?? false) return null;
+  final n = width * height;
+  // 逐块推理 + 整页 Lab 合成都在子帧里：chroma/weight（@4.2MP ≈50MB）随
+  // _inferTilesToLab 返回出作用域，此后的 refL/labToRgb 峰值不再叠它们。
+  final outLab = await _inferTilesToLab(
+    gray: gray,
+    width: width,
+    height: height,
+    backend: backend,
+    infer: infer,
+    overlap: overlap,
+    onProgress: onProgress,
+    cancelled: cancelled,
+    onLog: onLog,
+  );
+  if (outLab == null) return null;
+  return labToRgb(outLab, n);
+}
+
+/// 逐块推理并把 a/b 色度加权累加进整页 Lab（L 由原稿灰度直取，见
+/// lab.dart grayToLabL），返回 8bit Lab（n*3）；取消返回 null。
+Future<Uint8List?> _inferTilesToLab({
+  required Uint8List gray,
+  required int width,
+  required int height,
+  required OnnxBackend backend,
+  required int infer,
+  required int overlap,
+  void Function(double progress)? onProgress,
+  bool Function()? cancelled,
+  void Function(String line)? onLog,
+}) async {
   final ys = tileBounds(height, infer, overlap);
   final xs = tileBounds(width, infer, overlap);
   final total = ys.length * xs.length;
@@ -34,7 +69,8 @@ Future<Uint8List?> autoColorize({
   var done = 0;
   for (final (y0, y1) in ys) {
     for (final (x0, x1) in xs) {
-      if (c()) return null;
+      if (cancelled?.call() ?? false) return null;
+      final sw = Stopwatch()..start();
       final pw = x1 - x0, ph = y1 - y0;
       final patch = _crop(gray, width, x0, y0, pw, ph);
       final rgb = await _inferPatch(patch, pw, ph, infer, backend);
@@ -58,11 +94,14 @@ Future<Uint8List?> autoColorize({
       }
       done++;
       onProgress?.call(done / total);
+      onLog?.call(
+          '块 $done/$total（$pw×$ph）耗时 ${(sw.elapsedMilliseconds / 1000).toStringAsFixed(1)}s'
+          '${rssSuffix()}');
     }
   }
   // L 恒取原稿：单通道直接算 Lab 的 L（灰度退化 RGB 的 a/b 恒为偏置 128，
-  // 数值与 rgbToLab(展开三通道) 逐值一致，见 lab.dart grayToLabL），免建 3n
-  // 展开缓冲；a/b 用融合后的色度（service.py:393-397）。
+  // 数值与 rgbToLab(展开三通道) 逐值一致，见 lab.dart grayToLabL）；a/b 用
+  // 融合后的色度（service.py:393-397）。
   final refL = grayToLabL(gray);
   final outLab = Uint8List(n * 3);
   for (var p = 0; p < n; p++) {
@@ -71,7 +110,7 @@ Future<Uint8List?> autoColorize({
     outLab[p * 3 + 1] = (chroma[p * 2] / ww).clamp(0.0, 255.0).round();
     outLab[p * 3 + 2] = (chroma[p * 2 + 1] / ww).clamp(0.0, 255.0).round();
   }
-  return labToRgb(outLab, n);
+  return outLab;
 }
 
 Uint8List _crop(Uint8List g, int gw, int x0, int y0, int w, int h) {
@@ -86,6 +125,31 @@ Uint8List _crop(Uint8List g, int gw, int x0, int y0, int w, int h) {
 /// clip 反归一化 → 放大回块尺寸（INTER_CUBIC 语义）→ 块原始分辨率 RGB。
 /// 对应桌面 colorize_single（service.py:346-373）；GPU 回退是绑定层的事，不在这里。
 Future<Uint8List> _inferPatch(
+    Uint8List patch, int pw, int ph, int infer, OnnxBackend b) async {
+  // 浮点张量只被推理本身需要：chw/grayPlane/sam 特征/输出（1024² 时 ~50MB）
+  // 全部收敛在 _inferToRgb8 的栈帧里，返回 8bit 后即不可达——否则它们会活到
+  // 下面的 cubic 放大与取回拷贝全程，白叠一个同量级的峰值。
+  final rgb8 = await _inferToRgb8(patch, pw, ph, infer, b);
+  final mid = imglib.Image.fromBytes(
+      width: infer, height: infer, bytes: rgb8.buffer, numChannels: 3);
+  final big = imglib.copyResize(mid,
+      width: pw,
+      height: ph,
+      // image 4.3 的枚举名 catmullRom 在 4.10（本 workspace 解析到的 4.10.1）
+      // 改叫 Interpolation.cubic（getPixelCubic＝0.5 系数 Catmull-Rom，
+      // 与 cv2 INTER_CUBIC 同族 Keys 三次卷积，a=-0.5 vs -0.75）。
+      interpolation: imglib.Interpolation.cubic);
+  // getBytes() 无参（order=null）是 image 4.10 内部存储的视图
+  // （image_data.dart:71 → toUint8List → buffer.asUint8List），缓冲即 3n
+  // 紧凑存储；big 是本函数私有的新鲜 Image、无人再写它，直接返回视图——
+  // 旧实现在这里再 fromList 复制一份，多背 12.6MB/块。
+  return big.getBytes();
+}
+
+/// 推理到 8bit RGB（infer²×3）：缩放/归一化/双 session/clip 反归一化。
+/// 所有浮点中间量（chw、grayPlane、sam 特征、rgb_pred）都是本函数局部量，
+/// 返回即出作用域——这是「每块峰值」与「放大阶段」不叠加的保证。
+Future<Uint8List> _inferToRgb8(
     Uint8List patch, int pw, int ph, int infer, OnnxBackend b) async {
   // image 包 Interpolation.average：目标像素＝源像素整数窗口均值，
   // 与 cv2 INTER_AREA 同族（非整数比例时 cv2 按面积加权、这里有微小出入，
@@ -120,16 +184,5 @@ Future<Uint8List> _inferPatch(
     // clip((y+1)*127.5, 0, 255).astype(uint8)：截断取整，与桌面 astype 一致。
     rgb8[i] = ((out[i] + 1) * 127.5).clamp(0.0, 255.0).toInt();
   }
-  final mid = imglib.Image.fromBytes(
-      width: infer, height: infer, bytes: rgb8.buffer, numChannels: 3);
-  final big = imglib.copyResize(mid,
-      width: pw,
-      height: ph,
-      // image 4.3 的枚举名 catmullRom 在 4.10（本 workspace 解析到的 4.10.1）
-      // 改叫 Interpolation.cubic（getPixelCubic＝0.5 系数 Catmull-Rom，
-      // 与 cv2 INTER_CUBIC 同族 Keys 三次卷积，a=-0.5 vs -0.75）。
-      interpolation: imglib.Interpolation.cubic);
-  // cubic 三次卷积≈cv2 INTER_CUBIC（振铃/支撑核有微小差异，同上接受）；
-  // 写回 uint8 通道时包内自动 clamp。返回独立拷贝，big/中间缓冲随作用域释放。
-  return Uint8List.fromList(big.getBytes());
+  return rgb8;
 }

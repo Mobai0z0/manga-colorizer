@@ -17,6 +17,8 @@ import 'package:share_plus/share_plus.dart';
 import 'onnx/auto_service.dart';
 import 'onnx/weights.dart';
 import 'image_cap.dart';
+import 'mem_info.dart';
+import 'resource_tier.dart';
 import 'app_settings.dart';
 import 'logs/log_bus.dart';
 
@@ -262,8 +264,9 @@ class _AutoTabState extends State<AutoTab> {
   // context 父链连 _AutoTabState（整棵 widget 树）一起走，抛 "object is
   // unsendable"，选图/编码必失败（v0.5.1 真机必现）。static 作用域无 this 可捕。
 
-  /// 解码选图为灰度单通道 + 原稿 RGB PNG（在工作 isolate 执行）。
-  /// 长边超过 kMaxPickSide 先缩到上限（端侧内存分级，见 image_cap.dart）。
+  /// 灰度化 + 原稿 PNG 编码（在工作 isolate 执行）。RGBA 由主 isolate 的
+  /// capDecodeRgba 按目标尺寸产出（见 image_cap.dart），isolate 内不再出现
+  /// 全分辨率位图——旧路径对 50MP 原图的兜底解码瞬时可达 ~300MB。
   static Future<
       ({
         Uint8List gray,
@@ -272,23 +275,19 @@ class _AutoTabState extends State<AutoTab> {
         Uint8List png,
         int? origWidth,
         int? origHeight,
-      })> _decodePick(Uint8List bytes) {
+      })> _decodePick(
+      Uint8List rgba, int width, int height, int? origWidth, int? origHeight) {
     return Isolate.run(() {
-      final capped = capDecodeGrayscale(bytes);
-      final d = capped.image;
-      final n = d.width * d.height;
-      final gray = Uint8List(n);
-      for (var i = 0; i < n; i++) {
-        gray[i] = d.rgb[i * 3]; // decodeGrayscale 已把亮度写到三通道
-      }
+      final planes = rgbaToGrayPlanes(rgba);
+      final png = MangaImageIO.encodePng(
+          rgb: planes.grayRgb, width: width, height: height);
       return (
-        gray: gray,
-        width: d.width,
-        height: d.height,
-        png: MangaImageIO.encodePng(
-            rgb: d.rgb, width: d.width, height: d.height),
-        origWidth: capped.origWidth,
-        origHeight: capped.origHeight,
+        gray: planes.gray,
+        width: width,
+        height: height,
+        png: png,
+        origWidth: origWidth,
+        origHeight: origHeight,
       );
     });
   }
@@ -301,12 +300,16 @@ class _AutoTabState extends State<AutoTab> {
 
   Future<void> _pick() async {
     if (_busy) return;
+    // 设备分级档位：picker 原生缩放与解码兜底共用同一上限（detect 有缓存，
+    // 探测失败回退 v0.5.4 默认档）。
+    final tier = await ResourceTier.detect();
     // maxWidth/maxHeight：让相册在原生侧就缩到长边上限（不落全分辨率位图，
-    // 见 image_cap.dart）；未生效时 _decodePick 的兜底缩放会再拦一次。
+    // 见 image_cap.dart）；未生效（部分 OEM 相册不认）时 capDecodeRgba 的
+    // 按目标尺寸解码会在主 isolate 拦下，绝不物化全分辨率位图。
     final XFile? file = await _picker.pickImage(
         source: ImageSource.gallery,
-        maxWidth: kMaxPickSide.toDouble(),
-        maxHeight: kMaxPickSide.toDouble());
+        maxWidth: tier.maxPickSide.toDouble(),
+        maxHeight: tier.maxPickSide.toDouble());
     if (file == null) return;
     // 相册选择是异步挂起：期间本页可能被销毁，setState 前须验 mounted
     // （与本文件其余 post-await setState 的守卫一致）。
@@ -314,18 +317,25 @@ class _AutoTabState extends State<AutoTab> {
     setState(() {
       _busy = true;
       _status = '读取图片…';
+      // 先丢上一张的整页缓冲：解码期间新旧两份不该同时在场。
+      _gray = null;
+      _sourcePng = null;
+      _resultPng = null;
     });
     try {
       // readAsBytes 而非 File(path)：相册 content:// URI 在部分设备上
       // XFile.path 不是真实文件路径，须经平台通道解析。
       final bytes = await file.readAsBytes();
-      final decoded = await _decodePick(bytes);
+      final cap = await capDecodeRgba(bytes, maxSide: tier.maxPickSide);
+      final decoded = await _decodePick(cap.rgba, cap.width, cap.height,
+          cap.origWidth, cap.origHeight);
       if (!mounted) return;
       final origW = decoded.origWidth;
       if (origW != null) {
         widget.logs.info('auto',
             '原图 $origW×${decoded.origHeight} 超过端侧长边上限 '
-            '$kMaxPickSide，已缩放至 ${decoded.width}×${decoded.height}');      }
+            '${tier.maxPickSide}，已缩放至 ${decoded.width}×${decoded.height}');
+      }
       setState(() {
         _gray = decoded.gray;
         _w = decoded.width;
@@ -352,9 +362,12 @@ class _AutoTabState extends State<AutoTab> {
       _resultPng = null;
       _status = '加载模型并分块上色中…';
     });
-    widget.logs.info('auto', '全自动任务开始 $_w×$_h');
+    widget.logs.info('auto', '全自动任务开始 $_w×$_h${rssSuffix()}');
     try {
-      await widget.engine.ensureStarted(dir.path);
+      // 线程数随设备分级下发（低内存档 2 线程），经 ['dir'] 消息进 worker。
+      final tier = await ResourceTier.detect();
+      await widget.engine.ensureStarted(dir.path,
+          intraThreads: tier.intraThreads);
       final out = await widget.engine.colorize(gray, _w, _h, onProgress: (p) {
         if (!mounted) return;
         setState(() {
@@ -370,6 +383,7 @@ class _AutoTabState extends State<AutoTab> {
       if (mounted) setState(() => _status = '编码 PNG…');
       final w = _w, h = _h;
       final png = await _encodePng(out, w, h);
+      widget.logs.info('auto', 'PNG 编码完成 $w×$h${rssSuffix()}');
       if (!mounted) return;
       setState(() {
         _resultPng = png;
@@ -488,7 +502,10 @@ class _AutoTabState extends State<AutoTab> {
       const SizedBox(height: 12),
       if (_sourcePng != null) ...[
         Text('原稿（灰度）', style: Theme.of(context).textTheme.labelSmall),
-        Image.memory(_sourcePng!, fit: BoxFit.contain, gaplessPlayback: true),
+        // cacheWidth 限纹理：2048² 的 PNG 全尺寸解码一张 16.8MB，预览用
+        // 1024 宽足够，两张（原稿+结果）同屏省 ~25MB。
+        Image.memory(_sourcePng!,
+            fit: BoxFit.contain, cacheWidth: 1024, gaplessPlayback: true),
         const SizedBox(height: 12),
       ],
       if (_resultPng != null) ...[
@@ -505,7 +522,8 @@ class _AutoTabState extends State<AutoTab> {
             ),
           ],
         ),
-        Image.memory(_resultPng!, fit: BoxFit.contain, gaplessPlayback: true),
+        Image.memory(_resultPng!,
+            fit: BoxFit.contain, cacheWidth: 1024, gaplessPlayback: true),
       ],
     ];
   }
