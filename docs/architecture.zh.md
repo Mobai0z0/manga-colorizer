@@ -24,8 +24,23 @@ mobile/                          Flutter Android 壳（Dart 引擎 + 端侧 ONNX
 
 功能特性：全自动 ONNX 语义上色（SAM 引导 + generator）、提示点画布精修、参考图色调迁移、
 批量队列（一次最多 32 张，单张失败不阻断）、长图自动分块推理、亮度保真（所有模式只写
-Lab a/b 色度，L 通道始终回写原稿）、GPU 自动加速（Windows 优先 DirectML，NVIDIA 可用
-CUDA，无 GPU 自动回退 CPU）。
+Lab a/b 色度，L 通道始终回写原稿）、色彩收尾（色度增益 + 超色域等比收缩映射，见下）、
+GPU 自动加速（Windows 优先 DirectML，NVIDIA 可用 CUDA，无 GPU 自动回退 CPU）。
+
+### 色彩收尾（两端同数学）
+
+全自动输出的最后一步统一走「色彩收尾」，桌面在 `service.py _finish_bgr`（numpy 向量化
++ 64 行分块），移动端在 `manga_colorizer_core` 的 `labToRgbGamut`（逐像素标量，零额外
+缓冲），两端以跨语言金样对拍锁定一致（`packages/manga_colorizer_core/test/goldens/
+gamut_golden.json`，由 `tool/colorizer_service/gen_gamut_golden.py` 生成）：
+
+1. **色度增益** `a' = 128 + (a−128)·G`，补偿模型输出的普遍偏灰（默认 G=1.2）；
+2. **色域映射**：大幅超出 sRGB 色域的像素不做逐通道截断（截断把色相拉向三原色，
+   是输出发灰发闷的主因），改为线性 RGB 空间按「亮度不变、色度等比收缩」取最大可行
+   t；t≥0.95 的微量出域是 8bit Lab 量化噪声，维持截断恰好还原原色。
+
+增益只施加一次（在模型全自动色的 a/b 上）；提示点/参考图路径的用户显式色不再放大。
+冒烟断言见 `tool/colorizer_service/quality_check.py`（不加载模型，秒级）。
 
 ## 前端（web/dist）
 
@@ -96,6 +111,7 @@ curl -F "image=@page.png" -F "reference=@character.png" \
 | `COLORIZER_LOG_FILE` | — | 追加写入的日志文件 |
 | `COLORIZER_PRELOAD` | `1` | 启动时后台预热模型（加载 + 空推理）；`0` 关闭以省内存，代价是首次上色多等 10-20s |
 | `COLORIZER_IDLE_UNLOAD` | `600` | 空闲多少秒后释放模型（内存+显存归还系统，下次上色自动唤醒）；`0` = 常驻不释放 |
+| `COLORIZER_CHROMA_GAIN` | `1.2` | 全自动输出色度增益（量化前施加，clamp 0.5-2.0）；`1.0` = 关闭增益仅剩色域映射 |
 
 ## Dart 引擎（packages/manga_colorizer_core）
 
@@ -103,7 +119,7 @@ curl -F "image=@page.png" -F "reference=@character.png" \
 
 ```bash
 dart pub get
-dart test                                      # 25 项引擎回归
+dart test                                      # 35 项引擎回归
 dart run tool/colorize_auto_client.dart -i 漫画.png -o 输出.png
 dart run manga_colorizer_cli:colorize -i 原稿.png -o 输出.png --hints hints.json
 ```
@@ -120,8 +136,10 @@ Android 侧轻量工作台（Flutter），两个页签：
   服务，也不需要模型权重。
 - **全自动**：端侧 ONNX 全自动上色，管线语义对齐桌面 `/colorize_auto`——同款权重对
   （v6_sam_encoder + v6_generator）、tile 1024 / overlap 256 线性羽化融合、L 通道
-  始终回写原稿灰度。权重不随 APK 分发（CC BY-NC-SA），首次使用时在应用内引导下载，
-  支持断点续传与 SHA-256 校验，manifest 内置 hf-mirror 镜像源备选（国内网络）。
+  始终回写原稿灰度、色彩收尾同数学（增益常量 `kAutoChromaGain` 与桌面默认一致；
+  桌面 tiled 路径全程浮点直达收尾，端侧在 8bit a/b 量化后收尾，≤0.5 Lab 单位，
+  与 resize 插值偏差同级）。权重不随 APK 分发（CC BY-NC-SA），首次使用时在应用内
+  引导下载，支持断点续传与 SHA-256 校验，manifest 内置 hf-mirror 镜像源备选（国内网络）。
 
 ```bash
 cd mobile

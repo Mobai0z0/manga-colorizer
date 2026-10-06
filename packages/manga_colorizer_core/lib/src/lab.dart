@@ -72,3 +72,64 @@ Uint8List labToRgb(Uint8List lab, int n) {
   }
   return out;
 }
+
+/// 单通道约束下的色度收缩系数 t 上界：c>y → (1−y)/(c−y)；c<y → y/(y−c)；
+/// c==y → 无约束。解析解（Lab→RGB 对 a/b 非线性，逐像素二分会贵一个量级），
+/// 对齐桌面 service.py `_gamut_cap`。
+double _gamutCap(double c, double y, double t) {
+  final d = c - y;
+  if (d > 1e-12) {
+    final lim = (1.0 - y) / d;
+    return lim < t ? lim : t;
+  }
+  if (d < -1e-12) {
+    final lim = y / -d;
+    return lim < t ? lim : t;
+  }
+  return t;
+}
+
+/// [labToRgb] 的色域映射版：先对 a/b 施加色度增益 [chromaGain]（1=不变，
+/// 128+(v−128)·G 语义），大幅超出 sRGB 色域的像素不再逐通道截断，而是在
+/// 线性 RGB 空间按「亮度不变、色度等比收缩」求最大可行 t（rgb' = Y +
+/// (rgb−Y)·t，Y 用 XYZ 矩阵 Y 行系数，收缩前后亮度严格不变、色品朝 D65
+/// 白点方向即色相不变）——截断把通道拉向 0/1、色相被拉向三原色，是全自动
+/// 输出发灰发闷的主因之一。t≥0.95 的微量出域是 8bit Lab 往返的量化噪声
+/// （色域边界贴边色），维持逐通道截断恰好还原原色，两种行为在切换点相差
+/// ≤5% 色度；色域内像素与 [labToRgb] 逐位一致。
+///
+/// 与桌面 service.py `_finish_bgr` 同一套数学（桌面 numpy 向量化+64 行分块，
+/// 此处逐像素标量、零额外缓冲，语义对拍金样见 `test/gamut_golden.json`）。
+/// 亮度增益场景由调用方在 8bit 量化前施加（mobile/lib/onnx/pipeline.dart）。
+Uint8List labToRgbGamut(Uint8List lab, int n, {double chromaGain = 1.0}) {
+  final out = Uint8List(n * 3);
+  for (var i = 0; i < n; i++) {
+    final l = lab[i * 3] / 255.0 * 100.0,
+        a = (lab[i * 3 + 1] - 128.0) * chromaGain,
+        b = (lab[i * 3 + 2] - 128.0) * chromaGain;
+    final fy = (l + 16) / 116, fx = fy + a / 500, fz = fy - b / 200;
+    final x = _inv(fx) * 0.950456,
+        y = l > 8 ? fy * fy * fy : l / 903.3,
+        z = _inv(fz) * 1.088754;
+    var r = 3.240481 * x - 1.537152 * y - 0.498536 * z;
+    var g = -0.969254 * x + 1.875990 * y + 0.041556 * z;
+    var bl = 0.055643 * x - 0.203997 * y + 1.057311 * z;
+    // 亮度系数 = XYZ 矩阵 Y 行，收缩前后亮度严格不变
+    final yy = 0.212671 * r + 0.715160 * g + 0.072169 * bl;
+    var t = _gamutCap(r, yy, _gamutCap(g, yy, _gamutCap(bl, yy, 1.0)));
+    if (t < 0.95) {
+      r = yy + (r - yy) * t;
+      g = yy + (g - yy) * t;
+      bl = yy + (bl - yy) * t;
+    } else {
+      // 色域内或量化噪声级微量出域：逐通道截断（labToRgb 语义）
+      r = r.clamp(0.0, 1.0);
+      g = g.clamp(0.0, 1.0);
+      bl = bl.clamp(0.0, 1.0);
+    }
+    out[i * 3] = _gamma(r);
+    out[i * 3 + 1] = _gamma(g);
+    out[i * 3 + 2] = _gamma(bl);
+  }
+  return out;
+}

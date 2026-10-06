@@ -15,6 +15,11 @@
 长图说明: 长边超过 TILE=1024 自动分块推理 (OVERLAP=256, 线性羽化融合),
 避免整页下采样到 1024 方形造成的精度损失。
 
+色彩收尾: 输出端统一走 _finish_bgr —— 对融合色度施加增益
+(COLORIZER_CHROMA_GAIN, 默认 1.2, 模型输出普遍偏灰), 超出 sRGB 色域的
+像素按「亮度不变、色度等比收缩」做色域映射, 替代 cv2 LAB2BGR 的逐通道
+硬截断 (截断会拉偏色相, 是输出发灰发闷的主因之一)。
+
 启动: cd tool/colorizer_service && python -m uvicorn service:app --port 8788
 """
 from __future__ import annotations
@@ -93,6 +98,17 @@ MAX_PIXELS = 16_000_000
 DEVICE = os.environ.get('COLORIZER_DEVICE', 'cpu').lower()
 if DEVICE not in ('cpu', 'auto', 'cuda'):
     raise ValueError('COLORIZER_DEVICE must be cpu, auto or cuda')
+
+
+def _env_chroma_gain() -> float:
+    """全自动输出色度增益。1.0 = 关闭增益（仅剩色域映射）。"""
+    try:
+        return float(os.environ.get('COLORIZER_CHROMA_GAIN', '1.2'))
+    except (TypeError, ValueError):
+        return 1.2
+
+
+CHROMA_GAIN = min(2.0, max(0.5, _env_chroma_gain()))
 _state = {'gen': None, 'sam': None, 'providers': None}
 _runtime_device = {'value': None}
 _load_state = {'status': 'idle', 'error': None}  # idle | loading | ready | failed
@@ -302,6 +318,81 @@ def bind_server(server) -> None:
     _server_ref['server'] = server
 
 
+_SRGB_GAMMA_LUT: np.ndarray | None = None
+
+
+def _gamma_lut() -> np.ndarray:
+    """线性 [0,1]（16bit 量化索引）→ sRGB gamma 后 uint8 的查找表。
+
+    64KB 惰性建一次；16bit 索引的量化误差远小于 8bit 输出精度，与
+    cv2 LAB2BGR 内部查表（1024 项+插值）同级（对拍容差 ±1）。
+    """
+    global _SRGB_GAMMA_LUT
+    if _SRGB_GAMMA_LUT is None:
+        c = np.linspace(0.0, 1.0, 65536, dtype=np.float64)
+        g = np.where(c <= 0.0031308, 12.92 * c, 1.055 * np.power(c, 1 / 2.4) - 0.055)
+        _SRGB_GAMMA_LUT = np.clip(np.round(g * 255.0), 0, 255).astype(np.uint8)
+    return _SRGB_GAMMA_LUT
+
+
+def _gamut_cap(c: np.ndarray, Y: np.ndarray) -> np.ndarray:
+    """单通道约束下的色度收缩系数 t 上界: c>Y → (1-Y)/(c-Y); c<Y → Y/(Y-c); c==Y → ∞。"""
+    d = c - Y
+    up = d > 1e-12
+    dn = d < -1e-12
+    return np.where(up, (1.0 - Y) / np.where(up, d, 1.0),
+                    np.where(dn, Y / np.where(dn, -d, 1.0), np.inf))
+
+
+def _finish_bgr(l_u8: np.ndarray, ab: np.ndarray, gain: float = 1.0) -> np.ndarray:
+    """色彩收尾: 原稿明度 L + 浮点 a/b（cv2 8bit 约定, +128 偏置）→ BGR uint8。
+
+    与 cv2.cvtColor(LAB2BGR) 的两点差别:
+      1. a/b 先施加增益: a' = 128 + (a-128)·gain，补偿模型输出的普遍偏灰;
+      2. 大幅超出 sRGB 色域的像素不做逐通道截断（截断把通道拉到 0/1, 色相被
+         拉向三原色、颜色发脏），而是在线性 RGB 空间按「亮度不变、色度等比
+         收缩」取最大可行 t: rgb' = Y + (rgb-Y)·t。Y 用 XYZ 矩阵 Y 行系数，
+         收缩前后亮度严格不变、色品朝 D65 白点方向（主导波长≈色相）不变。
+         t≥0.95 的微量出域是 8bit Lab 往返的量化噪声（色域边界贴边色）,
+         维持 cv2 逐通道截断——恰好还原原色; 两种行为在切换点相差 ≤5% 色度。
+         色域内像素与 cv2 逐值一致（±1）。gain=1 时对常规内容是 cv2 的
+         无损替代。
+
+    l_u8: uint8 [H,W]（0-255 缩放的 Lab L 通道，即原稿灰度的 Lab L）;
+    ab: float32 [H,W,2]（+128 偏置的 a/b，允许浮点精度）。
+    分块行处理控内存: 峰值额外 float32 ≈ 64 行 × 宽 × 3 × 4B × 少量临时量。
+    """
+    h, w = l_u8.shape
+    out = np.empty((h, w, 3), dtype=np.uint8)
+    lut = _gamma_lut()
+    eps = 6.0 / 29.0
+    rows = 64
+    for y0 in range(0, h, rows):
+        y1 = min(y0 + rows, h)
+        L = l_u8[y0:y1].astype(np.float32) * (100.0 / 255.0)
+        a = (ab[y0:y1, :, 0] - 128.0) * gain
+        b = (ab[y0:y1, :, 1] - 128.0) * gain
+        fy = (L + 16.0) / 116.0
+        fx = fy + a * (1.0 / 500.0)
+        fz = fy - b * (1.0 / 200.0)
+        x = np.where(fx > eps, fx ** 3, 3 * eps * eps * (fx - 4.0 / 29.0)) * 0.950456
+        y = np.where(L > 8.0, fy ** 3, L / 903.3)
+        z = np.where(fz > eps, fz ** 3, 3 * eps * eps * (fz - 4.0 / 29.0)) * 1.088754
+        r = 3.240481 * x - 1.537152 * y - 0.498536 * z
+        g = -0.969254 * x + 1.875990 * y + 0.041556 * z
+        bl = 0.055643 * x - 0.203997 * y + 1.057311 * z
+        # 亮度系数 = XYZ 矩阵 Y 行，保证 rgb' = Y + (rgb-Y)·t 亮度严格不变
+        Y = 0.212671 * r + 0.715160 * g + 0.072169 * bl
+        t = np.minimum(_gamut_cap(r, Y), np.minimum(_gamut_cap(g, Y), _gamut_cap(bl, Y)))
+        rgb = np.stack([r, g, bl], axis=-1)
+        # 微量出域（量化噪声, t≥0.95）→ cv2 式截断还原原色; 真超域 → 等比收缩
+        scaled = Y[..., None] + (rgb - Y[..., None]) * np.minimum(t, 1.0)[..., None]
+        rgb = np.where((t < 0.95)[..., None], scaled, np.clip(rgb, 0.0, 1.0))
+        idx = np.clip(np.rint(rgb * 65535.0), 0, 65535).astype(np.int32)
+        out[y0:y1] = lut[idx][..., ::-1]  # RGB → BGR（OpenCV 通道序）
+    return out
+
+
 def _feather_weight(x0: int, x1: int, overlap: int) -> np.ndarray:
     """一维线性羽化权重: 两端 overlap 区域从 0 线性升到 1, 中间全 1。"""
     w = np.ones(x1 - x0, dtype=np.float32)
@@ -392,10 +483,12 @@ def colorize_tiled(gray: np.ndarray, tile: int = 1024, overlap: int = 256) -> np
             chroma[y0:y1, x0:x1, 1] += lab[..., 2] * m
             weight[y0:y1, x0:x1] += m
     weight = np.maximum(weight, 1e-6)
-    lab_o = cv2.cvtColor(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), cv2.COLOR_BGR2LAB)
-    lab_o[..., 1] = np.clip(chroma[..., 0] / weight, 0, 255).astype(np.uint8)
-    lab_o[..., 2] = np.clip(chroma[..., 1] / weight, 0, 255).astype(np.uint8)
-    return cv2.cvtColor(lab_o, cv2.COLOR_LAB2BGR)
+    # 融合色度保持浮点直达 _finish_bgr（比旧路径少一次 8bit a/b 量化）,
+    # 增益 CHROMA_GAIN 与色域映射都在收尾统一施加。
+    ab = np.empty((h, w, 2), dtype=np.float32)
+    ab[..., 0] = chroma[..., 0] / weight
+    ab[..., 1] = chroma[..., 1] / weight
+    return _finish_bgr(cv2.cvtColor(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), cv2.COLOR_BGR2LAB)[..., 0], ab, gain=CHROMA_GAIN)
 
 
 def colorize(gray: np.ndarray) -> np.ndarray:
@@ -403,11 +496,10 @@ def colorize(gray: np.ndarray) -> np.ndarray:
     if max(gray.shape) > INFER_SIZE:
         return colorize_tiled(gray)
     rgb = colorize_single(gray)
-    lab_o = cv2.cvtColor(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), cv2.COLOR_BGR2LAB)
     # 模型输出 RGB；OpenCV 编码要求 BGR。不能在错误的通道空间回写亮度。
     lab_c = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB)
-    lab_o[..., 1:] = lab_c[..., 1:]
-    return cv2.cvtColor(lab_o, cv2.COLOR_LAB2BGR)
+    lab_l = cv2.cvtColor(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), cv2.COLOR_BGR2LAB)[..., 0]
+    return _finish_bgr(lab_l, lab_c[..., 1:].astype(np.float32), gain=CHROMA_GAIN)
 
 
 app = FastAPI(title='Manga Colorizer · Community Preview', version='0.4.0')
@@ -600,7 +692,9 @@ def _hint_colorize(bgr: np.ndarray, hints: list[dict]) -> np.ndarray:
     weight = np.maximum(weight, 1e-6)
     lab[..., 1] = np.where(weight > 1e-6, chroma[..., 0] / weight, lab[..., 1])
     lab[..., 2] = np.where(weight > 1e-6, chroma[..., 1] / weight, lab[..., 2])
-    return cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
+    # 中间输出也走色域映射（增益 1）: 逐通道截断会先拉偏提示色色相,
+    # 后续 _process_hints 融合时已无法挽回。
+    return _finish_bgr(lab[..., 0].astype(np.uint8), lab[..., 1:3])
 
 
 def _reference_transfer(bgr: np.ndarray, ref: np.ndarray) -> np.ndarray:
@@ -615,7 +709,8 @@ def _reference_transfer(bgr: np.ndarray, ref: np.ndarray) -> np.ndarray:
         ref_mean, ref_std = lab_r[..., c].mean(), lab_r[..., c].std() + 1e-6
         src_mean, src_std = src_ch.mean(), src_ch.std() + 1e-6
         lab_s[..., c] = (src_ch - src_mean) * (ref_std / src_std) + ref_mean
-    return cv2.cvtColor(np.clip(lab_s, 0, 255).astype(np.uint8), cv2.COLOR_LAB2BGR)
+    # 中间输出走色域映射（增益 1）, 避免截断先把迁移色度拉偏。
+    return _finish_bgr(lab_s[..., 0].astype(np.uint8), lab_s[..., 1:3])
 
 
 def _persist_gallery(resp: Response, bgr: np.ndarray, *, source_name: str, mode: str,
@@ -661,8 +756,10 @@ def _process_hints(data: bytes, hints_raw: str, source_name: str = 'image.png') 
         chroma_mag = np.sqrt(lab_h[..., 1] ** 2 + lab_h[..., 2] ** 2)
         auto_mag = np.sqrt(lab_a[..., 1] ** 2 + lab_a[..., 2] ** 2)
         mask = (chroma_mag > 6) & (chroma_mag > auto_mag * 0.5)
-        lab_o[..., 1:3] = np.where(mask[..., None], lab_h[..., 1:3], lab_o[..., 1:3])
-        out = cv2.cvtColor(lab_o.astype(np.uint8), cv2.COLOR_LAB2BGR)
+        # 收尾只做色域映射、不再施加增益: 模型底色在 colorize() 内已增益过
+        # 一次，用户提示色是显式选定的颜色，二次放大只会过饱和。
+        ab = np.where(mask[..., None], lab_h[..., 1:3], lab_o[..., 1:3]).astype(np.float32)
+        out = _finish_bgr(lab_o[..., 0].astype(np.uint8), ab)
         resp = _encode_png(out)
         _persist_gallery(resp, bgr, source_name=source_name, mode='hints', t0=t0, suffix='_hints.png')
         return resp
@@ -695,7 +792,8 @@ def _process_reference(data: bytes, ref_data: bytes, source_name: str = 'image.p
         lab_o = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
         lab_o[..., 1] = 0.5 * lab_a[..., 1] + 0.5 * lab_s[..., 1]
         lab_o[..., 2] = 0.5 * lab_a[..., 2] + 0.5 * lab_s[..., 2]
-        out = cv2.cvtColor(np.clip(lab_o, 0, 255).astype(np.uint8), cv2.COLOR_LAB2BGR)
+        # 收尾只做色域映射、增益保持 1: 色调统计来自用户所选参考图, 不再放大。
+        out = _finish_bgr(lab_o[..., 0].astype(np.uint8), lab_o[..., 1:3])
         resp = _encode_png(out)
         _persist_gallery(resp, bgr, source_name=source_name, mode='reference', t0=t0, suffix='_ref.png')
         return resp
