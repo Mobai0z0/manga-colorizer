@@ -140,12 +140,17 @@ const kDefaultIntraThreads = 4;
 const _kShrinkageConfigs = {'memory.enable_memory_arena_shrinkage': 'cpu:0'};
 
 class OrtOnnxBackend implements OnnxBackend {
-  OrtOnnxBackend(this._store, {this.intraThreads = kDefaultIntraThreads});
+  OrtOnnxBackend(this._store,
+      {this.intraThreads = kDefaultIntraThreads, this.useArena = true});
 
   final WeightsStore _store;
 
   /// intra-op 线程上限：来自 ResourceTier 设备分级（低内存档 2，默认 4）。
   final int intraThreads;
+
+  /// arena 策略：来自 ResourceTier 设备分级。false＝关闭 arena（单块原生
+  /// 峰值最低，时间换峰值，见 resource_tier.dart）；true＝arena+shrinkage。
+  final bool useArena;
 
   OrtSession? _sam;
   OrtSession? _gen;
@@ -170,11 +175,19 @@ class OrtOnnxBackend implements OnnxBackend {
     }
   }
 
-  /// 会话创建的降级阶梯：arena+shrinkage（首选，内存/速度两全）→
-  /// arena 关闭（v0.5.5 验证过的内存安全配置）。绝不静默落到「arena 常驻
-  /// 不还」的默认行为——那是低内存设备被系统杀进程的直接原因。
+  /// 会话创建：按设备分级走 arena 开启或关闭两条路。
+  ///
+  /// arena 开启时必须带 shrinkage（每次 Run 后把工作区还给 OS）；若 ORT 拒绝
+  /// 该键（版本行为差异），降级到 arena 关闭——绝不静默落到「arena 常驻
+  /// 不还」的默认行为，那是低内存设备被系统杀进程的直接原因。
   Future<OrtSession> _createSession(OnnxRuntime ort, WeightFile weight) async {
     final path = _store.pathOf(weight);
+    if (!useArena) {
+      // 时间换峰值：malloc 每分配即还，无高水位、无 2^n 扩展过冲。
+      return ort.createSession(path,
+          options: OrtSessionOptions(
+              intraOpNumThreads: intraThreads, useArena: false));
+    }
     try {
       return await ort.createSession(path,
           options: OrtSessionOptions(

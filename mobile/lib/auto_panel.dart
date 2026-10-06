@@ -348,10 +348,11 @@ class _AutoTabState extends State<AutoTab> {
     });
     widget.logs.info('auto', '全自动任务开始 $_w×$_h${rssSuffix()}');
     try {
-      // 线程数随设备分级下发（低内存档 2 线程），经 ['dir'] 消息进 worker。
+      // 线程数与 arena 策略随设备分级下发（低内存档 2 线程 + arena 关闭，
+      // 时间换峰值），经 ['dir'] 消息进 worker。
       final tier = await ResourceTier.detect();
       await widget.engine.ensureStarted(dir.path,
-          intraThreads: tier.intraThreads);
+          intraThreads: tier.intraThreads, useArena: tier.useArena);
       final out = await widget.engine.colorize(gray, _w, _h, onProgress: (p) {
         if (!mounted) return;
         setState(() {
