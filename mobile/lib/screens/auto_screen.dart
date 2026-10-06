@@ -51,6 +51,18 @@ class _AutoScreenState extends State<AutoScreen> with WidgetsBindingObserver {
     if (state == AppLifecycleState.paused) unawaited(_engine.shutdown());
   }
 
+  /// 系统内存压力（Android onTrimMemory）：系统升级到杀进程前的警告——
+  /// 空闲的推理会话（~300MB 原生内存）此刻就该归还，不等 60s 空闲计时。
+  /// 推理进行中绝不动（working 门控）：中途释放等于取消用户的任务，
+  /// 且重新加载模型的时间比省下的内存更伤。
+  @override
+  void didHaveMemoryPressure() {
+    if (_engine.alive && !_engine.working) {
+      widget.logs.info('auto', '系统内存压力：提前释放空闲推理会话');
+      unawaited(_engine.shutdown());
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(

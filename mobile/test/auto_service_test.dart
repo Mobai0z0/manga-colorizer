@@ -160,6 +160,25 @@ void main() {
     await engine.shutdown();
   });
 
+  test('working getter: true only while a job is in flight (内存压力门控)',
+      () async {
+    final fake = _GatedBackend(gate: Completer<void>());
+    autoBackendFactory = (_, {int? intraThreads, bool? useArena}) => fake;
+    final engine = AutoEngine(
+        spawn: startInProcessAutoWorker,
+        idleRelease: const Duration(minutes: 5));
+    expect(engine.working, isFalse); // 未启动
+    await engine.ensureStarted(Directory.systemTemp.path);
+    expect(engine.working, isFalse); // 已启动、无任务：内存压力可释放会话
+    final pending = engine.colorize(gray40x16(), 40, 16);
+    await waitUntil(() => fake.entered, why: 'worker 进入 runGen');
+    expect(engine.working, isTrue); // 在飞：内存压力绝不能释放会话
+    fake.gate.complete();
+    expect(await pending, isNotNull);
+    expect(engine.working, isFalse); // 完结：恢复可释放
+    await engine.shutdown();
+  });
+
   test('concurrency is 1: second colorize while busy throws', () async {
     final fake = _GatedBackend(gate: Completer<void>()..complete());
     autoBackendFactory = (_, {int? intraThreads, bool? useArena}) => fake;
