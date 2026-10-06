@@ -16,6 +16,7 @@ import 'package:share_plus/share_plus.dart';
 
 import 'onnx/auto_service.dart';
 import 'onnx/weights.dart';
+import 'image_cap.dart';
 import 'app_settings.dart';
 import 'logs/log_bus.dart';
 
@@ -262,10 +263,19 @@ class _AutoTabState extends State<AutoTab> {
   // unsendable"，选图/编码必失败（v0.5.1 真机必现）。static 作用域无 this 可捕。
 
   /// 解码选图为灰度单通道 + 原稿 RGB PNG（在工作 isolate 执行）。
-  static Future<({Uint8List gray, int width, int height, Uint8List png})>
-      _decodePick(Uint8List bytes) {
+  /// 长边超过 kMaxPickSide 先缩到上限（端侧内存分级，见 image_cap.dart）。
+  static Future<
+      ({
+        Uint8List gray,
+        int width,
+        int height,
+        Uint8List png,
+        int? origWidth,
+        int? origHeight,
+      })> _decodePick(Uint8List bytes) {
     return Isolate.run(() {
-      final d = MangaImageIO.decodeGrayscale(bytes);
+      final capped = capDecodeGrayscale(bytes);
+      final d = capped.image;
       final n = d.width * d.height;
       final gray = Uint8List(n);
       for (var i = 0; i < n; i++) {
@@ -277,6 +287,8 @@ class _AutoTabState extends State<AutoTab> {
         height: d.height,
         png: MangaImageIO.encodePng(
             rgb: d.rgb, width: d.width, height: d.height),
+        origWidth: capped.origWidth,
+        origHeight: capped.origHeight,
       );
     });
   }
@@ -289,7 +301,12 @@ class _AutoTabState extends State<AutoTab> {
 
   Future<void> _pick() async {
     if (_busy) return;
-    final XFile? file = await _picker.pickImage(source: ImageSource.gallery);
+    // maxWidth/maxHeight：让相册在原生侧就缩到长边上限（不落全分辨率位图，
+    // 见 image_cap.dart）；未生效时 _decodePick 的兜底缩放会再拦一次。
+    final XFile? file = await _picker.pickImage(
+        source: ImageSource.gallery,
+        maxWidth: kMaxPickSide.toDouble(),
+        maxHeight: kMaxPickSide.toDouble());
     if (file == null) return;
     // 相册选择是异步挂起：期间本页可能被销毁，setState 前须验 mounted
     // （与本文件其余 post-await setState 的守卫一致）。
@@ -304,6 +321,11 @@ class _AutoTabState extends State<AutoTab> {
       final bytes = await file.readAsBytes();
       final decoded = await _decodePick(bytes);
       if (!mounted) return;
+      final origW = decoded.origWidth;
+      if (origW != null) {
+        widget.logs.info('auto',
+            '原图 $origW×${decoded.origHeight} 超过端侧长边上限 '
+            '$kMaxPickSide，已缩放至 ${decoded.width}×${decoded.height}');      }
       setState(() {
         _gray = decoded.gray;
         _w = decoded.width;

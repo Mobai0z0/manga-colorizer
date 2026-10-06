@@ -38,6 +38,20 @@ Uint8List rgbToLab(Uint8List rgb, int n) {
   return out;
 }
 
+/// 灰度（R=G=B 的退化 RGB）→ [rgbToLab] 的 **L 字节**。三通道相等时
+/// x=y=z，a/b 恒为偏置 128，无需存储。y 的系数求和顺序与 [rgbToLab] 的
+/// r=g=b 路径完全一致，同一输入下逐值相等（全 256 值对拍见 lab_test）；
+/// 「L 恒取原稿」的管线用它免建 3n 的三通道展开缓冲。
+Uint8List grayToLabL(Uint8List gray) {
+  final out = Uint8List(gray.length);
+  for (var i = 0; i < gray.length; i++) {
+    final v = _srgb(gray[i] / 255.0);
+    final y = _fwd(0.212671 * v + 0.715160 * v + 0.072169 * v);
+    out[i] = ((116 * y - 16) * 255 / 100).clamp(0, 255).round();
+  }
+  return out;
+}
+
 /// [rgbToLab] 的逆变换，对齐 cv2.COLOR_LAB2RGB 的 8bit 语义：L 按 /255*100
 /// 还原，a/b 减 128 偏置；[lab] 为行优先 n*3 字节，[n] 是像素数。
 /// 与正向同为逐值对拍金样（单步差 ≤2 判对齐，见 `test/lab_test.dart`）；
