@@ -256,6 +256,37 @@ class _AutoTabState extends State<AutoTab> {
     }
   }
 
+  // isolate 计算入口**必须 static**：闭包若在实例方法作用域创建，会被同方法内
+  // 捕获 this 的 setState 闭包经共享 context 污染——SendPort 序列化闭包时沿
+  // context 父链连 _AutoTabState（整棵 widget 树）一起走，抛 "object is
+  // unsendable"，选图/编码必失败（v0.5.1 真机必现）。static 作用域无 this 可捕。
+
+  /// 解码选图为灰度单通道 + 原稿 RGB PNG（在工作 isolate 执行）。
+  static Future<({Uint8List gray, int width, int height, Uint8List png})>
+      _decodePick(Uint8List bytes) {
+    return Isolate.run(() {
+      final d = MangaImageIO.decodeGrayscale(bytes);
+      final n = d.width * d.height;
+      final gray = Uint8List(n);
+      for (var i = 0; i < n; i++) {
+        gray[i] = d.rgb[i * 3]; // decodeGrayscale 已把亮度写到三通道
+      }
+      return (
+        gray: gray,
+        width: d.width,
+        height: d.height,
+        png: MangaImageIO.encodePng(
+            rgb: d.rgb, width: d.width, height: d.height),
+      );
+    });
+  }
+
+  /// RGB 像素编码为 PNG（在工作 isolate 执行）。
+  static Future<Uint8List> _encodePng(Uint8List rgb, int width, int height) {
+    return Isolate.run(
+        () => MangaImageIO.encodePng(rgb: rgb, width: width, height: height));
+  }
+
   Future<void> _pick() async {
     if (_busy) return;
     final XFile? file = await _picker.pickImage(source: ImageSource.gallery);
@@ -271,21 +302,7 @@ class _AutoTabState extends State<AutoTab> {
       // readAsBytes 而非 File(path)：相册 content:// URI 在部分设备上
       // XFile.path 不是真实文件路径，须经平台通道解析。
       final bytes = await file.readAsBytes();
-      final decoded = await Isolate.run(() {
-        final d = MangaImageIO.decodeGrayscale(bytes);
-        final n = d.width * d.height;
-        final gray = Uint8List(n);
-        for (var i = 0; i < n; i++) {
-          gray[i] = d.rgb[i * 3]; // decodeGrayscale 已把亮度写到三通道
-        }
-        return (
-          gray: gray,
-          width: d.width,
-          height: d.height,
-          png: MangaImageIO.encodePng(
-              rgb: d.rgb, width: d.width, height: d.height),
-        );
-      });
+      final decoded = await _decodePick(bytes);
       if (!mounted) return;
       setState(() {
         _gray = decoded.gray;
@@ -330,8 +347,7 @@ class _AutoTabState extends State<AutoTab> {
       }
       if (mounted) setState(() => _status = '编码 PNG…');
       final w = _w, h = _h;
-      final png = await Isolate.run(
-          () => MangaImageIO.encodePng(rgb: out, width: w, height: h));
+      final png = await _encodePng(out, w, h);
       if (!mounted) return;
       setState(() {
         _resultPng = png;
