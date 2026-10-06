@@ -80,7 +80,42 @@ class _ColorizeScreenState extends State<ColorizeScreen> {
     Color(0xFF212121),
   ];
 
-  Future<void> _loadBytes(List<int> bytes, String label) async {
+  // isolate 计算入口**必须 static**：闭包若在实例方法作用域创建，会被同方法内
+  // 捕获 this 的 setState 闭包经共享 context 污染——SendPort 序列化闭包时沿
+  // context 父链连 State（整棵 widget 树）一起走，抛 "object is unsendable"，
+  // 选图/上色必失败。static 作用域无 this 可捕。
+
+  /// 解码 + 灰度 + 原稿 PNG 编码，合并在一个工作 isolate 内完成。
+  static Future<({DecodedImage decoded, Uint8List png})> _loadImageIsolate(
+      Uint8List bytes) {
+    return Isolate.run(() {
+      final decoded = MangaImageIO.decodeGrayscale(bytes);
+      final png = MangaImageIO.encodePng(
+          rgb: decoded.rgb, width: decoded.width, height: decoded.height);
+      return (decoded: decoded, png: png);
+    });
+  }
+
+  /// 色度扩散求解 + 结果 PNG 编码（在工作 isolate 执行）。
+  static Future<({Uint8List bytes, int iterations, int hintCount})>
+      _colorizeIsolate(DecodedImage src, List<ColorHint> hints) {
+    return Isolate.run(() {
+      final result = colorizeManga(
+        grayscaleRgb: src.rgb,
+        width: src.width,
+        height: src.height,
+        hints: hints,
+      );
+      return (
+        bytes: MangaImageIO.encodePng(
+            rgb: result.rgb, width: result.width, height: result.height),
+        iterations: result.iterations,
+        hintCount: result.hintCount,
+      );
+    });
+  }
+
+  Future<void> _loadBytes(Uint8List bytes, String label) async {
     setState(() {
       _busy = true;
       _status = '读取图片…';
@@ -89,14 +124,12 @@ class _ColorizeScreenState extends State<ColorizeScreen> {
       _mode = _ViewMode.original;
     });
     try {
-      final decoded =
-          await Isolate.run(() => MangaImageIO.decodeGrayscale(bytes));
-      final png = await Isolate.run(() => MangaImageIO.encodePng(
-          rgb: decoded.rgb, width: decoded.width, height: decoded.height));
+      final loaded = await _loadImageIsolate(bytes);
       setState(() {
-        _source = decoded;
-        _sourcePng = png;
-        _status = '$label ${decoded.width}×${decoded.height}。点按图片落提示点，然后「上色」。';
+        _source = loaded.decoded;
+        _sourcePng = loaded.png;
+        _status =
+            '$label ${loaded.decoded.width}×${loaded.decoded.height}。点按图片落提示点，然后「上色」。';
       });
     } catch (e) {
       widget.logs.error('hints', '读取图片失败：$e');
@@ -140,20 +173,7 @@ class _ColorizeScreenState extends State<ColorizeScreen> {
     });
     final sw = Stopwatch()..start();
     try {
-      final png = await Isolate.run(() {
-        final result = colorizeManga(
-          grayscaleRgb: src.rgb,
-          width: src.width,
-          height: src.height,
-          hints: hints,
-        );
-        return (
-          bytes: MangaImageIO.encodePng(
-              rgb: result.rgb, width: result.width, height: result.height),
-          iterations: result.iterations,
-          hintCount: result.hintCount,
-        );
-      });
+      final png = await _colorizeIsolate(src, hints);
       sw.stop();
       setState(() {
         _resultPng = png.bytes;
