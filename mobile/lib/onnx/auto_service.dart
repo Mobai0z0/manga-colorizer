@@ -1,6 +1,8 @@
 // 全自动推理的 isolate 门面：模型加载/推理都在工作 isolate；空闲 60s 释放后端归还内存。
 // 事件协议（worker→main）: ['progress', double] | ['result', Uint8List?] | ['error', String]
 // 命令协议（main→worker）: ['dir', String] | ['job', Uint8List, int, int] | ['stop']
+// spawn 引导（main→worker 首条消息）: _WorkerBoot(RootIsolateToken, SendPort)——
+// worker 进口先 BackgroundIsolateBinaryMessenger.ensureInitialized，平台通道才可用。
 //
 // 设计不变量（改动须保持 RPC/生命周期测试全绿）：
 //   · hint 模式的 `Isolate.run` 是一次性闭包，撑不起常驻引擎——这里用
@@ -23,6 +25,8 @@ import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/services.dart'
+    show BackgroundIsolateBinaryMessenger, RootIsolateToken;
 
 import '../logs/log_bus.dart';
 import 'backend.dart';
@@ -63,11 +67,25 @@ abstract interface class AutoWorkerHandle {
 typedef SpawnAutoWorker = Future<AutoWorkerHandle> Function(SendPort toMain,
     {void Function(Object error)? onDied});
 
+/// spawn 引导包：把主 isolate 的 RootIsolateToken 随命令口一起带给 worker。
+/// RootIsolateToken 是 dart:ui 定义的**可发送**类型，专用于此场景。
+class _WorkerBoot {
+  _WorkerBoot(this.token, this.main);
+  final RootIsolateToken token;
+  final SendPort main;
+}
+
 /// 工作 isolate 入口（Isolate.spawn 要求静态/顶层函数）。
-void autoWorkerMain(SendPort main) {
+/// 进口先 ensureInitialized：OrtOnnxBackend 经 flutter_onnxruntime 的
+/// MethodChannel 推理，裸 spawn 的后台 isolate 二进制信使未初始化，
+/// 不先初始化首个 createSession 即抛 "Bad state: The
+/// BackgroundIsolateBinaryMessenger.instance value is invalid…"（v0.5.2
+/// 真机必现的全自动失败）。
+void _autoWorkerMain(_WorkerBoot boot) {
+  BackgroundIsolateBinaryMessenger.ensureInitialized(boot.token);
   final rx = ReceivePort();
-  main.send(rx.sendPort); // 握手：把命令口交给主 isolate
-  unawaited(_runAutoWorker(rx, main));
+  boot.main.send(rx.sendPort); // 握手：把命令口交给主 isolate
+  unawaited(_runAutoWorker(rx, boot.main));
 }
 
 /// 生产 spawn：真后台 isolate。`onError`（未捕获错误）+ `addOnExitListener`
@@ -83,7 +101,8 @@ Future<AutoWorkerHandle> spawnIsolateAutoWorker(SendPort toMain,
   exitRx.listen((_) => onDied?.call('worker isolate 已退出'));
   final Isolate iso;
   try {
-    iso = await Isolate.spawn(autoWorkerMain, toMain,
+    iso = await Isolate.spawn(
+        _autoWorkerMain, _WorkerBoot(RootIsolateToken.instance!, toMain),
         debugName: 'auto-engine', onError: errRx.sendPort);
     iso.addOnExitListener(exitRx.sendPort);
   } on Object {
