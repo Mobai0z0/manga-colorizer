@@ -2,7 +2,8 @@
 // 事件协议（worker→main）: ['progress', double] | ['result', Uint8List?] |
 //   ['error', String] | ['log', String]（worker 侧内存/耗时观测 → LogBus，
 //   工作 isolate 是新堆拿不到 LogBus 引用，只能走事件）
-// 命令协议（main→worker）: ['dir', String, int threads] | ['job', Uint8List, int, int] | ['stop']
+// 命令协议（main→worker）: ['dir', String, int threads, bool useArena] |
+//   ['job', Uint8List, int, int] | ['stop']
 // spawn 引导（main→worker 首条消息）: _WorkerBoot(RootIsolateToken, SendPort)——
 // worker 进口先 BackgroundIsolateBinaryMessenger.ensureInitialized，平台通道才可用。
 //
@@ -36,17 +37,19 @@ import 'backend.dart';
 import 'pipeline.dart';
 import 'weights.dart';
 
-/// 后端工厂：由权重目录构造一个未 load() 的后端；intraThreads 来自设备分级
-/// （ResourceTier → ensureStarted → ['dir'] 消息 → worker），低内存档降为 2。
+/// 后端工厂：由权重目录构造一个未 load() 的后端；intraThreads/useArena 来自
+/// 设备分级（ResourceTier → ensureStarted → ['dir'] 消息 → worker）。
 typedef AutoBackendFactory = OnnxBackend Function(String weightsDir,
-    {int? intraThreads});
+    {int? intraThreads, bool? useArena});
 
 /// 生产默认工厂：OrtOnnxBackend + WeightsStore（仅用于推理时按 pathOf 定位
 /// 已就绪权重，不参与下载选路，故下载源用默认值即可）。
-OnnxBackend ortAutoBackendFactory(String weightsDir, {int? intraThreads}) =>
+OnnxBackend ortAutoBackendFactory(String weightsDir,
+        {int? intraThreads, bool? useArena}) =>
     OrtOnnxBackend(
       WeightsStore(dir: Directory(weightsDir)),
       intraThreads: intraThreads ?? kDefaultIntraThreads,
+      useArena: useArena ?? true,
     );
 
 /// worker 侧后端工厂。**可替换**：宿主测试在 setUp 里换成 FakeBackend 工厂
@@ -167,8 +170,10 @@ class _InProcessHandle implements AutoWorkerHandle {
 Future<void> _runAutoWorker(ReceivePort rx, SendPort main) async {
   OnnxBackend? b;
   String? dirPath;
-  // ['dir'] 消息携带设备分级的线程数（消息缺省时用默认档，兼容旧测试）。
+  // ['dir'] 消息携带设备分级的线程数与 arena 策略（消息缺省时用默认档，
+  // 兼容旧测试）。
   int intraThreads = kDefaultIntraThreads;
+  bool useArena = true;
   try {
     await for (final msg in rx) {
       // 畸形消息（非 List / 空命令）绝不让循环猝死：回 ['error', …]——
@@ -181,6 +186,7 @@ Future<void> _runAutoWorker(ReceivePort rx, SendPort main) async {
       if (m[0] == 'dir') {
         dirPath = m[1] as String;
         if (m.length > 2) intraThreads = m[2] as int;
+        if (m.length > 3) useArena = m[3] as bool;
         continue;
       }
       if (m[0] == 'stop') {
@@ -198,9 +204,14 @@ Future<void> _runAutoWorker(ReceivePort rx, SendPort main) async {
       if (m[0] != 'job') continue;
       try {
         final backend = b ??= autoBackendFactory(dirPath!,
-            intraThreads: intraThreads);
+            intraThreads: intraThreads, useArena: useArena);
         await backend.load(); // 幂等；首次约模型大小级别的耗时
-        main.send(['log', '双 session 加载完成${rssSuffix()}']);
+        main.send([
+          'log',
+          '双 session 加载完成（threads=$intraThreads，'
+              'arena=${useArena ? '开启+每次Run收缩' : '关闭·时间换峰值'}）'
+              '${rssSuffix()}'
+        ]);
         final out = await autoColorize(
           gray: m[1] as Uint8List,
           width: m[2] as int,
@@ -250,9 +261,9 @@ class AutoEngine {
   bool get alive => _to != null;
 
   /// dirPath 由主 isolate 的 getApplicationSupportDirectory()/manga-light-colorizer
-  /// 传入；intraThreads 来自 ResourceTier 设备分级，随 ['dir'] 带给 worker。
+  /// 传入；intraThreads/useArena 来自 ResourceTier 设备分级，随 ['dir'] 带给 worker。
   Future<void> ensureStarted(String dirPath,
-      {int intraThreads = kDefaultIntraThreads}) async {
+      {int intraThreads = kDefaultIntraThreads, bool useArena = true}) async {
     if (alive) return;
     _idle?.cancel();
     final rx = ReceivePort();
@@ -274,7 +285,7 @@ class AutoEngine {
       _sub = sub;
       _handle = spawned;
       _to = to;
-      _to!.send(['dir', dirPath, intraThreads]);
+      _to!.send(['dir', dirPath, intraThreads, useArena]);
       _armIdle(); // 从没用过也要能到期自释放
       _logBus?.info('auto', '引擎已启动（worker 握手完成）');
     } on Object {

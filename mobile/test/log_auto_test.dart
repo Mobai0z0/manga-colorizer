@@ -14,7 +14,7 @@ void main() {
   // 复用 auto_service_test 的接缝：in-process worker + FakeBackend，
   // 不触碰真实 ORT/网络/path_provider。
   test('引擎启动记 info，worker 意外终止记 error', () async {
-    autoBackendFactory = (_, {int? intraThreads}) => FakeBackend();
+    autoBackendFactory = (_, {int? intraThreads, bool? useArena}) => FakeBackend();
     final bus = LogBus();
     late void Function(Object why) notifyDied;
     final engine = AutoEngine(

@@ -7,25 +7,28 @@ import 'package:manga_colorizer_mobile/resource_tier.dart';
 
 void main() {
   group('fromDevice 档位表', () {
-    test('≥6GB：满配（2048/4）', () {
+    test('≥6GB：满配（2048/4，arena 开启+收缩）', () {
       final t = ResourceTier.fromDevice(
           totalMemBytes: 6 << 30, lowRamDevice: false);
       expect(t.maxPickSide, 2048);
       expect(t.intraThreads, 4);
+      expect(t.useArena, isTrue);
     });
 
-    test('4–6GB：中档（1536/4），只降像素不降线程', () {
+    test('4–6GB：中档（1536/4，arena 关闭——时间换峰值）', () {
       final t = ResourceTier.fromDevice(
           totalMemBytes: 5 << 30, lowRamDevice: false);
       expect(t.maxPickSide, 1536);
       expect(t.intraThreads, 4);
+      expect(t.useArena, isFalse);
     });
 
-    test('<4GB：低档（1280/2）', () {
+    test('<4GB：低档（1280/2，arena 关闭）', () {
       final t = ResourceTier.fromDevice(
           totalMemBytes: (4 << 30) - 1, lowRamDevice: false);
       expect(t.maxPickSide, 1280);
       expect(t.intraThreads, 2);
+      expect(t.useArena, isFalse);
     });
 
     test('系统 lowRam 标记一票否决：大内存 lowRam 设备也进低档', () {
@@ -33,12 +36,14 @@ void main() {
           ResourceTier.fromDevice(totalMemBytes: 8 << 30, lowRamDevice: true);
       expect(t.maxPickSide, 1280);
       expect(t.intraThreads, 2);
+      expect(t.useArena, isFalse);
     });
   });
 
-  test('fallback 与 v0.5.4 行为逐值一致：2048/4（探测失败的安全回退）', () {
+  test('fallback 与 v0.5.4 行为逐值一致：2048/4/arena 开（探测失败的安全回退）', () {
     expect(ResourceTier.fallback.maxPickSide, kMaxPickSide);
     expect(ResourceTier.fallback.intraThreads, 4);
+    expect(ResourceTier.fallback.useArena, isTrue);
     expect(
       ResourceTier.fromDevice(totalMemBytes: 16 << 30, lowRamDevice: false),
       same(ResourceTier.fallback),

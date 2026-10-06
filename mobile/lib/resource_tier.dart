@@ -11,7 +11,10 @@ import 'image_cap.dart';
 import 'logs/log_bus.dart';
 
 class ResourceTier {
-  const ResourceTier({required this.maxPickSide, required this.intraThreads});
+  const ResourceTier(
+      {required this.maxPickSide,
+      required this.intraThreads,
+      required this.useArena});
 
   /// 选图长边上限（像素）：贯通 image_picker 的 maxWidth/maxHeight 与
   /// capDecodeRgba 的解码兜底。
@@ -21,19 +24,29 @@ class ResourceTier {
   /// 缓冲与栈（分块推理本身并发 1，线程数只影响单块内部并行度）。
   final int intraThreads;
 
+  /// arena 策略（用户授权「用时间换资源占用」）：true＝arena 开启 +
+  /// 每次 Run 后收缩（快，但 Run 期间仍有 arena 高水位与 2^n 扩展过冲）；
+  /// false＝彻底关闭 arena，张量走 malloc 即用即还——**单块原生峰值最低**，
+  /// 代价是逐块推理变慢（GitHub #11627 实证）。中/低内存档选 false：
+  /// 慢可以接受，被系统杀进程不可接受。
+  final bool useArena;
+
   /// 与 v0.5.4 相同的默认档：无探测数据时的安全回退。
-  static const ResourceTier fallback =
-      ResourceTier(maxPickSide: kMaxPickSide, intraThreads: 4);
+  static const ResourceTier fallback = ResourceTier(
+      maxPickSide: kMaxPickSide, intraThreads: 4, useArena: true);
 
   /// 档位表（纯函数，宿主测试直测）：<4GB 或系统 lowRam 标记 → 最低档；
-  /// 4–6GB → 中档；≥6GB → 满配（即 [fallback]）。
+  /// 4–6GB → 中档；≥6GB → 满配（即 [fallback]）。内存越紧，越偏向
+  /// 「峰值最低」的 arena 关闭。
   static ResourceTier fromDevice(
       {required int totalMemBytes, required bool lowRamDevice}) {
     if (lowRamDevice || totalMemBytes < 4 << 30) {
-      return const ResourceTier(maxPickSide: 1280, intraThreads: 2);
+      return const ResourceTier(
+          maxPickSide: 1280, intraThreads: 2, useArena: false);
     }
     if (totalMemBytes < 6 << 30) {
-      return const ResourceTier(maxPickSide: 1536, intraThreads: 4);
+      return const ResourceTier(
+          maxPickSide: 1536, intraThreads: 4, useArena: false);
     }
     return fallback;
   }
@@ -59,7 +72,8 @@ class ResourceTier {
           '资源档位：总内存 '
           '${((raw['totalMem'] as int) / (1 << 30)).toStringAsFixed(1)}GB'
           '${raw['lowRam'] as bool ? '（lowRam 设备）' : ''} → '
-          '选图上限 ${tier.maxPickSide}px / 推理 ${tier.intraThreads} 线程');
+          '选图上限 ${tier.maxPickSide}px / 推理 ${tier.intraThreads} 线程 / '
+          'arena ${tier.useArena ? '开启+收缩' : '关闭（时间换峰值）'}');
       return tier;
     } on Object {
       return fallback;
