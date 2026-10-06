@@ -247,7 +247,16 @@ class WeightsStore {
       } on Object catch (_) {
         // 关闭失败不覆盖原始错误
       }
-      throw WeightsException('${f.name}: 传输中断: $e');
+      throw WeightsException('${f.name}: 传输中断: ${_describe(e)}');
     }
+  }
+
+  /// 传输层错误的展示文案：DNS 解析失败（含缺 INTERNET 权限的正式包，
+  /// 表现同为 errno = 7）先提示查网络，原始错误文本始终保留在尾部。
+  static String _describe(Object e) {
+    if (e is SocketException && e.toString().contains('Failed host lookup')) {
+      return '域名解析失败（请检查设备网络连接）: $e';
+    }
+    return '$e';
   }
 }
