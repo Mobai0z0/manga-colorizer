@@ -328,4 +328,23 @@ void main() {
     expect(await engine.colorize(gray40x16(), 40, 16), isNotNull);
     await engine.shutdown();
   });
+
+  test(
+      'spawnIsolateAutoWorker（真 isolate）引导握手：'
+      '_WorkerBoot 携 RootIsolateToken + 进口 ensureInitialized', () async {
+    // 只验证真 spawn 的引导路径可用（这正是 v0.5.2 真机「Bad state:
+    // BackgroundIsolateBinaryMessenger…」的缺口）：引导若失败（token 不可发送
+    // /进口抛错），worker 会在握手前死于未捕获错误 → onDied 先到、握手永不到。
+    // 故不发 job——一旦走平台通道就是 ORT/插件世界，宿主测试不可达（见文件头）。
+    final toMain = ReceivePort();
+    Object? died;
+    final handle = await spawnIsolateAutoWorker(toMain.sendPort,
+        onDied: (e) => died = e);
+    final first = await toMain.first.timeout(const Duration(seconds: 10),
+        onTimeout: () => fail('worker 握手超时（died=$died）'));
+    expect(first, isA<SendPort>());
+    expect(died, isNull); // 握手前无未捕获错误：引导路径干净
+    await handle.kill();
+    toMain.close();
+  });
 }
