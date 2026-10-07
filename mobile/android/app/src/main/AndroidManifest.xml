@@ -3,6 +3,13 @@
          Flutter 模板自带，但 release 合并后若缺它，所有 DNS 解析都会报
          "Failed host lookup (errno = 7)"，表现与断网完全相同。 -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- :inference 独立推理进程（架构参考 xororz/local-dream）：推理崩溃/
+         被杀只终结推理进程，UI 进程存活可报错重试。dataSync 前台服务让
+         「推理中切后台」跑完任务并压低 LMK 命中概率；POST_NOTIFICATIONS
+         仅用于展示保活通知，拒绝不阻塞推理。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <application
         android:label="Manga Colorizer"
         android:name="${applicationName}"
@@ -34,6 +41,13 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- 独立进程推理服务：headless FlutterEngine 跑 Dart 入口
+             inferenceMain（127.0.0.1 帧协议服务），前台通知保活。 -->
+        <service
+            android:name=".InferenceService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
+            android:process=":inference"/>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

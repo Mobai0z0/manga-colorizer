@@ -31,7 +31,6 @@
 //     接缝在同一 isolate 里跑同一份 worker 消息循环（OrtOnnxBackend 依赖
 //     插件、Windows 宿主测试根本无法构造，测试因此永不触碰真实 ORT）。
 import 'dart:async';
-import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
 
@@ -43,36 +42,13 @@ import '../logs/log_bus.dart';
 import '../mem_info.dart';
 import 'backend.dart';
 import 'pipeline.dart';
-import 'weights.dart';
+import 'serving_seams.dart';
 
-/// 后端工厂：由权重目录构造一个未 load() 的后端；intraThreads/useArena 来自
-/// 设备分级（ResourceTier → ensureStarted → ['dir'] 消息 → worker）。
-typedef AutoBackendFactory = OnnxBackend Function(String weightsDir,
-    {int? intraThreads, bool? useArena});
-
-/// 生产默认工厂：OrtOnnxBackend + WeightsStore（仅用于推理时按 pathOf 定位
-/// 已就绪权重，不参与下载选路，故下载源用默认值即可）。
-OnnxBackend ortAutoBackendFactory(String weightsDir,
-        {int? intraThreads, bool? useArena}) =>
-    OrtOnnxBackend(
-      WeightsStore(dir: Directory(weightsDir)),
-      intraThreads: intraThreads ?? kDefaultIntraThreads,
-      useArena: useArena ?? true,
-    );
-
-/// worker 侧后端工厂。**可替换**：宿主测试在 setUp 里换成 FakeBackend 工厂
-/// （同 isolate 的 in-process worker 读到的就是测试改后的值；真实工作
-/// isolate 是新堆，永远读到生产默认值）。
-@visibleForTesting
-AutoBackendFactory autoBackendFactory = ortAutoBackendFactory;
-
-/// worker 侧分块参数：默认与桌面 /colorize_auto 一致（1024/256）。
-/// 测试调小以便毫秒级跑完多块路径；真机不改。
-@visibleForTesting
-int autoInfer = 1024;
-
-@visibleForTesting
-int autoOverlap = 256;
+// 工厂与分块接缝在 serving_seams.dart（isolate worker 与独立进程服务共用），
+// 这里 re-export 保持既有测试导入路径不变。
+export 'serving_seams.dart'
+    show AutoBackendFactory, ortAutoBackendFactory, autoBackendFactory,
+        autoInfer, autoOverlap;
 
 /// 工作句柄：kill() 终止 worker（生产＝杀 isolate；测试＝关命令口）。
 abstract interface class AutoWorkerHandle {
