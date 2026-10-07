@@ -174,6 +174,14 @@ ONNX Runtime CPU 执行提供者（无 GPU/NNAPI 路径），每 1024² 分块�
   走优雅停止——worker 做完当前块（原生运行不可中断）→ `dispose()` →
   `['stopped']` ack 后才回收，杜绝 kill 路径上 Kotlin 插件持有的 session 滞留
   （旧实现「开始上色就闪退」的根因）；宽限超时（原生挂死）才回退 kill。
+- **worker 意外死亡自动重试**：`:inference` 进程在任务中死亡（LMK 回收、原生
+  崩溃）时，AutoEngine 不再让在飞 job 直接失败——按预算（默认 2 次）自动收尸 →
+  重新拉起服务（按原 ResourceTier 档位）→ 重发当前图：UI 只看到进度回零再走完，
+  日志页多一条带原因的 warn。重试窗口内用户取消/关闭立即中止（绝不复活出用户
+  已放弃的推理）；预算耗尽才报错完单。死亡原因经 `ApplicationExitInfo`
+  （API 30+，MainActivity 的 `exitReason`）取证——主进程查询 `:inference` 上次
+  退出记录（只认 10 分钟内的新鲜条目，避免拿陈旧记录误导），日志页直接显示
+  「系统低内存回收(LMK) / 原生崩溃(signal n) / ANR」，不再是猜测性表述。
 - 取消/关闭/空闲到期/内存压力（空闲门控）在两条路径上都落到「归还 ~300MB 会话」；
   空闲保留时长随 ResourceTier 分级下发（≥6GB 5min / 4–6GB 2min / 低档 60s），
   连续多图不重付模型加载。

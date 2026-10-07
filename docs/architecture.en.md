@@ -192,6 +192,20 @@ The fully-automatic pipeline (`AutoEngine`/worker RPC in
   session retention on kill paths (the root cause of the earlier
   "crash right after starting colorization"); kill remains only as the
   grace-timeout fallback for a hung native call.
+- **Automatic retry on unexpected worker death**: when the `:inference` process
+  dies mid-task (LMK reclaim, native crash), AutoEngine no longer fails the
+  in-flight job outright — within a retry budget (default 2) it reaps the dead
+  worker, restarts the service with the original ResourceTier settings, and
+  resends the current image: the UI merely sees progress restart from zero,
+  plus one warn line carrying the death reason. A user cancel/shutdown during
+  the retry window aborts the revive immediately (no inference is resurrected
+  behind a cancelled task); once the budget is exhausted the job fails as
+  before. The death reason is captured via `ApplicationExitInfo` (API 30+,
+  `exitReason` on MainActivity) — the main process queries the last exit
+  record of `:inference` (only entries fresher than 10 minutes, to avoid
+  misleading stale records) and the log page shows the actual root cause
+  ("low-memory kill (LMK)" / "native crash (signal n)" / ANR) instead of a
+  vague guess.
 - Cancel/shutdown/idle-expiry/memory-pressure (idle-gated) all end up
   returning the ~300MB of sessions on both paths; the idle retention is
   tiered via ResourceTier (≥6GB 5min / 4–6GB 2min / low tier 60s) so

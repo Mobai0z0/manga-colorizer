@@ -34,6 +34,27 @@ class _GatedBackend extends FakeBackend {
   }
 }
 
+/// 前 N 次 runGen 挂闸、之后直通：死亡重试用例用——第一次（死亡前）钉在飞，
+/// 重试那次放行跑完；预算用例把重试那次也钉住。
+class _GateFirstNBackend extends FakeBackend {
+  _GateFirstNBackend({required this.gate, required this.gatedEntries});
+  final Completer<void> gate;
+  final int gatedEntries;
+  bool entered = false;
+  int entries = 0;
+
+  @override
+  Future<Float32List> runGen(Float32List grayPlane, int s,
+      (Float32List, List<int>) sam0, (Float32List, List<int>) sam1) async {
+    entries++;
+    if (entries <= gatedEntries) {
+      entered = true;
+      await gate.future;
+    }
+    return super.runGen(grayPlane, s, sam0, sam1);
+  }
+}
+
 /// load() 前挂闸门：钉在"模型加载中"——真机 P0 场景（加载中切后台/取消）
 /// 的确定性复现：旧实现 kill 不执行 dispose()，~300MB 会话滞留。
 class _GatedLoadBackend extends FakeBackend {
@@ -344,7 +365,7 @@ void main() {
 
   test(
       'worker death (exit/onError path) fails the in-flight job and '
-      'lets ensureStarted respawn', () async {
+      'lets ensureStarted respawn（关闭重试预算的历史语义）', () async {
     final fake = _GatedBackend(gate: Completer<void>());
     autoBackendFactory = (_, {int? intraThreads, bool? useArena}) => fake;
     late void Function(Object why) notifyDied;
@@ -355,6 +376,7 @@ void main() {
           notifyDied = (why) => onDied!(why);
           return startInProcessAutoWorker(toMain, onDied: onDied);
         },
+        maxWorkerRetries: 0, // 本测试钉住「预算耗尽」的历史语义，重试见专用用例
         idleRelease: const Duration(minutes: 5));
     await engine.ensureStarted(Directory.systemTemp.path);
     final pending = engine.colorize(gray40x16(), 40, 16);
@@ -373,6 +395,118 @@ void main() {
     await engine.ensureStarted(Directory.systemTemp.path);
     expect(await engine.colorize(gray40x16(), 40, 16), isNotNull);
     await engine.shutdown();
+  });
+
+  test('worker 死亡 → 自动重启重发当前图，结果转交原始 job（预算内）', () async {
+    final gate = Completer<void>();
+    // gatedEntries=1：死亡前那次钉在飞，重启后的重试直通跑完。
+    final fake = _GateFirstNBackend(gate: gate, gatedEntries: 1);
+    autoBackendFactory = (_, {int? intraThreads, bool? useArena}) => fake;
+    final diedTriggers = <void Function(Object why)>[];
+    final cmds = <List<Object?>>[]; // 每个 worker 收到的命令（经记录中转）
+    final engine = AutoEngine(
+        idleRelease: const Duration(minutes: 5),
+        spawn: (toMain, {onDied}) {
+          diedTriggers.add((why) => onDied!(why));
+          final events = ReceivePort();
+          final cmdRelay = ReceivePort();
+          SendPort? workerCmd;
+          events.listen((m) {
+            if (m is SendPort) {
+              workerCmd = m;
+              cmdRelay.listen((c) {
+                if (c is List) cmds.add(List<Object?>.from(c));
+                workerCmd!.send(c); // 记录后转发给真 worker 命令口
+              });
+              toMain.send(cmdRelay.sendPort); // 引擎命令口＝记录中转
+              return;
+            }
+            toMain.send(m); // worker 事件原样转发引擎
+          });
+          return startInProcessAutoWorker(events.sendPort, onDied: onDied);
+        });
+    await engine.ensureStarted('/tmp/weights-dir',
+        intraThreads: 2, useArena: false);
+    final progress = <double>[];
+    final pending =
+        engine.colorize(gray40x16(), 40, 16, onProgress: progress.add);
+    await waitUntil(
+        () => cmds.any((m) => m[0] == 'job'), why: '首个 job 下发');
+    diedTriggers[0](
+        'inference 进程连接断开；系统退出原因：系统低内存回收(LMK)（8s 前）');
+    final out = await pending; // 重试自动跑完：UI 只看到进度回零再走完
+    expect(out, isNotNull);
+    expect(out!.length, 40 * 16 * 3);
+    expect(diedTriggers, hasLength(2)); // 死亡触发了一次自动重启
+    // 新 worker 按原档位重配置（dir/threads/arena 原样重发），同一张图重发。
+    expect(cmds.where((m) => m[0] == 'dir'),
+        everyElement(equals(['dir', '/tmp/weights-dir', 2, false])));
+    expect(cmds.where((m) => m[0] == 'job'), hasLength(2));
+    expect(progress, [0.25, 0.5, 0.75, 1.0]); // 进度回调跨重启延续
+    await engine.shutdown();
+    gate.complete(); // 放闸让死亡前的旧循环收尾
+    await pumpEventQueue();
+  });
+
+  test('死亡重试预算耗尽：原始 job 以错误完单，不再无限复活', () async {
+    final gate = Completer<void>();
+    // gatedEntries=2：首次与重试都钉在飞，第二次死亡时预算已耗尽。
+    final fake = _GateFirstNBackend(gate: gate, gatedEntries: 2);
+    autoBackendFactory = (_, {int? intraThreads, bool? useArena}) => fake;
+    final diedTriggers = <void Function(Object why)>[];
+    final engine = AutoEngine(
+        maxWorkerRetries: 1,
+        idleRelease: const Duration(minutes: 5),
+        spawn: (toMain, {onDied}) {
+          diedTriggers.add((why) => onDied!(why));
+          return startInProcessAutoWorker(toMain, onDied: onDied);
+        });
+    await engine.ensureStarted('/tmp/weights-dir');
+    final pending = engine.colorize(gray40x16(), 40, 16);
+    final pendingCheck = expectLater(
+        pending,
+        throwsA(isA<Exception>()
+            .having((e) => e.toString(), 'msg', contains('自动重启重试失败'))));
+    await waitUntil(() => fake.entered, why: '首个 job 进入 runGen');
+    diedTriggers[0]('第一次死亡'); // 预算 1→0：自动重启
+    await waitUntil(() => fake.entries >= 2, why: '重试 job 进入 runGen');
+    diedTriggers[1]('第二次死亡'); // 预算耗尽：报错完单
+    await pendingCheck;
+    expect(engine.alive, isFalse); // 已拆净：ensureStarted 复活语义保留
+    gate.complete();
+    await pumpEventQueue();
+    await engine.ensureStarted('/tmp/weights-dir');
+    expect(await engine.colorize(gray40x16(), 40, 16), isNotNull);
+    await engine.shutdown();
+  });
+
+  test('重试窗口内用户取消：job 以 null 完结，重启出的引擎被立即拆掉', () async {
+    final gate = Completer<void>();
+    final fake = _GateFirstNBackend(gate: gate, gatedEntries: 1);
+    autoBackendFactory = (_, {int? intraThreads, bool? useArena}) => fake;
+    final diedTriggers = <void Function(Object why)>[];
+    var spawns = 0;
+    final spawnGate = Completer<void>(); // 钉住 revive 的第二次 spawn
+    final engine = AutoEngine(
+        idleRelease: const Duration(minutes: 5),
+        spawn: (toMain, {onDied}) async {
+          spawns++;
+          if (spawns == 2) await spawnGate.future;
+          diedTriggers.add((why) => onDied!(why));
+          return startInProcessAutoWorker(toMain, onDied: onDied);
+        });
+    await engine.ensureStarted('/tmp/weights-dir');
+    final pending = engine.colorize(gray40x16(), 40, 16);
+    await waitUntil(() => fake.entered, why: '首个 job 进入 runGen');
+    diedTriggers[0]('进程被杀');
+    await pumpEventQueue(); // revive 启动：旧 worker 收尸，卡在第二次 spawn
+    await engine.cancel(); // 用户取消：epoch 前进
+    spawnGate.complete(); // 放行 revive——它必须中止而不是复活出推理
+    expect(await pending, isNull); // 按取消语义完单，绝不报错
+    expect(engine.alive, isFalse); // 重启出的引擎被立即拆掉
+    expect(engine.working, isFalse);
+    gate.complete();
+    await pumpEventQueue();
   });
 
   test(

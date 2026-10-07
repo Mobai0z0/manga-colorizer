@@ -24,8 +24,9 @@
 //     挂死的病态情形）才回退 kill，接受一次泄漏；
 //   · worker 循环绝不静默死亡：畸形消息被解码守卫拦下（跳过并回
 //     ['error']，在飞 job 得以完单）；isolate 意外退出由 spawn 挂的
-//     onError/退出监听口捕获，引擎将在飞 job 报错完结并标记已死，
-//     ensureStarted 可复活；
+//     onError/退出监听口捕获，引擎先按预算自动重启重发当前图（见
+//     AutoEngine 类注释），预算耗尽才报错完结并标记已死，ensureStarted
+//     仍可复活；
 //   · 真实后端构造封在 ortAutoBackendFactory 一处；宿主测试经
 //     startInProcessAutoWorker + autoBackendFactory 两个 @visibleForTesting
 //     接缝在同一 isolate 里跑同一份 worker 消息循环（OrtOnnxBackend 依赖
@@ -251,19 +252,47 @@ Future<void> _runAutoWorker(ReceivePort rx, SendPort main) async {
 }
 
 /// 主 isolate 门面：工作 isolate 常驻，空闲 60s 自动释放后端。
+///
+/// worker 意外死亡（:inference 进程被 LMK 回收/原生崩溃、isolate 终止）时，
+/// 在飞 job 不再直接失败：引擎按 [maxWorkerRetries] 自动收尸 → 重新
+/// ensureStarted → 重发当前图（从零重跑该图，分块进度回到 0）。用户取消/
+/// 关闭会中止在途的重试。重试预算按「用户发起的一次 colorize」计，耗尽后
+/// 恢复原有语义（job 以错误完结，引擎拆净可复活）。
 class AutoEngine {
   AutoEngine(
       {SpawnAutoWorker? spawn,
       Duration? idleRelease,
       Duration? stopGrace,
+      int maxWorkerRetries = 2,
       LogBus? logBus})
       : _spawn = spawn ?? spawnIsolateAutoWorker,
         _idleRelease = idleRelease ?? const Duration(seconds: 60),
         _stopGrace = stopGrace ?? const Duration(seconds: 90),
+        _maxWorkerRetries = maxWorkerRetries,
         _logBus = logBus;
 
   final SpawnAutoWorker _spawn;
   Duration _idleRelease;
+
+  /// 当前任务的 worker 死亡自动重试预算（见类注释）。用户每次 colorize 重置；
+  /// 重试内部走 [_sendJob] 不重置，死亡循环最多消耗 [_maxWorkerRetries] 次。
+  final int _maxWorkerRetries;
+  int _reviveAttempt = 0;
+
+  /// 用户主动拆机（cancel/shutdown/空闲/内存压力）的代数： revive 在途时用户
+  /// 取消 → 代数不匹配 → 重试中止、job 以 null 完结（绝不复活出用户已放弃的
+  /// 推理）。
+  int _epoch = 0;
+
+  /// 最近一次 ensureStarted 的参数：死亡自动重启按原档位复活。
+  String? _lastDir;
+  int? _lastThreads;
+  bool? _lastArena;
+
+  /// 在飞 job 的入参：worker 死亡后重发当前图用（与 UI 侧持有的 _gray 同一份
+  /// 字节，无额外拷贝；任务完结/拆机即清）。
+  Uint8List? _pendingGray;
+  int _pendingW = 0, _pendingH = 0;
 
   /// 优雅停止的宽限：覆盖「当前块跑完 + dispose()」。原生运行不可中断，真机
   /// 上一块可达 10–30s、load() 可达 10–20s，90s 已是宽裕上限；超时意味着
@@ -301,6 +330,9 @@ class AutoEngine {
     await _teardown; // 上一轮优雅拆机落地前绝不 spawn 新 worker
     _idle?.cancel();
     if (idleRelease != null) _idleRelease = idleRelease;
+    _lastDir = dirPath;
+    _lastThreads = intraThreads;
+    _lastArena = useArena;
     final rx = ReceivePort();
     // 握手：worker 把它的命令口作为第一条消息发回（见 autoWorkerMain）；
     // 监听器必须先于 spawn 建立，之后同一监听分发 SendPort/事件。
@@ -360,12 +392,14 @@ class AutoEngine {
         final job = _job;
         _job = null;
         _onProgress = null;
+        _pendingGray = null;
         _armIdle(); // 空闲计时从"上次任务结束"起算，长任务不被中途杀
         job?.complete(m[1] as Uint8List?);
       case 'error':
         final job = _job;
         _job = null;
         _onProgress = null;
+        _pendingGray = null;
         _armIdle();
         job?.completeError(Exception(m[1] as String));
     }
@@ -373,20 +407,33 @@ class AutoEngine {
 
   Future<Uint8List?> colorize(Uint8List gray, int w, int h,
       {void Function(double)? onProgress}) async {
+    // 保持 async：守卫错误以失败 Future 出现（调用方/测试按 await 或
+    // expectLater(future, throwsA) 消费，同步抛出会破坏该契约）。
     if (!alive) throw StateError('先 ensureStarted');
     if (_job != null) throw StateError('并发 1：已有任务在跑');
+    _reviveAttempt = 0; // 新的用户任务：死亡重试预算重置
+    return _sendJob(gray, w, h, onProgress: onProgress);
+  }
+
+  /// 下发 job（colorize 与死亡自动重试共用）：重试路径**不得**重置重试预算，
+  /// 否则「加载→推理→死亡」的确定性循环会无限复活。
+  Future<Uint8List?> _sendJob(Uint8List gray, int w, int h,
+      {void Function(double)? onProgress}) {
     _idle?.cancel();
     _onProgress = onProgress;
     final job = Completer<Uint8List?>();
     _job = job;
+    _pendingGray = gray;
+    _pendingW = w;
+    _pendingH = h;
     _to!.send(['job', gray, w, h]);
     return job.future;
   }
 
-  /// worker 意外死亡（生产＝退出监听/未捕获错误事件；测试＝onDied 直调）：
-  /// 拆机期死亡等同收到 stopped ack（worker 已不存在，dispose 无从谈起）；
-  /// 否则在飞 job 以错误完结（防 UI 永挂）、引擎即刻拆净标记已死，
-  /// 下次 [ensureStarted] 重新 spawn。
+  /// worker 意外死亡（生产＝退出监听/未捕获错误事件/:inference 连接断开；
+  /// 测试＝onDied 直调）：预算内且当前有在飞 job → 自动收尸重启重发当前图
+  /// （用户在 UI 上只是进度回零、日志页多一条 warn）；预算耗尽或无在飞 job
+  /// 时保持原语义——在飞 job 以错误完结、引擎拆净，ensureStarted 可复活。
   void _onWorkerDied(Object why) {
     final ack = _stopAck;
     if (ack != null) {
@@ -394,8 +441,51 @@ class AutoEngine {
       return; // 拆机进行中：其余字段已由 _beginTeardown 接管
     }
     if (!alive) return; // 已拆净：死亡事件幂等空转
+    final job = _job;
+    final gray = _pendingGray;
+    if (job != null && gray != null && _reviveAttempt < _maxWorkerRetries) {
+      _reviveAttempt++;
+      _logBus?.warn('auto',
+          'worker 意外终止（$why），自动重启引擎重试当前图'
+          '（第 $_reviveAttempt/$_maxWorkerRetries 次）');
+      final w = _pendingW, h = _pendingH, onProgress = _onProgress;
+      unawaited(_reviveAndRetry(_epoch, job, gray, w, h, onProgress));
+      return;
+    }
     _logBus?.error('auto', 'worker isolate 意外终止: $why');
     unawaited(_beginTeardown(workerDied: true));
+  }
+
+  /// 死亡自动重启：收尸（job 由本方法接管，不在拆机中完单）→ 按原档位复活 →
+  /// 重发当前图并把结果转交给原始 job。用户在重试窗口内取消/关闭（_epoch
+  /// 变化）→ 中止重试：已复活的引擎立即拆掉，job 以 null 完结（按取消语义）。
+  Future<void> _reviveAndRetry(
+      int epoch,
+      Completer<Uint8List?> job,
+      Uint8List gray,
+      int w,
+      int h,
+      void Function(double)? onProgress) async {
+    try {
+      await _beginTeardown(workerDied: true, keepJob: true);
+      if (_epoch != epoch) {
+        job.complete(null);
+        return;
+      }
+      await ensureStarted(_lastDir!,
+          intraThreads: _lastThreads ?? kDefaultIntraThreads,
+          useArena: _lastArena ?? true,
+          idleRelease: _idleRelease);
+      if (_epoch != epoch) {
+        await shutdown();
+        job.complete(null);
+        return;
+      }
+      final out = await _sendJob(gray, w, h, onProgress: onProgress);
+      job.complete(out);
+    } on Object catch (e) {
+      job.completeError(Exception('自动重启重试失败: $e'));
+    }
   }
 
   /// 取消 = 优雅停止：UI 侧立即复位（在飞 job 以 null 完结、引擎同步标记
@@ -413,16 +503,21 @@ class AutoEngine {
   ///   · 存活的 worker：发 ['stop']，等 ['stopped'] ack（或死亡）直到宽限
   ///     [_stopGrace] 超时，再封口 + kill——保证 dispose() 已执行过；
   ///   · 已死亡的 worker（workerDied）：不会也无需 ack，立即放行收尸；
+  ///     [keepJob]（死亡自动重试专用）：在飞 job 不在此完单，由 revive 接管
+  ///     转交——拆机只负责收尸与字段复位；
   ///   · 全程记录到 [_teardown]，重入幂等，ensureStarted 先等它落地。
-  Future<void> _beginTeardown({bool workerDied = false}) async {
+  Future<void> _beginTeardown(
+      {bool workerDied = false, bool keepJob = false}) async {
     _idle?.cancel();
     _idle = null;
     _onProgress = null;
     final job = _job;
     _job = null;
-    if (workerDied) {
+    _pendingGray = null;
+    if (!workerDied) _epoch++; // 用户/系统主动拆机：在途 revive 据此中止
+    if (workerDied && !keepJob) {
       job?.completeError(Exception('auto worker 意外终止'));
-    } else {
+    } else if (!workerDied) {
       job?.complete(null);
     }
     if (_teardown != null) return; // 已在收尾：重入安全

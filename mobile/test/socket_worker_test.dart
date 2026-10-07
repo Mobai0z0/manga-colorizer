@@ -30,6 +30,7 @@ void main() {
   late Duration origBudget;
   late bool origPrefer;
   late SpawnAutoWorker origFallback;
+  late Future<String?> Function() origExitReason;
 
   setUp(() {
     origFactory = autoBackendFactory;
@@ -41,6 +42,7 @@ void main() {
     origBudget = inferenceConnectBudget;
     origPrefer = preferInferenceService;
     origFallback = fallbackAutoSpawn;
+    origExitReason = inferenceExitReason;
     autoInfer = 16;
     autoOverlap = 8;
   });
@@ -54,6 +56,7 @@ void main() {
     inferenceConnectBudget = origBudget;
     preferInferenceService = origPrefer;
     fallbackAutoSpawn = origFallback;
+    inferenceExitReason = origExitReason;
   });
 
   /// 起一个真实推理服务（serveClient + 核心 + FakeBackend 工厂），把起停
@@ -137,6 +140,8 @@ void main() {
     stopInferenceService = () async {};
     final engine = AutoEngine(
         spawn: spawnInferenceServiceWorker,
+        // 钉住「断开即报错完单」的历史语义（重试语义见下面的专用用例）。
+        maxWorkerRetries: 0,
         idleRelease: const Duration(minutes: 5));
     await engine.ensureStarted('/tmp/weights-dir');
     final pending = engine.colorize(gray40x16(), 40, 16);
@@ -157,6 +162,102 @@ void main() {
     expect(await engine.colorize(gray40x16(), 40, 16), isNotNull);
     await engine.shutdown();
     await waitStopped(stopped2);
+  });
+
+  test('死亡消息带系统退出原因（ApplicationExitInfo 接缝）', () async {
+    inferenceExitReason = () async => '系统低内存回收(LMK)（8s 前）';
+    final core = InferenceServerCore();
+    final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    Socket? serverSide;
+    server.listen((s) {
+      serverSide = s;
+      serveClient(s, core).onError<Object>((_, __) {});
+    });
+    inferenceCandidatePorts = [server.port];
+    startInferenceService = () async {};
+    stopInferenceService = () async {};
+    final toMain = ReceivePort();
+    Object? died;
+    final handle = await spawnInferenceServiceWorker(toMain.sendPort,
+        onDied: (e) => died = e);
+    serverSide!.destroy(); // 等价推理进程死亡：连接重置
+    final sw = Stopwatch()..start();
+    while (died == null && sw.elapsed < const Duration(seconds: 5)) {
+      await Future<void>.delayed(const Duration(milliseconds: 2));
+    }
+    expect(died, contains('系统退出原因：系统低内存回收(LMK)（8s 前）'));
+    await handle.kill();
+    toMain.close();
+    await server.close();
+  });
+
+  test('查询替身抛错：死亡消息保持原表述，上报不被阻塞', () async {
+    inferenceExitReason = () => Future.error(StateError('binding 未初始化'));
+    final core = InferenceServerCore();
+    final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    Socket? serverSide;
+    server.listen((s) {
+      serverSide = s;
+      serveClient(s, core).onError<Object>((_, __) {});
+    });
+    inferenceCandidatePorts = [server.port];
+    startInferenceService = () async {};
+    stopInferenceService = () async {};
+    final toMain = ReceivePort();
+    Object? died;
+    final handle = await spawnInferenceServiceWorker(toMain.sendPort,
+        onDied: (e) => died = e);
+    serverSide!.destroy();
+    final sw = Stopwatch()..start();
+    while (died == null && sw.elapsed < const Duration(seconds: 5)) {
+      await Future<void>.delayed(const Duration(milliseconds: 2));
+    }
+    expect(died, 'inference 进程连接断开（进程退出或被杀）');
+    await handle.kill();
+    toMain.close();
+    await server.close();
+  });
+
+  test('连接断开 → 引擎自动重启重试当前图（进程隔离的韧性：UI 无感跑完）',
+      () async {
+    final gate = Completer<void>();
+    final fake = _BlockingBackend(gate: gate); // 只拦第一次 runGen
+    final core = InferenceServerCore();
+    final bus = LogBus();
+    final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    final serverSides = <Socket>[];
+    server.listen((s) {
+      serverSides.add(s);
+      serveClient(s, core).onError<Object>((_, __) {});
+    });
+    autoBackendFactory = (_, {int? intraThreads, bool? useArena}) => fake;
+    inferenceCandidatePorts = [server.port];
+    startInferenceService = () async {}; // 重启服务 no-op：同一 server 继续收连接
+    stopInferenceService = () async {};
+    inferenceExitReason = () async => '自行退出(exit)（3s 前）';
+    final engine = AutoEngine(
+        spawn: spawnInferenceServiceWorker,
+        idleRelease: const Duration(minutes: 5),
+        logBus: bus);
+    await engine.ensureStarted('/tmp/weights-dir');
+    final progress = <double>[];
+    final pending =
+        engine.colorize(gray40x16(), 40, 16, onProgress: progress.add);
+    final sw = Stopwatch()..start();
+    while (!fake.entered && sw.elapsed < const Duration(seconds: 5)) {
+      await Future<void>.delayed(const Duration(milliseconds: 2));
+    }
+    serverSides.first.destroy(); // 等价推理进程死亡：连接重置（server 仍在收）
+    final out = await pending; // 自动重启 + 当前图重试跑完
+    expect(out, isNotNull);
+    expect(progress, [0.25, 0.5, 0.75, 1.0]); // 进度跨重启走满
+    expect(
+        bus.entries.map((e) => e.message).where((m) => m.contains('重试')),
+        isNotEmpty,
+        reason: '重试 warn 应带系统退出原因，供日志页定位根因');
+    gate.complete(); // 放行死亡前被弃置的旧 job 收尾（写帧静默失败）
+    await engine.shutdown();
+    await server.close();
   });
 
   test('defaultAutoSpawn：服务启动失败自动回退进程内 isolate', () async {
