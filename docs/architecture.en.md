@@ -170,7 +170,14 @@ The fully-automatic pipeline (`AutoEngine`/worker RPC in
   foreground service) starts a headless FlutterEngine running the Dart
   entrypoint `inferenceMain`, which serves a frame protocol on 127.0.0.1
   (`onnx/socket_protocol.dart`, length-prefixed frames: hello/config/job →
-  progress/log/result/error). An inference crash or a system kill only takes
+  progress/log/result/error). The entrypoint lives in `inference_main.dart`,
+  but the engine resolves named entrypoints against the root library only —
+  `lib/main.dart` keeps a root-library forwarder (the two-arg `DartEntrypoint`
+  consults `Dart_RootLibrary()`). `InferenceService.onStartCommand` must also
+  call `FlutterLoader.startInitialization` first (that process has no
+  FlutterActivity and the Application class is the default
+  `android.app.Application`, so `findAppBundlePath` would NPE otherwise).
+  An inference crash or a system kill only takes
   down the inference process; the UI process survives and can surface an error
   and retry, and process death returns both ORT sessions (~300MB) to the OS —
   **sessions have no leak path**. While backgrounded, the foreground service

@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import io.flutter.FlutterInjector
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.engine.FlutterEngineGroup
@@ -40,12 +41,26 @@ class InferenceService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startAsForeground()
         if (engine == null) {
-            val loader = FlutterInjector.instance().flutterLoader()
-            val entry = DartEntrypoint(loader.findAppBundlePath(), "inferenceMain")
-            engine = FlutterEngineGroup(this).createAndRunEngine(this, entry).also {
-                // 手动创建的引擎不会自动注册插件：flutter_onnxruntime 的 ORT
-                // 平台通道全靠这里挂上。
-                GeneratedPluginRegistrant.registerWith(it)
+            try {
+                // :inference 进程没有 FlutterActivity，Application 又是 Flutter
+                // gradle 插件的默认占位符 android.app.Application（onCreate 不做
+                // 引擎初始化），本进程必须在这里手动初始化 FlutterLoader——
+                // findAppBundlePath 读的 flutterApplicationInfo 只在
+                // startInitialization 里赋值，漏掉这行会在下一步直接 NPE 崩掉
+                // 推理进程（v0.5.9 真机「连接全部被拒 → 回退 isolate」根因之一）。
+                val loader = FlutterInjector.instance().flutterLoader()
+                loader.startInitialization(this)
+                val entry = DartEntrypoint(loader.findAppBundlePath(), "inferenceMain")
+                engine = FlutterEngineGroup(this).createAndRunEngine(this, entry).also {
+                    // 手动创建的引擎不会自动注册插件：flutter_onnxruntime 的 ORT
+                    // 平台通道全靠这里挂上。
+                    GeneratedPluginRegistrant.registerWith(it)
+                }
+            } catch (t: Throwable) {
+                // 引擎起不来（初始化异常/OOM 等）：前台服务停掉留 logcat 痕迹，
+                // 主进程侧由连接超时统一回退进程内 isolate。
+                Log.w(TAG, "inference engine failed to start", t)
+                stopSelf()
             }
         }
         return START_NOT_STICKY
@@ -102,6 +117,7 @@ class InferenceService : Service() {
     }
 
     companion object {
+        private const val TAG = "InferenceService"
         private const val CHANNEL_ID = "inference"
         private const val NOTIFICATION_ID = 0x1A17
     }
