@@ -1,7 +1,8 @@
 // 全自动推理的 isolate 门面：模型加载/推理都在工作 isolate；空闲 60s 释放后端归还内存。
 // 事件协议（worker→main）: ['progress', double] | ['result', Uint8List?] |
 //   ['error', String] | ['log', String]（worker 侧内存/耗时观测 → LogBus，
-//   工作 isolate 是新堆拿不到 LogBus 引用，只能走事件）
+//   工作 isolate 是新堆拿不到 LogBus 引用，只能走事件）|
+//   ['stopped']（优雅收尾 ack：dispose() 完成即回，然后 worker 退出）
 // 命令协议（main→worker）: ['dir', String, int threads, bool useArena] |
 //   ['job', Uint8List, int, int] | ['stop']
 // spawn 引导（main→worker 首条消息）: _WorkerBoot(RootIsolateToken, SendPort)——
@@ -10,10 +11,17 @@
 // 设计不变量（改动须保持 RPC/生命周期测试全绿）：
 //   · hint 模式的 `Isolate.run` 是一次性闭包，撑不起常驻引擎——这里用
 //     spawn + ReceivePort 的 RPC，工作 isolate 跨任务存活，模型只加载一次；
-//   · 空闲 60s（自上次任务结束起）自动 shutdown()：先 ['stop'] 让 worker
-//     dispose() session，再回收 isolate（硬约束「空闲即 dispose()」）；
-//   · cancel() 直接杀工作 isolate：kill 是即时的，worker 内当前块的
-//     原生推理随 isolate 终止一并释放，进行中的 job 以 null 完结；
+//   · 空闲 60s（自上次任务结束起）自动 shutdown()：['stop'] → worker
+//     dispose() → ['stopped'] ack → 回收句柄（硬约束「空闲即 dispose()」）；
+//   · cancel()/shutdown() = 优雅停止：UI 侧立即完单复位（在飞 job 以 null
+//     完结、引擎同步标记已死），worker 收到 ['stop'] 后做完当前块（原生运行
+//     不可中断）→ dispose() → ['stopped'] → 退出；引擎等 ack（宽限见
+//     [AutoEngine.stopGrace]）后才回收句柄，且 ensureStarted 会先等上一轮
+//     拆机落地——杜绝新旧两份会话叠加。旧实现的 kill 即时但不执行 worker 的
+//     dispose()：flutter_onnxruntime 插件在 Kotlin 侧持有的双 session
+//     （~300MB）只在显式 close 或引擎销毁时释放，kill 路径就此滞留，下次
+//     再叠一份新会话——真机「开始上色就闪退」的复现路径。仅宽限超时（原生
+//     挂死的病态情形）才回退 kill，接受一次泄漏；
 //   · worker 循环绝不静默死亡：畸形消息被解码守卫拦下（跳过并回
 //     ['error']，在飞 job 得以完单）；isolate 意外退出由 spawn 挂的
 //     onError/退出监听口捕获，引擎将在飞 job 报错完结并标记已死，
@@ -130,7 +138,8 @@ class _IsolateHandle implements AutoWorkerHandle {
   final ReceivePort _exitRx;
   @override
   Future<void> kill() async {
-    // kill 是即时的：worker 内当前块的原生推理随 isolate 终止释放。
+    // 仅在优雅停止宽限超时（原生挂死）兜底：kill 即时但不执行 worker 的
+    // dispose()，插件持有的会话就此滞留——正常路径都先走 ['stopped'] ack。
     _iso.kill(priority: Isolate.beforeNextEvent);
     _errRx.close();
     _exitRx.close();
@@ -159,14 +168,18 @@ class _InProcessHandle implements AutoWorkerHandle {
   final Future<void> _loop;
   @override
   Future<void> kill() async {
-    _rx.close(); // await-for 收到关闭事件 → 循环退出并 dispose 后端
+    _rx.close(); // worker 侧 onDone 收到关闭事件 → 兜底 dispose 后退出
     unawaited(_loop);
   }
 }
 
 /// worker 消息循环：dir/stop/job 三种命令，事件回主 isolate。
+/// 监听式分发（非 `await for` 串行）：['stop'] 必须能在 job 在飞时**并发**
+/// 到达并置位 stopRequested——管线据此在块间收步（当前块的原始运行不可中断，
+/// 这是优雅取消的延迟下限）；除此之外的事件处理仍是串行语义（job 处理期间
+/// 迟到的 job/dir 不可能：引擎保证并发 1 且拆机后不再发 job）。
 /// 循环整体不抛出（否则 in-process 句柄无从 await，真 isolate 也会静默死亡、
-/// 引擎侧 _job 永挂），dispose 兜底在 finally。
+/// 引擎侧 _job 永挂），dispose 兜底在 ack 路径与 onDone 各一道。
 Future<void> _runAutoWorker(ReceivePort rx, SendPort main) async {
   OnnxBackend? b;
   String? dirPath;
@@ -174,80 +187,112 @@ Future<void> _runAutoWorker(ReceivePort rx, SendPort main) async {
   // 兼容旧测试）。
   int intraThreads = kDefaultIntraThreads;
   bool useArena = true;
-  try {
-    await for (final msg in rx) {
-      // 畸形消息（非 List / 空命令）绝不让循环猝死：回 ['error', …]——
-      // 若引擎侧有在飞 job 即报错完结（无则被忽略），跳过该消息继续。
-      if (msg is! List || msg.isEmpty) {
-        main.send(['error', 'auto worker 收到畸形消息: $msg']);
-        continue;
-      }
-      final m = msg;
-      if (m[0] == 'dir') {
-        dirPath = m[1] as String;
-        if (m.length > 2) intraThreads = m[2] as int;
-        if (m.length > 3) useArena = m[3] as bool;
-        continue;
-      }
-      if (m[0] == 'stop') {
-        // 空闲/优雅关闭：dispose 后端，b 置 null；下次 job 重建+load()。
-        final cur = b;
-        b = null;
-        try {
-          await cur?.dispose();
-        } on Object catch (_) {
-          // 尽力释放：dispose 失败不再回传（主侧已无待决 job，且会话对象
-          // 已弃用；杀 isolate 时原生内存随 isolate 死亡回收）。
-        }
-        continue;
-      }
-      if (m[0] != 'job') continue;
-      try {
-        final backend = b ??= autoBackendFactory(dirPath!,
-            intraThreads: intraThreads, useArena: useArena);
-        await backend.load(); // 幂等；首次约模型大小级别的耗时
-        main.send([
-          'log',
-          '双 session 加载完成（threads=$intraThreads，'
-              'arena=${useArena ? '开启+每次Run收缩' : '关闭·时间换峰值'}）'
-              '${rssSuffix()}'
-        ]);
-        final out = await autoColorize(
-          gray: m[1] as Uint8List,
-          width: m[2] as int,
-          height: m[3] as int,
-          backend: backend,
-          infer: autoInfer,
-          overlap: autoOverlap,
-          onProgress: (p) => main.send(['progress', p]),
-          onLog: (line) => main.send(['log', line]),
-        );
-        main.send(['result', out]);
-      } on Object catch (e) {
-        main.send(['error', e.toString()]);
-      }
-    }
-  } finally {
+  var stopRequested = false; // 'stop' 已到：在飞任务做完当前块即收，不再接新块
+  var jobInFlight = false;
+  var draining = false; // 收尾流程已启动（封口 + dispose + ack）
+
+  Future<void> disposeBackend() async {
     final cur = b;
-    if (cur != null) {
-      try {
-        await cur.dispose();
-      } on Object catch (_) {
-        // 同上：循环收尾的尽力释放。
-      }
+    b = null;
+    try {
+      await cur?.dispose();
+    } on Object catch (_) {
+      // 尽力释放：dispose 失败不再回传（会话对象已弃用；真 isolate 即将退出）。
     }
   }
+
+  /// 优雅收尾：置 draining 拒新活 → dispose() → 关端口（真 isolate 自然退出，
+  /// 退出监听在引擎侧幂等空转；onDone 兜底因 draining 已置而空转）→ 回 ack。
+  /// 幂等（stop 与 job 收尾竞争时只有先到者生效）。
+  Future<void> drainAndAck() async {
+    if (draining) return;
+    draining = true;
+    await disposeBackend();
+    rx.close();
+    main.send(['stopped']);
+  }
+
+  rx.listen((msg) async {
+    // 畸形消息（非 List / 空命令）绝不让循环猝死：回 ['error', …]——
+    // 若引擎侧有在飞 job 即报错完结（无则被忽略），跳过该消息继续。
+    if (msg is! List || msg.isEmpty) {
+      main.send(['error', 'auto worker 收到畸形消息: $msg']);
+      return;
+    }
+    final m = msg;
+    if (m[0] == 'dir') {
+      dirPath = m[1] as String;
+      if (m.length > 2) intraThreads = m[2] as int;
+      if (m.length > 3) useArena = m[3] as bool;
+      return;
+    }
+    if (m[0] == 'stop') {
+      stopRequested = true;
+      if (!jobInFlight) await drainAndAck();
+      return;
+    }
+    if (m[0] != 'job' || draining) return;
+    if (jobInFlight) return; // 并发守卫：引擎保证并发 1，此处防畸形序列
+    jobInFlight = true;
+    try {
+      final backend = b ??= autoBackendFactory(dirPath!,
+          intraThreads: intraThreads, useArena: useArena);
+      await backend.load(); // 幂等；首次约模型大小级别的耗时
+      main.send([
+        'log',
+        '双 session 加载完成（threads=$intraThreads，'
+            'arena=${useArena ? '开启+每次Run收缩' : '关闭·时间换峰值'}）'
+            '${rssSuffix()}'
+      ]);
+      final out = await autoColorize(
+        gray: m[1] as Uint8List,
+        width: m[2] as int,
+        height: m[3] as int,
+        backend: backend,
+        infer: autoInfer,
+        overlap: autoOverlap,
+        // stop 到达时做完当前块即收（管道在块间查此标志）。
+        cancelled: () => stopRequested,
+        onProgress: (p) => main.send(['progress', p]),
+        onLog: (line) => main.send(['log', line]),
+      );
+      main.send(['result', out]);
+    } on Object catch (e) {
+      main.send(['error', e.toString()]);
+    } finally {
+      jobInFlight = false;
+      if (stopRequested) {
+        await drainAndAck();
+      }
+    }
+  }, onDone: () async {
+    // rx 被关闭（句柄 kill / 测试脚本）：兜底 dispose，绝不静默泄漏。
+    if (!draining) {
+      draining = true;
+      await disposeBackend();
+    }
+  });
 }
 
 /// 主 isolate 门面：工作 isolate 常驻，空闲 60s 自动释放后端。
 class AutoEngine {
-  AutoEngine({SpawnAutoWorker? spawn, Duration? idleRelease, LogBus? logBus})
+  AutoEngine(
+      {SpawnAutoWorker? spawn,
+      Duration? idleRelease,
+      Duration? stopGrace,
+      LogBus? logBus})
       : _spawn = spawn ?? spawnIsolateAutoWorker,
         _idleRelease = idleRelease ?? const Duration(seconds: 60),
+        _stopGrace = stopGrace ?? const Duration(seconds: 90),
         _logBus = logBus;
 
   final SpawnAutoWorker _spawn;
-  final Duration _idleRelease;
+  Duration _idleRelease;
+
+  /// 优雅停止的宽限：覆盖「当前块跑完 + dispose()」。原生运行不可中断，真机
+  /// 上一块可达 10–30s、load() 可达 10–20s，90s 已是宽裕上限；超时意味着
+  /// 原生侧挂死（病态），回退 kill 接受一次会话滞留。
+  final Duration _stopGrace;
   final LogBus? _logBus;
 
   AutoWorkerHandle? _handle;
@@ -258,17 +303,28 @@ class AutoEngine {
   Completer<Uint8List?>? _job;
   void Function(double progress)? _onProgress;
 
+  /// 优雅拆机（cancel/shutdown 共用）的状态：_stopAck 等 ['stopped']，
+  /// _teardown 是完整拆机的 Future——ensureStarted 必须先等它，否则旧 worker
+  /// 的会话还没 dispose、新 worker 又 load 一份，~600MB 叠加直接被杀。
+  Completer<void>? _stopAck;
+  Future<void>? _teardown;
+
   bool get alive => _to != null;
 
   /// 是否有在飞任务：内存压力回调据此决定「释放会话」还是「绝不动推理」。
   bool get working => _job != null;
 
   /// dirPath 由主 isolate 的 getApplicationSupportDirectory()/manga-light-colorizer
-  /// 传入；intraThreads/useArena 来自 ResourceTier 设备分级，随 ['dir'] 带给 worker。
+  /// 传入；intraThreads/useArena 来自 ResourceTier 设备分级，随 ['dir'] 带给 worker；
+  /// idleRelease 同源下发（高档 5min：连续多图不重付 10-20s 加载；低档 60s）。
   Future<void> ensureStarted(String dirPath,
-      {int intraThreads = kDefaultIntraThreads, bool useArena = true}) async {
+      {int intraThreads = kDefaultIntraThreads,
+      bool useArena = true,
+      Duration? idleRelease}) async {
     if (alive) return;
+    await _teardown; // 上一轮优雅拆机落地前绝不 spawn 新 worker
     _idle?.cancel();
+    if (idleRelease != null) _idleRelease = idleRelease;
     final rx = ReceivePort();
     // 握手：worker 把它的命令口作为第一条消息发回（见 autoWorkerMain）；
     // 监听器必须先于 spawn 建立，之后同一监听分发 SendPort/事件。
@@ -305,6 +361,18 @@ class AutoEngine {
   }
 
   void _onEvent(List<Object?> m) {
+    if (_stopAck != null) {
+      // 拆机期：只认 log（块耗时观测仍有价值）与 stopped ack；其余事件属于
+      // 已被 null 完结的旧 job，一律丢弃。
+      switch (m[0]) {
+        case 'log':
+          _logBus?.info('auto', m[1] as String);
+        case 'stopped':
+          final ack = _stopAck;
+          if (ack != null && !ack.isCompleted) ack.complete();
+      }
+      return;
+    }
     switch (m[0]) {
       case 'log':
         // worker 侧观测（加载完成/每块耗时+RSS）：worker 是新堆拿不到
@@ -339,59 +407,86 @@ class AutoEngine {
     return job.future;
   }
 
-  /// 取消 = 杀工作 isolate（kill 是即时的，worker 内当前块推理随线程终止释放）；
-  /// 下次 colorize 前重新 ensureStarted。返回时进行中的 _job 以 null 完结。
-  Future<void> cancel() async {
-    _idle?.cancel();
-    final job = _job;
-    _job = null;
-    _onProgress = null;
-    job?.complete(null);
-    await _teardown();
-  }
-
-  /// 优雅关闭：先 ['stop'] 让 worker 走 dispose()，再回收 isolate。
-  /// 进行中的 job（若有）以 null 完结，防 UI 永挂。
-  Future<void> shutdown() async {
-    _idle?.cancel();
-    if (alive) {
-      _to?.send(['stop']);
-      // 给 worker 一个事件轮转的窗口去处理 stop（在飞任务下 stop 排在
-      // 队尾，来不及处理就会被 kill——原生内存随 isolate 死亡回收）。
-      await Future<void>.delayed(const Duration(milliseconds: 50));
-    }
-    final job = _job;
-    _job = null;
-    _onProgress = null;
-    job?.complete(null);
-    await _teardown();
-  }
-
   /// worker 意外死亡（生产＝退出监听/未捕获错误事件；测试＝onDied 直调）：
-  /// 在飞 job 以错误完结（防 UI 永挂），引擎即刻拆净标记已死，
-  /// 下次 [ensureStarted] 重新 spawn。cancel/shutdown 先拆的话此处成空转。
+  /// 拆机期死亡等同收到 stopped ack（worker 已不存在，dispose 无从谈起）；
+  /// 否则在飞 job 以错误完结（防 UI 永挂）、引擎即刻拆净标记已死，
+  /// 下次 [ensureStarted] 重新 spawn。
   void _onWorkerDied(Object why) {
-    if (!alive) return;
+    final ack = _stopAck;
+    if (ack != null) {
+      if (!ack.isCompleted) ack.complete();
+      return; // 拆机进行中：其余字段已由 _beginTeardown 接管
+    }
+    if (!alive) return; // 已拆净：死亡事件幂等空转
     _logBus?.error('auto', 'worker isolate 意外终止: $why');
-    _idle?.cancel();
-    _to = null; // 同步标记已死：后续死亡事件/拆机动作都在此短路
-    final job = _job;
-    _job = null;
-    _onProgress = null;
-    job?.completeError(Exception('auto worker 意外终止: $why'));
-    unawaited(_teardown());
+    unawaited(_beginTeardown(workerDied: true));
   }
 
-  Future<void> _teardown() async {
-    await _sub?.cancel();
-    _sub = null;
-    _rx?.close(); // 先封口：worker 迟到的事件一律不可达引擎
-    _rx = null;
-    final handle = _handle;
-    _handle = null;
-    _to = null;
-    await handle?.kill();
+  /// 取消 = 优雅停止：UI 侧立即复位（在飞 job 以 null 完结、引擎同步标记
+  /// 已死），worker 做完当前块 → dispose() → ['stopped'] 后才真正回收——
+  /// 旧实现 kill isolate 即时，但 kill 不执行 worker 的 dispose()，Kotlin
+  /// 插件侧的 ~300MB 双 session 就此滞留。下次 colorize 前 ensureStarted
+  /// 会先等拆机落地。
+  Future<void> cancel() => _beginTeardown();
+
+  /// 优雅关闭（生命周期 paused / 空闲到期 / 内存压力共用）：语义同 [cancel]。
+  Future<void> shutdown() => _beginTeardown();
+
+  /// 拆机（cancel/shutdown/空闲到期/worker 死亡共用）：
+  ///   · UI 侧立即完单复位，引擎同步标记已死（alive 门即刻生效）；
+  ///   · 存活的 worker：发 ['stop']，等 ['stopped'] ack（或死亡）直到宽限
+  ///     [_stopGrace] 超时，再封口 + kill——保证 dispose() 已执行过；
+  ///   · 已死亡的 worker（workerDied）：不会也无需 ack，立即放行收尸；
+  ///   · 全程记录到 [_teardown]，重入幂等，ensureStarted 先等它落地。
+  Future<void> _beginTeardown({bool workerDied = false}) async {
     _idle?.cancel();
     _idle = null;
+    _onProgress = null;
+    final job = _job;
+    _job = null;
+    if (workerDied) {
+      job?.completeError(Exception('auto worker 意外终止'));
+    } else {
+      job?.complete(null);
+    }
+    if (_teardown != null) return; // 已在收尾：重入安全
+    final handle = _handle;
+    final rx = _rx;
+    final sub = _sub;
+    final to = _to;
+    _handle = null;
+    _rx = null;
+    _sub = null;
+    _to = null; // 同步标记已死：alive/colorize/ensureStarted 门立即生效
+    if (handle == null || rx == null || sub == null) return;
+    final ack = Completer<void>();
+    _stopAck = ack;
+    if (workerDied) {
+      ack.complete(); // 死亡后 worker 永远不会 ack：直接放行收尸
+    } else {
+      to?.send(['stop']); // 在飞做完当前块 → dispose → ['stopped'] → 退出
+    }
+    final t = () async {
+      try {
+        await ack.future.timeout(_stopGrace, onTimeout: () {
+          // 原生挂死等病态：放弃等待，回退 kill（接受一次会话滞留）。
+          _logBus?.warn('auto',
+              '优雅停止超时（${_stopGrace.inSeconds}s），强制回收 worker');
+        });
+      } finally {
+        _stopAck = null;
+        try {
+          await sub.cancel();
+          rx.close(); // 先封口：worker 迟到的事件一律不可达引擎
+          await handle.kill();
+        } on Object catch (_) {
+          // 收尾三连的尽力而为：任何一步失败都不阻塞拆机完成。
+        }
+      }
+    }();
+    _teardown = t;
+    unawaited(t.whenComplete(() {
+      if (identical(_teardown, t)) _teardown = null;
+    }));
   }
 }

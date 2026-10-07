@@ -11,6 +11,11 @@ import '../gallery/gallery_store.dart';
 
 enum _View { result, source, split }
 
+/// 灯箱解码长边上限：v0.5.3 前入库的条目可能超 2048（选图封顶生效前），
+/// 对比模式同屏两张全尺寸纹理会直顶 imageCache 硬顶；缩放查看的清晰度
+/// 由 ≤2048 的常规条目天然保证，这里只对超限旧条目封顶。
+const _kLightboxMaxSide = 2048;
+
 class GalleryLightboxPage extends StatefulWidget {
   const GalleryLightboxPage({
     super.key,
@@ -29,13 +34,25 @@ class _GalleryLightboxPageState extends State<GalleryLightboxPage> {
   _View _view = _View.result;
   double _split = 0.5;
 
-  Widget _file(String name, BoxFit fit) => Image.file(
-        File(widget.gallery.pathOf(name)),
-        fit: fit,
-        gaplessPlayback: true,
-        errorBuilder: (_, __, ___) => const Center(
-            child: Icon(Icons.broken_image_outlined, size: 48)),
-      );
+  Widget _file(String name, BoxFit fit) {
+    final w = widget.entry.width;
+    final h = widget.entry.height;
+    // 单维封顶保持纵横比（cacheWidth/cacheHeight 同设会无视比例拉伸）：
+    // 横图压宽、竖图压高；未超限或尺寸未知（0）时原样解码。
+    final int? cacheWidth =
+        w > _kLightboxMaxSide && w >= h ? _kLightboxMaxSide : null;
+    final int? cacheHeight =
+        h > _kLightboxMaxSide && h > w ? _kLightboxMaxSide : null;
+    return Image.file(
+      File(widget.gallery.pathOf(name)),
+      fit: fit,
+      cacheWidth: cacheWidth,
+      cacheHeight: cacheHeight,
+      gaplessPlayback: true,
+      errorBuilder: (_, __, ___) => const Center(
+          child: Icon(Icons.broken_image_outlined, size: 48)),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {

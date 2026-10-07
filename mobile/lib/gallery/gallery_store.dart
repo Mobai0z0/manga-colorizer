@@ -11,6 +11,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:ui' as ui;
 
 // Uint8List 经 foundation 传递可用，无需另引 dart:typed_data。
 import 'package:flutter/foundation.dart';
@@ -136,7 +137,7 @@ class GalleryStore extends ChangeNotifier {
       final thumbFile = '${id}_thumb.jpg';
       await File(pathOf(resultFile)).writeAsBytes(resultPng, flush: true);
       await File(pathOf(sourceFile)).writeAsBytes(sourcePng, flush: true);
-      final thumb = _makeThumb(resultPng);
+      final thumb = await _makeThumb(resultPng);
       if (thumb == null) {
         LogBus.current?.warn('gallery', '缩略图编码失败，本条未入库');
         return; // 无法编码缩略图则整条不入库（保持一致）
@@ -202,21 +203,51 @@ class GalleryStore extends ChangeNotifier {
   }
 
   /// 以结果为源生成 JPEG 缩略图（最长边 320）；失败返回 null。
-  Uint8List? _makeThumb(Uint8List resultPng) {
+  /// 解码走 dart:ui 引擎线程并按目标尺寸缩容（ImageDescriptor.encoded +
+  /// instantiateCodec(targetWidth/Height)）：主 isolate 不再同步全量
+  /// decodePng——2048² 时 16.8MB 位图 + 主线程 resize/编码是入库期的掉帧与
+  /// 峰值大户（恰逢 ORT 会话尚未释放的窗口）。解码产物只有 320² 级别
+  /// （~0.4MB），随后的小图 JPEG 编码毫秒级。必须在主 isolate 调用。
+  Future<Uint8List?> _makeThumb(Uint8List resultPng) async {
+    ui.ImmutableBuffer? buffer;
+    ui.ImageDescriptor? descriptor;
+    ui.Codec? codec;
+    ui.Image? image;
     try {
-      final decoded = img.decodePng(resultPng);
-      if (decoded == null) return null;
-      final scale = _thumbMax / max(decoded.width, decoded.height);
-      final resized = scale < 1
-          ? img.copyResize(decoded,
-              width: (decoded.width * scale).round().clamp(1, _thumbMax),
-              height: (decoded.height * scale).round().clamp(1, _thumbMax),
-              interpolation: img.Interpolation.average)
-          : decoded;
+      buffer = await ui.ImmutableBuffer.fromUint8List(resultPng);
+      descriptor = await ui.ImageDescriptor.encoded(buffer);
+      final longest = max(descriptor.width, descriptor.height);
+      // 与旧实现同规则：最长边压到 _thumbMax（宽高同比、round 取整），
+      // 不超限则原尺寸解码（放大无意义）。
+      final targetW = longest > _thumbMax
+          ? (descriptor.width * _thumbMax / longest).round()
+          : descriptor.width;
+      final targetH = longest > _thumbMax
+          ? (descriptor.height * _thumbMax / longest).round()
+          : descriptor.height;
+      codec = await descriptor.instantiateCodec(
+          targetWidth: targetW, targetHeight: targetH);
+      image = (await codec.getNextFrame()).image;
+      final data = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+      if (data == null) return null;
+      final rgba =
+          data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+      final decoded = img.Image.fromBytes(
+          width: targetW,
+          height: targetH,
+          bytes: rgba.buffer,
+          numChannels: 4,
+          order: img.ChannelOrder.rgba);
       return Uint8List.fromList(
-          img.encodeJpg(resized, quality: _thumbQuality));
+          img.encodeJpg(decoded, quality: _thumbQuality));
     } on Object {
       return null;
+    } finally {
+      // 逆序释放：image/codec/descriptor 还引用 buffer，最后才放。
+      image?.dispose();
+      codec?.dispose();
+      descriptor?.dispose();
+      buffer?.dispose();
     }
   }
 
