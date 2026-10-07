@@ -7,6 +7,7 @@ import '../app_settings.dart';
 import '../gallery/gallery_store.dart';
 import '../logs/log_bus.dart';
 import '../onnx/auto_service.dart';
+import '../onnx/socket_worker.dart';
 import '../shell/screen_chrome.dart';
 import '../auto_panel.dart';
 
@@ -35,7 +36,9 @@ class _AutoScreenState extends State<AutoScreen> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
-    _engine = AutoEngine(logBus: widget.logs);
+    // 生产 spawn：Android 优先 :inference 独立进程（推理崩溃/被杀时 UI 存活，
+    // 会话零泄漏），启动失败回退进程内 isolate（见 socket_worker.dart）。
+    _engine = AutoEngine(logBus: widget.logs, spawn: defaultAutoSpawn);
     WidgetsBinding.instance.addObserver(this);
   }
 
@@ -48,7 +51,16 @@ class _AutoScreenState extends State<AutoScreen> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused) unawaited(_engine.shutdown());
+    // paused：推理进行中**不停止**——v0.5.9 用户选择「切后台跑完」：
+    // :inference 进程由 dataSync 前台服务保活（FGS 抬高 oom_adj，LMK 不易
+    // 命中），回来直接看进度；空闲会话照旧归还。
+    // （isolate 回退路径无 FGS：后台继续跑有被 LMK 连坐的风险，但杀掉用户
+    // 分钟级任务的伤害更大，两害取其轻。）
+    if (state == AppLifecycleState.paused &&
+        _engine.alive &&
+        !_engine.working) {
+      unawaited(_engine.shutdown());
+    }
   }
 
   /// 系统内存压力（Android onTrimMemory）：系统升级到杀进程前的警告——

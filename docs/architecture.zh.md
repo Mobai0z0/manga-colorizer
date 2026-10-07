@@ -151,3 +151,24 @@ flutter test           # 控件冒烟测试
 要求 Flutter SDK（Dart `^3.6.0`）。全自动页签需 Android arm64 物理设备：端侧推理走
 ONNX Runtime CPU 执行提供者（无 GPU/NNAPI 路径），每 1024² 分块耗时与峰值内存尚未
 真机实测，低端设备可能较慢，相关门槛与结论待实测后修订。
+
+### 全自动推理的进程隔离（v0.5.9，参考 xororz/local-dream 架构）
+
+全自动管线（`onnx/auto_service.dart` 的 AutoEngine/worker RPC）在两条服务路径上
+复用同一套接缝（`onnx/serving_seams.dart` 的工厂与分块参数）：
+
+- **`:inference` 独立进程**（Android 生产默认）：`InferenceService`
+  （`android:process=":inference"`，dataSync 前台服务保活）启动 headless
+  FlutterEngine 跑 Dart 入口 `inferenceMain`，在 127.0.0.1 上提供帧协议服务
+  （`onnx/socket_protocol.dart`，长度前缀帧：hello/config/job →
+  progress/log/result/error）。推理崩溃 / 被系统所杀只终结推理进程，UI 进程存活
+  可报错重试；进程死亡即 ORT 双 session（~300MB）全部归还，**会话无滞留路径**。
+  推理中切后台由前台服务保活跑完（用户选择，需通知权限，拒绝不影响推理）。
+- **进程内 isolate**（回退路径）：服务启动/连接失败（OEM 后台限制、非标准设备）
+  自动回退；Windows 调试与宿主测试天然走此路径。取消/关闭/空闲到期/内存压力统一
+  走优雅停止——worker 做完当前块（原生运行不可中断）→ `dispose()` →
+  `['stopped']` ack 后才回收，杜绝 kill 路径上 Kotlin 插件持有的 session 滞留
+  （旧实现「开始上色就闪退」的根因）；宽限超时（原生挂死）才回退 kill。
+- 取消/关闭/空闲到期/内存压力（空闲门控）在两条路径上都落到「归还 ~300MB 会话」；
+  空闲保留时长随 ResourceTier 分级下发（≥6GB 5min / 4–6GB 2min / 低档 60s），
+  连续多图不重付模型加载。

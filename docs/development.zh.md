@@ -38,8 +38,11 @@ tauri build    # 产物：src-tauri/target/release/bundle/nsis/*.exe
 - 参考图迁移是全局统计（Reinhard），不做逐区域语义对应。
 - 服务绑定 127.0.0.1，无认证；对外部署需自备反向代理、认证与 TLS。
 - Android 应用端侧全自动走 ONNX Runtime CPU 执行提供者（无 GPU/NNAPI 路径）：每
-  1024² 分块耗时与 arm64 真机峰值内存尚未实测，低端设备可能较慢，首轮真机验收
-  门槛待真机实测后回填。
+  1024² 分块耗时与 arm64 真机峰值内存尚未实测，低端设备可能较慢。v0.5.9 起推理跑在
+  `:inference` 独立进程（UI 进程不被推理连坐，会话随进程归还），真机验收清单：
+  连续多图不重付模型加载（高档 5min 空闲窗）、推理中切后台保活跑完（通知权限被拒
+  也应照常）、加载中取消不崩且可立即重试、完成入库不卡顿、多次任务后 logcat 无
+  lowmemorykiller 命中主进程。
 - 权重 CC BY-NC-SA：上传 GitHub / 免费分享 / 非商业集成 OK；收费服务、广告盈利需另行授权
   （详见 [licensing.zh.md](licensing.zh.md) / [licensing.en.md](licensing.en.md)）。
 

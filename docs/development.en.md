@@ -47,8 +47,14 @@ accesses it cross-origin via CORS (the sidecar binds only the loopback address).
   reverse proxy, authentication, and TLS.
 - Android on-device fully-automatic colorization runs on the ONNX Runtime CPU execution
   provider (no GPU/NNAPI path): per-1024²-tile runtime and peak memory on arm64 physical
-  devices are not yet measured, low-end devices may be slow, and the first real-device
-  acceptance gate will be filled in after real-device measurement.
+  devices are not yet measured, low-end devices may be slow. Since v0.5.9 inference runs
+  in a dedicated `:inference` process (the UI process is insulated from inference crashes,
+  sessions are returned with the process); real-device acceptance checklist: consecutive
+  images without re-paying model load (5min idle window on the high tier), backgrounded
+  inference keeps running via the foreground service (notification-permission denial must
+  not block it), cancel during load must not crash and must allow an immediate retry, no
+  jank at save/gallery time, and no lowmemorykiller hits on the main process in logcat
+  across repeated tasks.
 - Weights are CC BY-NC-SA: uploading to GitHub / free sharing / non-commercial integration are
   OK; paid services and ad-monetized use require separate authorization
   (see [licensing.en.md](licensing.en.md) for details).

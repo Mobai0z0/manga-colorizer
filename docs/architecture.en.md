@@ -158,3 +158,34 @@ CPU execution provider (no GPU/NNAPI path); per-1024²-tile runtime and peak
 memory are not yet measured on real devices, low-end devices may be slow, and
 the gate numbers and conclusions here will be revised after real-device
 measurement.
+
+### Inference process isolation (v0.5.9, after xororz/local-dream's architecture)
+
+The fully-automatic pipeline (`AutoEngine`/worker RPC in
+`onnx/auto_service.dart`) is served over two paths sharing the same seams
+(factory and tiling parameters in `onnx/serving_seams.dart`):
+
+- **Dedicated `:inference` process** (production default on Android):
+  `InferenceService` (`android:process=":inference"`, kept alive by a dataSync
+  foreground service) starts a headless FlutterEngine running the Dart
+  entrypoint `inferenceMain`, which serves a frame protocol on 127.0.0.1
+  (`onnx/socket_protocol.dart`, length-prefixed frames: hello/config/job →
+  progress/log/result/error). An inference crash or a system kill only takes
+  down the inference process; the UI process survives and can surface an error
+  and retry, and process death returns both ORT sessions (~300MB) to the OS —
+  **sessions have no leak path**. While backgrounded, the foreground service
+  keeps the task running to completion (user-selected; needs the notification
+  permission, denial does not block inference).
+- **In-process isolate** (fallback path): used automatically when the service
+  fails to start/connect (OEM background limits, non-standard devices); also
+  the natural path for Windows debugging and host tests. Cancel/shutdown/idle/
+  memory-pressure all go through graceful stop — the worker finishes its
+  current tile (a native run cannot be interrupted) → `dispose()` →
+  `['stopped']` ack before the handle is reclaimed, eliminating the Kotlin-side
+  session retention on kill paths (the root cause of the earlier
+  "crash right after starting colorization"); kill remains only as the
+  grace-timeout fallback for a hung native call.
+- Cancel/shutdown/idle-expiry/memory-pressure (idle-gated) all end up
+  returning the ~300MB of sessions on both paths; the idle retention is
+  tiered via ResourceTier (≥6GB 5min / 4–6GB 2min / low tier 60s) so
+  consecutive images do not pay the model load again.
