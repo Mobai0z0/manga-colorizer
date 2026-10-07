@@ -14,7 +14,8 @@ class ResourceTier {
   const ResourceTier(
       {required this.maxPickSide,
       required this.intraThreads,
-      required this.useArena});
+      required this.useArena,
+      this.idleRelease = const Duration(seconds: 60)});
 
   /// 选图长边上限（像素）：贯通 image_picker 的 maxWidth/maxHeight 与
   /// capDecodeRgba 的解码兜底。
@@ -31,24 +32,40 @@ class ResourceTier {
   /// 慢可以接受，被系统杀进程不可接受。
   final bool useArena;
 
+  /// 空闲会话保留时长（v0.5.9 档位感知，随 ensureStarted 下发引擎）：双
+  /// session 常驻 ~300MB 原生内存，高档留着换「连续多图不重付 10-20s 加载」；
+  /// 内存压力回调随时提前释放（安全网不变），所以高档敢留、低档保守。
+  /// [fallback] 保持 60s（探测失败=未知设备，保守）。
+  final Duration idleRelease;
+
   /// 与 v0.5.4 相同的默认档：无探测数据时的安全回退。
   static const ResourceTier fallback = ResourceTier(
       maxPickSide: kMaxPickSide, intraThreads: 4, useArena: true);
 
   /// 档位表（纯函数，宿主测试直测）：<4GB 或系统 lowRam 标记 → 最低档；
-  /// 4–6GB → 中档；≥6GB → 满配（即 [fallback]）。内存越紧，越偏向
-  /// 「峰值最低」的 arena 关闭。
+  /// 4–6GB → 中档；≥6GB → 满配。内存越紧，越偏向「峰值最低」的 arena 关闭
+  /// 与更短的空闲保留。
   static ResourceTier fromDevice(
       {required int totalMemBytes, required bool lowRamDevice}) {
     if (lowRamDevice || totalMemBytes < 4 << 30) {
       return const ResourceTier(
-          maxPickSide: 1280, intraThreads: 2, useArena: false);
+          maxPickSide: 1280,
+          intraThreads: 2,
+          useArena: false,
+          idleRelease: Duration(seconds: 60));
     }
     if (totalMemBytes < 6 << 30) {
       return const ResourceTier(
-          maxPickSide: 1536, intraThreads: 4, useArena: false);
+          maxPickSide: 1536,
+          intraThreads: 4,
+          useArena: false,
+          idleRelease: Duration(minutes: 2));
     }
-    return fallback;
+    return const ResourceTier(
+        maxPickSide: kMaxPickSide,
+        intraThreads: 4,
+        useArena: true,
+        idleRelease: Duration(minutes: 5));
   }
 
   static const MethodChannel _channel = MethodChannel('manga_colorizer/device');
@@ -73,7 +90,8 @@ class ResourceTier {
           '${((raw['totalMem'] as int) / (1 << 30)).toStringAsFixed(1)}GB'
           '${raw['lowRam'] as bool ? '（lowRam 设备）' : ''} → '
           '选图上限 ${tier.maxPickSide}px / 推理 ${tier.intraThreads} 线程 / '
-          'arena ${tier.useArena ? '开启+收缩' : '关闭（时间换峰值）'}');
+          'arena ${tier.useArena ? '开启+收缩' : '关闭（时间换峰值）'} / '
+          '空闲保留 ${tier.idleRelease.inSeconds}s');
       return tier;
     } on Object {
       return fallback;

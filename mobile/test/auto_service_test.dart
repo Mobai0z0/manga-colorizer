@@ -3,8 +3,12 @@
 //     消息循环，后端经 autoBackendFactory 换成 FakeBackend —— 真实 ORT/网络/
 //     path_provider 一律不触碰（OrtOnnxBackend 在宿主测试里根本无法构造）。
 //   · RPC 线格式逐字断言：命令 ['dir',p] / ['job',g,w,h] / ['stop']；
-//     事件 ['progress',double] / ['result',Uint8List?] / ['error',String]。
+//     事件 ['progress',double] / ['result',Uint8List?] / ['error',String] /
+//     ['stopped']（优雅收尾 ack）。
 //   · 死亡兜底（畸形消息解码守卫 / 退出·未捕获错误→onDied）也经同一接缝驱动。
+//   · 优雅停止契约：cancel/shutdown = UI 立即复位 + worker 做完当前块（或
+//     load）→ dispose → ['stopped'] → 才回收句柄；ensureStarted 等拆机落地。
+//     kill 只在宽限超时（原生挂死）兜底。
 import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
@@ -27,6 +31,21 @@ class _GatedBackend extends FakeBackend {
     entered = true;
     await gate.future;
     return super.runGen(grayPlane, s, sam0, sam1);
+  }
+}
+
+/// load() 前挂闸门：钉在"模型加载中"——真机 P0 场景（加载中切后台/取消）
+/// 的确定性复现：旧实现 kill 不执行 dispose()，~300MB 会话滞留。
+class _GatedLoadBackend extends FakeBackend {
+  _GatedLoadBackend({required this.gate});
+  final Completer<void> gate;
+  bool enteredLoad = false;
+
+  @override
+  Future<void> load() async {
+    enteredLoad = true;
+    await gate.future;
+    return super.load();
   }
 }
 
@@ -98,6 +117,9 @@ void main() {
     expect(fake.calls.where((c) => c.startsWith('gen:')).length, 4);
     await engine.shutdown();
     expect(engine.alive, isFalse);
+    // 优雅停止：ack 回来后才回收句柄，dispose 在后台落地。
+    await waitUntil(() => fake.calls.contains('dispose'),
+        why: 'shutdown 后 dispose 落地');
     expect(fake.calls, contains('dispose')); // 空闲/关闭即 dispose() session
   });
 
@@ -150,14 +172,16 @@ void main() {
     final pending = engine.colorize(gray40x16(), 40, 16);
     await waitUntil(() => fake.entered, why: 'worker 进入 runGen');
     await engine.cancel();
-    expect(await pending, isNull); // 取消 → null 完结
-    expect(engine.alive, isFalse); // 工作 isolate 已杀
-    fake.gate.complete(); // 放闸让 in-process 循环收尾（真机随 isolate 死亡）
-    await pumpEventQueue();
-    // 重新 ensureStarted 后可再次完整跑通。
+    expect(await pending, isNull); // 取消 → null 完结（UI 立即复位）
+    expect(engine.alive, isFalse); // 引擎已标记死亡
+    fake.gate.complete(); // 当前块跑完 → 余块取消 → dispose → ['stopped']
+    // 重新 ensureStarted 会等拆机落地（含 dispose）后再次完整跑通。
     await engine.ensureStarted(Directory.systemTemp.path);
+    expect(fake.calls, contains('dispose')); // 优雅收尾已执行
     expect(await engine.colorize(gray40x16(), 40, 16), isNotNull);
     await engine.shutdown();
+    await waitUntil(() => fake.calls.where((c) => c == 'dispose').length >= 2,
+        why: '第二轮 shutdown 的 dispose');
   });
 
   test('working getter: true only while a job is in flight (内存压力门控)',
@@ -204,7 +228,8 @@ void main() {
     expect(await engine.colorize(gray40x16(), 40, 16), isNotNull);
     expect(engine.alive, isTrue); // 刚结束仍常驻
     await waitUntil(() => !engine.alive, why: '空闲自动释放');
-    expect(fake.calls, contains('dispose'));
+    await waitUntil(() => fake.calls.contains('dispose'),
+        why: '空闲释放走优雅停止：dispose 落地');
   });
 
   test('shutdown without a live engine is a no-op', () async {
@@ -348,6 +373,78 @@ void main() {
     await engine.ensureStarted(Directory.systemTemp.path);
     expect(await engine.colorize(gray40x16(), 40, 16), isNotNull);
     await engine.shutdown();
+  });
+
+  test(
+      'cancel during load still disposes sessions（真机 P0 回归：加载中取消/'
+      '切后台不再泄漏 ~300MB 会话）', () async {
+    final gate = Completer<void>();
+    final fake = _GatedLoadBackend(gate: gate);
+    autoBackendFactory = (_, {int? intraThreads, bool? useArena}) => fake;
+    final engine = AutoEngine(
+        spawn: startInProcessAutoWorker,
+        idleRelease: const Duration(minutes: 5));
+    await engine.ensureStarted(Directory.systemTemp.path);
+    final pending = engine.colorize(gray40x16(), 40, 16);
+    await waitUntil(() => fake.enteredLoad, why: 'worker 进入 load');
+    await engine.cancel();
+    expect(await pending, isNull); // UI 立即复位
+    expect(engine.alive, isFalse);
+    // 拆机未落地前重开：ensureStarted 必须等待，绝不新旧会话叠加。
+    final restarted = engine.ensureStarted(Directory.systemTemp.path);
+    await pumpEventQueue();
+    expect(engine.alive, isFalse); // 仍在等拆机落地
+    gate.complete(); // load 放行：job 以 null 收尾 → dispose → ['stopped']
+    await waitUntil(() => fake.calls.contains('dispose'),
+        why: 'load 收尾后 dispose');
+    await restarted; // 拆机落地后才 spawn 新 worker
+    expect(engine.alive, isTrue);
+    expect(await engine.colorize(gray40x16(), 40, 16), isNotNull);
+    await engine.shutdown();
+    await waitUntil(() => fake.calls.where((c) => c == 'dispose').length >= 2,
+        why: '第二轮 shutdown 的 dispose');
+  });
+
+  test('shutdown waits for ["stopped"] ack before killing the handle',
+      () async {
+    _ScriptedHandle? handle;
+    final engine = AutoEngine(
+        idleRelease: const Duration(minutes: 5),
+        spawn: (toMain, {onDied}) async {
+          final rx = ReceivePort();
+          rx.listen((m) {
+            // 模拟真实 worker：收到 stop → dispose（此处无会话）→ 回 ack。
+            if (m is List && m.isNotEmpty && m[0] == 'stop') {
+              toMain.send(['stopped']);
+            }
+          });
+          toMain.send(rx.sendPort);
+          handle = _ScriptedHandle(rx);
+          return handle!;
+        });
+    await engine.ensureStarted('/tmp/weights-dir');
+    await engine.shutdown();
+    expect(engine.alive, isFalse);
+    await waitUntil(() => handle!.killed, why: 'ack 到达后才 kill');
+  });
+
+  test('grace timeout falls back to kill when worker never acks', () async {
+    _ScriptedHandle? handle;
+    final engine = AutoEngine(
+        idleRelease: const Duration(minutes: 5),
+        stopGrace: const Duration(milliseconds: 30),
+        spawn: (toMain, {onDied}) async {
+          final rx = ReceivePort();
+          rx.listen((m) {
+            // 挂死病态的替身：收到 stop 也不 ack。
+          });
+          toMain.send(rx.sendPort);
+          handle = _ScriptedHandle(rx);
+          return handle!;
+        });
+    await engine.ensureStarted('/tmp/weights-dir');
+    await engine.shutdown();
+    await waitUntil(() => handle!.killed, why: '宽限超时回退 kill');
   });
 
   test(

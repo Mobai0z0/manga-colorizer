@@ -307,12 +307,12 @@ class _AutoTabState extends State<AutoTab> {
       // XFile.path 不是真实文件路径，须经平台通道解析。
       final bytes = await file.readAsBytes();
       final cap = await capDecodeRgba(bytes, maxSide: tier.maxPickSide);
-      // 灰度（工作 isolate）与源稿 PNG（引擎线程）并行产出。
-      final grayFuture = _decodeGray(cap.rgba);
-      final pngFuture =
-          encodePngFromRgba(cap.rgba, cap.width, cap.height);
-      final gray = await grayFuture;
-      final png = await pngFuture;
+      // 灰度（工作 isolate，RGBA+复制 ≈2 份）与源稿 PNG（引擎线程，
+      // ImmutableBuffer 复制 ≈2 份）**串行**产出：并行时三份 RGBA 同场
+      // ~50MB，串行各自 ~34MB——选图阶段多花百余毫秒，换低内存设备的
+      // 峰值余量（picker 兜底路径最危险的一段）。
+      final gray = await _decodeGray(cap.rgba);
+      final png = await encodePngFromRgba(cap.rgba, cap.width, cap.height);
       if (!mounted) return;
       final origW = cap.origWidth;
       if (origW != null) {
@@ -348,11 +348,14 @@ class _AutoTabState extends State<AutoTab> {
     });
     widget.logs.info('auto', '全自动任务开始 $_w×$_h${rssSuffix()}');
     try {
-      // 线程数与 arena 策略随设备分级下发（低内存档 2 线程 + arena 关闭，
-      // 时间换峰值），经 ['dir'] 消息进 worker。
+      // 线程数/arena 策略/空闲保留时长随设备分级下发（低内存档 2 线程 +
+      // arena 关闭 + 60s 空闲；高档 5min 空闲换连续多图不重加载），
+      // 经 ['dir'] 消息进 worker、引擎侧持有空闲计时。
       final tier = await ResourceTier.detect();
       await widget.engine.ensureStarted(dir.path,
-          intraThreads: tier.intraThreads, useArena: tier.useArena);
+          intraThreads: tier.intraThreads,
+          useArena: tier.useArena,
+          idleRelease: tier.idleRelease);
       final out = await widget.engine.colorize(gray, _w, _h, onProgress: (p) {
         if (!mounted) return;
         setState(() {
