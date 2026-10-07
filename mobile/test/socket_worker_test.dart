@@ -43,6 +43,8 @@ void main() {
     origPrefer = preferInferenceService;
     origFallback = fallbackAutoSpawn;
     origExitReason = inferenceExitReason;
+    // 断连档案是库级变量，跨用例存活：清掉，防问候帧混进握手期帧序断言。
+    clearLastDisconnect();
     autoInfer = 16;
     autoOverlap = 8;
   });

@@ -45,6 +45,8 @@ void main() {
     // 与 auto_service_test 同款小分块：40×16、infer=16、overlap=8 → 4 块。
     autoInfer = 16;
     autoOverlap = 8;
+    // 断连档案是库级变量，跨用例存活：清掉再跑，防问候帧污染首帧断言。
+    clearLastDisconnect();
   });
   tearDown(() {
     autoBackendFactory = origFactory;
@@ -239,5 +241,66 @@ void main() {
     expect(s.port, kInferencePortBase + 1);
     await s.close();
     await blocker.close();
+  });
+
+  test('断连取证：EOF 落档案（含任务在飞）、重连问候帧在 helloOk 之后', () async {
+    final gate = Completer<void>();
+    final fake = _GatedBackend(gate: gate, blockOnlyFirst: true);
+    autoBackendFactory = (_, {int? intraThreads, bool? useArena}) => fake;
+    final core = InferenceServerCore();
+    final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    server.listen((s) => serveClient(s, core).onError<Object>((_, __) {}));
+
+    // 连接 A：job 在飞中直接断开（等价「推理中断连、进程未必死」的服务端视角）。
+    final a = await Socket.connect(InternetAddress.loopbackIPv4, server.port,
+        timeout: const Duration(seconds: 5));
+    writeFrame(a, const Frame(FrameType.hello,
+        data: {'version': kInferenceProtocolVersion}));
+    writeFrame(a,
+        const Frame(FrameType.config, data: {'dir': '/tmp/weights'}));
+    writeFrame(a, Frame(FrameType.job,
+        data: const {'width': 40, 'height': 16}, bytes: gray40x16()));
+    final sw = Stopwatch()..start();
+    while (!fake.entered && sw.elapsed < const Duration(seconds: 5)) {
+      await Future<void>.delayed(const Duration(milliseconds: 2));
+    }
+    expect(core.busy, isTrue); // 任务在飞：断连取证要带上这个标记
+    a.destroy();
+    // 上个用例（或本用例早前）销毁连接的 EOF 事件可能跨 await 晚到覆盖档案：
+    // 轮询等到带「任务在飞」的本用例记录为止（EOF/读错误皆可能，平台相关）。
+    while (!(lastDisconnect()?.$1 ?? '').contains('任务在飞') &&
+        sw.elapsed < const Duration(seconds: 5)) {
+      await Future<void>.delayed(const Duration(milliseconds: 2));
+    }
+    final (note, _) = lastDisconnect()!;
+    // Windows 上 destroy（RST）且服务端还有帧在写会落成写错误，Linux 多为
+    // EOF——两者都是有效取证，关键是「任务在飞」标记必须带上。
+    expect(note, anyOf(contains('EOF'), contains('读错误')));
+    expect(note, contains('任务在飞'));
+
+    // 连接 B：问候帧必须在 helloOk 之后（桥的握手只认首帧 helloOk），且内容
+    // 带上一次断连情况——这就是「连接断开但进程还活着」时日志页能拿到的证据。
+    final b = await Socket.connect(InternetAddress.loopbackIPv4, server.port,
+        timeout: const Duration(seconds: 5));
+    writeFrame(b, const Frame(FrameType.hello,
+        data: {'version': kInferenceProtocolVersion}));
+    final it = StreamIterator(readFrames(b));
+    expect(await it.moveNext(), isTrue);
+    final first = it.current;
+    expect(first.type, FrameType.helloOk);
+    expect(await it.moveNext(), isTrue);
+    final second = it.current;
+    expect(second.type, FrameType.log);
+    expect(second.data['line'], contains('上次连接断开'));
+    expect(second.data['line'], contains('任务在飞'));
+    await it.cancel();
+
+    gate.complete(); // 弃置的旧 job 收尾（写帧静默失败）
+    await pumpEventQueue();
+    b.destroy();
+    a.destroy();
+    await server.close();
+    await core.dispose();
+    clearLastDisconnect(); // 不把本用例的档案漏给后续用例
   });
 }

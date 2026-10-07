@@ -86,7 +86,9 @@ Future<Uint8List?> _inferTilesToLab({
       final sw = Stopwatch()..start();
       final pw = x1 - x0, ph = y1 - y0;
       final patch = _crop(gray, width, x0, y0, pw, ph);
-      final rgb = await _inferPatch(patch, pw, ph, infer, backend);
+      final tag = '块 ${done + 1}/$total';
+      final rgb = await _inferPatch(patch, pw, ph, infer, backend,
+          onLog: (line) => onLog?.call('$tag $line'));
       final lab = rgbToLab(rgb, pw * ph);
       // 单块路径无羽化（桌面 colorize 直取 a/b）；多块路径两端 ramp 到 0，
       // 与 _feather_weight 逐值同构（含权重 0 像素被 1e-6 归一的桌面行为）。
@@ -146,12 +148,13 @@ Uint8List _crop(Uint8List g, int gw, int x0, int y0, int w, int h) {
 /// 一块的完整推理：缩 infer²（INTER_AREA 语义）→ SAM+generator →
 /// clip 反归一化 → 放大回块尺寸（INTER_CUBIC 语义）→ 块原始分辨率 RGB。
 /// 对应桌面 colorize_single（service.py:346-373）；GPU 回退是绑定层的事，不在这里。
-Future<Uint8List> _inferPatch(
-    Uint8List patch, int pw, int ph, int infer, OnnxBackend b) async {
+Future<Uint8List> _inferPatch(Uint8List patch, int pw, int ph, int infer,
+    OnnxBackend b,
+    {void Function(String line)? onLog}) async {
   // 浮点张量只被推理本身需要：chw/grayPlane/sam 特征/输出（1024² 时 ~50MB）
   // 全部收敛在 _inferToRgb8 的栈帧里，返回 8bit 后即不可达——否则它们会活到
   // 下面的 cubic 放大与取回拷贝全程，白叠一个同量级的峰值。
-  final rgb8 = await _inferToRgb8(patch, pw, ph, infer, b);
+  final rgb8 = await _inferToRgb8(patch, pw, ph, infer, b, onLog: onLog);
   final mid = imglib.Image.fromBytes(
       width: infer, height: infer, bytes: rgb8.buffer, numChannels: 3);
   final big = imglib.copyResize(mid,
@@ -171,8 +174,12 @@ Future<Uint8List> _inferPatch(
 /// 推理到 8bit RGB（infer²×3）：缩放/归一化/双 session/clip 反归一化。
 /// 所有浮点中间量（chw、grayPlane、sam 特征、rgb_pred）都是本函数局部量，
 /// 返回即出作用域——这是「每块峰值」与「放大阶段」不叠加的保证。
-Future<Uint8List> _inferToRgb8(
-    Uint8List patch, int pw, int ph, int infer, OnnxBackend b) async {
+/// [onLog] 逐阶段心跳（SAM 编码/生成开始）：真机推理中途进程死亡时，日志页
+/// 的时间戳据此定位死在哪个模型（v0.5.11 真机「加载完 ~48s 断连、无任何块
+/// 日志」的取证缺口）。
+Future<Uint8List> _inferToRgb8(Uint8List patch, int pw, int ph, int infer,
+    OnnxBackend b,
+    {void Function(String line)? onLog}) async {
   // image 包 Interpolation.average：目标像素＝源像素整数窗口均值，
   // 与 cv2 INTER_AREA 同族（非整数比例时 cv2 按面积加权、这里有微小出入，
   // 属已知偏差：像素级对拍归并后真机验收清单，宿主语义测试不覆盖该差异）。
@@ -198,8 +205,10 @@ Future<Uint8List> _inferToRgb8(
     chw[s2 + i] = v;
     chw[2 * s2 + i] = v;
   }
+  onLog?.call('SAM 编码开始${rssSuffix()}');
   final (s0, s1) = await b.runSam(chw, infer);
   // runGen 契约：返回行优先 HWC 的 rgb_pred 原样浮点（后端已 CHW→HWC，不再转置）。
+  onLog?.call('生成开始');
   final out = await b.runGen(grayPlane, infer, s0, s1);
   final rgb8 = Uint8List(3 * s2);
   for (var i = 0; i < rgb8.length; i++) {

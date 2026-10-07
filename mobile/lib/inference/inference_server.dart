@@ -10,6 +10,8 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
 import '../mem_info.dart';
 import '../onnx/backend.dart';
 import '../onnx/pipeline.dart';
@@ -28,6 +30,9 @@ class InferenceServerCore {
   int _threads = kDefaultIntraThreads;
   bool _arena = true;
   bool _busy = false;
+
+  /// 是否有在飞任务：断连取证用（「推理中断连」与「空闲断连」的区分）。
+  bool get busy => _busy;
 
   /// 连接代数：客户端断开时在飞任务被弃置，其收尾 finally 不得复位新一代
   /// 连接的 busy（否则两个 job 并发跑，内存翻倍）。
@@ -132,21 +137,76 @@ Future<ServerSocket> bindInferenceServer() async {
   throw StateError('推理服务绑定端口失败：$lastError');
 }
 
+/// 进程级「上次断连」档案（库级变量：同进程内引擎重启也保留）。服务端视角
+/// 的断连证据——EOF（对端有序关闭）还是读错误（重置/网络层）、断开时是否
+/// 任务在飞——是「进程死亡 vs 仅连接断开」定罪的关键一面，系统退出记录
+/// （ApplicationExitInfo）只是另一面。同步落 stderr（logcat 可检索，本进程
+/// 无 LogBus）。
+(String note, DateTime at)? _lastDisconnect;
+
+void noteDisconnect(String why, {required bool busy}) {
+  // busy 标记必须进档案本体：问候帧/测试断言消费的是存储文本，stderr 只是
+  // logcat 侧的同步痕迹。
+  _lastDisconnect = (
+    '${busy ? '任务在飞中断连' : '空闲断连'}：$why',
+    DateTime.now(),
+  );
+  stderr.writeln(
+      '[manga-inference] 连接断开${busy ? '（任务在飞）' : ''}: $why');
+}
+
+/// 新连接问候用：取上次断连档案与距今时长（不消费，进程存活期间反复可见）。
+(String note, Duration age)? lastDisconnect() {
+  final d = _lastDisconnect;
+  if (d == null) return null;
+  return (d.$1, DateTime.now().difference(d.$2));
+}
+
+/// 测试隔离：清空断连档案（库级变量跨用例存活，会污染后续用例的首帧断言）。
+@visibleForTesting
+void clearLastDisconnect() => _lastDisconnect = null;
+
 /// 服务单个客户端连接直到断开（在飞任务随断开弃置：resetConnection 由
-/// 收尾统一调，写帧失败静默——客户端已不在）。
+/// 收尾统一调，写帧失败静默——客户端已不在）。首个帧处理后补发「上次断连
+/// 问候」（若有）——必须在 helloOk **之后**（桥的握手只认首帧 helloOk），
+/// greeting 作为普通 log 帧直达日志页。断开时记录 EOF/读错误 + 任务在飞标记。
 Future<void> serveClient(Socket client, InferenceServerCore core) async {
+  var greeted = false;
+  // 异步写错误必须有监听者：socket.add 是缓冲写，写失败（对端重置/缓冲区
+  // 冲刷出错）稍后浮出——无人接住就是根 isolate 的未处理异步错误（headless
+  // 引擎里可能终结 isolate，外观＝连接断开但进程未死）。done 在正常关闭时
+  // 正常完成、写失败时带错完成，这里一并接住。
+  unawaited(client.done.then((_) {}, onError: (Object _) {}));
   try {
     await for (final f in readFrames(client)) {
-      unawaited(core.handle(f, (r) {
-        try {
-          writeFrame(client, r);
-        } on Object catch (_) {
-          client.destroy();
+      unawaited(core.handle(f, (r) => sendFrame(client, r)));
+      if (!greeted) {
+        greeted = true;
+        final last = lastDisconnect();
+        if (last != null) {
+          final (note, age) = last;
+          sendFrame(
+              client,
+              Frame(FrameType.log,
+                  data: {'line': '上次连接断开（${age.inSeconds}s 前）：$note'}));
         }
-      }));
+      }
     }
+    noteDisconnect('EOF（对端有序关闭连接）', busy: core.busy);
+  } on Object catch (e) {
+    noteDisconnect('读错误（对端重置/网络层）: $e', busy: core.busy);
   } finally {
     core.resetConnection();
+    client.destroy();
+  }
+}
+
+/// 写帧兜底：连接已死时静默销毁（调用方各自的错误面不受影响）。add 的异步
+/// 写错误由 serveClient 挂的 client.done 监听统一接住。
+void sendFrame(Socket client, Frame r) {
+  try {
+    writeFrame(client, r);
+  } on Object catch (_) {
     client.destroy();
   }
 }

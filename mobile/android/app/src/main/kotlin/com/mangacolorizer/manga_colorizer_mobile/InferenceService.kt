@@ -70,6 +70,11 @@ class InferenceService : Service() {
         engine?.destroy()
         engine = null
         super.onDestroy()
+        // 停服即自杀：不杀死进程的话，下一次 start 会在同一进程里重建引擎，
+        // 被销毁引擎的原生残留（ORT 会话缓冲、分配器碎片）滞留在进程里
+        // （真机实测同进程第二次加载 RSS +90MB）；进程死亡同时把「会话必然
+        // 归还」从依赖引擎销毁的软保证变成硬保证。下一次 start 必得全新进程。
+        android.os.Process.killProcess(android.os.Process.myPid())
     }
 
     private fun startAsForeground() {

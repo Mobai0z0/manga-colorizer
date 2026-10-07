@@ -66,17 +66,26 @@ class MainActivity : FlutterActivity() {
     /**
      * :inference 进程最近一次退出的系统记录（API 30+；getHistoricalProcessExitReasons
      * 只查本包进程，无需额外权限）。只认 10 分钟内的新鲜记录：进程若仍存活，历史
-     * 缓冲里最新的条目属于更早的退出，拿来解释本次断连反而误导。无记录/过期/低
-     * 版本一律返回 null，Dart 侧保持原表述。
+     * 缓冲里最新的条目属于更早的退出（例如我方停服），拿来解释本次断连反而误导。
+     * 命中新鲜记录时附带次新一条作上下文（区分「本次死亡」与「上次停服残留」）。
+     * 无记录/过期/低版本一律返回 null，Dart 侧重试后归入「无退出记录」表述。
      */
     private fun lastInferenceExitReason(): String? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
         val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-        val info = am.getHistoricalProcessExitReasons("$packageName:inference", 0, 1)
-            .firstOrNull() ?: return null
-        val ageMs = System.currentTimeMillis() - info.timestamp
+        val records = am.getHistoricalProcessExitReasons("$packageName:inference", 0, 2)
+        if (records.isEmpty()) return null
+        val newest = records[0]
+        val ageMs = System.currentTimeMillis() - newest.timestamp
         if (ageMs < 0 || ageMs > EXIT_REASON_FRESH_MS) return null
-        return "${describeExitReason(info)}（${ageMs / 1000}s 前）"
+        var text = "${describeExitReason(newest)}（${ageMs / 1000}s 前）"
+        if (records.size > 1) {
+            val olderAgeMs = System.currentTimeMillis() - records[1].timestamp
+            if (olderAgeMs in 0..EXIT_REASON_FRESH_MS) {
+                text += "；更早：${describeExitReason(records[1])}（${olderAgeMs / 1000}s 前）"
+            }
+        }
+        return text
     }
 
     private fun describeExitReason(info: ApplicationExitInfo): String {

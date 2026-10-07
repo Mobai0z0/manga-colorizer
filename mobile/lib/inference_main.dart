@@ -7,6 +7,7 @@
 // UI 进程存活可报错重试；进程死亡即 ORT 双 session 全部归还，会话无泄漏
 // 路径。主进程经 127.0.0.1 帧协议（onnx/socket_protocol.dart）与本进程通信。
 import 'dart:async';
+import 'dart:io' show stderr;
 
 import 'package:flutter/widgets.dart' show WidgetsFlutterBinding;
 
@@ -24,5 +25,13 @@ void inferenceMain() {
   // "Binding has not yet been initialized."）。握手是纯 dart:io socket 所以
   // 一直正常，失败只发生在首个 job（v0.5.10 真机日志实锤）。
   WidgetsFlutterBinding.ensureInitialized();
-  unawaited(inferenceServerMain());
+  // 根 isolate 没有 runApp 的 zone 兜底：任何未捕获异步错误（弃置任务写帧
+  // 的无监听 socket 错误、插件通道回调抛错等）都可能终结 isolate/引擎——
+  // 外观恰是「连接断开但进程未死、系统无退出记录」（v0.5.11 真机 ~48s 断连
+  // 的嫌疑机制）。拦下来落 logcat，进程继续服务。
+  runZonedGuarded(() {
+    unawaited(inferenceServerMain());
+  }, (e, st) {
+    stderr.writeln('[manga-inference] 未捕获异步错误: $e\n$st');
+  });
 }
