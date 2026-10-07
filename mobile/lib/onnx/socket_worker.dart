@@ -51,6 +51,23 @@ List<int> inferenceCandidatePorts = List<int>.unmodifiable(
 @visibleForTesting
 Duration inferenceConnectBudget = const Duration(seconds: 10);
 
+/// 测试接缝：查询 :inference 进程上次的系统退出原因（生产＝MainActivity 经
+/// ApplicationExitInfo；null＝不可用）。worker 死亡消息据此从猜测性表述升级
+/// 为可行动的根因（LMK / 原生崩溃 / ANR）；查询失败绝不妨碍死亡上报本身。
+@visibleForTesting
+Future<String?> Function() inferenceExitReason = _exitReasonViaChannel;
+
+Future<String?> _exitReasonViaChannel() async {
+  try {
+    return await kInferenceServiceChannel
+        .invokeMethod<String>('exitReason')
+        .timeout(const Duration(seconds: 2));
+  } on Object {
+    // 通道缺失（宿主测试/Windows）/超时/低版本：不可用。
+    return null;
+  }
+}
+
 /// 生产默认是否优先独立进程：Android 开启；Windows/宿主测试天然走 isolate。
 @visibleForTesting
 bool preferInferenceService = Platform.isAndroid;
@@ -223,8 +240,23 @@ class _SocketBridge implements AutoWorkerHandle {
       return;
     }
     // 服务进程退出/被杀（LMK、原生崩溃）：引擎按 worker 死亡处理——在飞
-    // job 报错完单、引擎标记已死，ensureStarted 可重启服务重试。UI 不受连坐。
-    _onDied?.call('inference 进程连接断开（进程退出或被杀）');
+    // job 由引擎自动重启重试（预算内），耗尽才报错完单；UI 不受连坐。
+    unawaited(_notifyDiedWithExitReason());
+  }
+
+  /// 死亡上报前先查系统侧的退出原因（[inferenceExitReason]）：日志页直接
+  /// 看到「LMK 回收 / 原生崩溃(signal n)」，不再只是猜测性表述。
+  Future<void> _notifyDiedWithExitReason() async {
+    var why = 'inference 进程连接断开（进程退出或被杀）';
+    try {
+      final reason = await inferenceExitReason();
+      if (reason != null && reason.isNotEmpty) {
+        why = 'inference 进程连接断开；系统退出原因：$reason';
+      }
+    } on Object {
+      // 查询替身抛错也保持原表述。
+    }
+    _onDied?.call(why);
   }
 
   @override
