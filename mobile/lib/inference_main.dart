@@ -8,10 +8,21 @@
 // 路径。主进程经 127.0.0.1 帧协议（onnx/socket_protocol.dart）与本进程通信。
 import 'dart:async';
 
+import 'package:flutter/widgets.dart' show WidgetsFlutterBinding;
+
 import 'inference/inference_server.dart';
 
 /// 由 main.dart 的根库转发调用，@pragma 让 AOT 保留此入口。
 @pragma('vm:entry-point')
 void inferenceMain() {
+  // 本进程是 headless FlutterEngine 的根 isolate：没有任何 Activity/runApp，
+  // binding 不会被隐式初始化。而 backend.load() 首次 createSession 时
+  // flutter_onnxruntime 走 MethodChannel，framework 的 _findBinaryMessenger
+  // 对根 isolate（有 RootIsolateToken）取的是 ServicesBinding.instance
+  // .defaultBinaryMessenger——binding 未初始化时 release AOT 下就是裸的
+  // "Null check operator used on a null value"（debug 下会友好地报
+  // "Binding has not yet been initialized."）。握手是纯 dart:io socket 所以
+  // 一直正常，失败只发生在首个 job（v0.5.10 真机日志实锤）。
+  WidgetsFlutterBinding.ensureInitialized();
   unawaited(inferenceServerMain());
 }
