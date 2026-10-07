@@ -161,7 +161,12 @@ ONNX Runtime CPU 执行提供者（无 GPU/NNAPI 路径），每 1024² 分块�
   （`android:process=":inference"`，dataSync 前台服务保活）启动 headless
   FlutterEngine 跑 Dart 入口 `inferenceMain`，在 127.0.0.1 上提供帧协议服务
   （`onnx/socket_protocol.dart`，长度前缀帧：hello/config/job →
-  progress/log/result/error）。推理崩溃 / 被系统所杀只终结推理进程，UI 进程存活
+  progress/log/result/error）。入口真身在 `inference_main.dart`，但引擎按名
+  查找只认根库——`lib/main.dart` 里留有根库转发（`DartEntrypoint` 二参构造
+  只查 `Dart_RootLibrary()`）；`InferenceService.onStartCommand` 还须先
+  `FlutterLoader.startInitialization`（该进程无 FlutterActivity，Application
+  是默认 `android.app.Application`，不初始化则 `findAppBundlePath` 直接 NPE）。
+  推理崩溃 / 被系统所杀只终结推理进程，UI 进程存活
   可报错重试；进程死亡即 ORT 双 session（~300MB）全部归还，**会话无滞留路径**。
   推理中切后台由前台服务保活跑完（用户选择，需通知权限，拒绝不影响推理）。
 - **进程内 isolate**（回退路径）：服务启动/连接失败（OEM 后台限制、非标准设备）
