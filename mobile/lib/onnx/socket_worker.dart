@@ -58,14 +58,23 @@ Duration inferenceConnectBudget = const Duration(seconds: 10);
 Future<String?> Function() inferenceExitReason = _exitReasonViaChannel;
 
 Future<String?> _exitReasonViaChannel() async {
-  try {
-    return await kInferenceServiceChannel
-        .invokeMethod<String>('exitReason')
-        .timeout(const Duration(seconds: 2));
-  } on Object {
-    // 通道缺失（宿主测试/Windows）/超时/低版本：不可用。
-    return null;
+  // AMS 落退出记录可能略晚于 socket 断开信号：小间隔重试三次再下结论。
+  // 三次都查到「无记录」时返回说明文字（≠ null）：进程很可能仍在运行、只是
+  // 连接断开——与「通道不可用」的 null（回退到猜测性表述）明确区分。
+  for (var attempt = 0; attempt < 3; attempt++) {
+    try {
+      final reason =
+          await kInferenceServiceChannel.invokeMethod<String>('exitReason');
+      if (reason != null && reason.isNotEmpty) return reason;
+    } on Object {
+      // 宿主测试/Windows/低版本：通道不可用，重试无意义。
+      return null;
+    }
+    if (attempt < 2) {
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+    }
   }
+  return '系统无退出记录（进程可能仍在运行，仅连接断开）';
 }
 
 /// 生产默认是否优先独立进程：Android 开启；Windows/宿主测试天然走 isolate。

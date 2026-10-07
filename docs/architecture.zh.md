@@ -178,10 +178,13 @@ ONNX Runtime CPU 执行提供者（无 GPU/NNAPI 路径），每 1024² 分块�
   崩溃）时，AutoEngine 不再让在飞 job 直接失败——按预算（默认 2 次）自动收尸 →
   重新拉起服务（按原 ResourceTier 档位）→ 重发当前图：UI 只看到进度回零再走完，
   日志页多一条带原因的 warn。重试窗口内用户取消/关闭立即中止（绝不复活出用户
-  已放弃的推理）；预算耗尽才报错完单。死亡原因经 `ApplicationExitInfo`
-  （API 30+，MainActivity 的 `exitReason`）取证——主进程查询 `:inference` 上次
-  退出记录（只认 10 分钟内的新鲜条目，避免拿陈旧记录误导），日志页直接显示
-  「系统低内存回收(LMK) / 原生崩溃(signal n) / ANR」，不再是猜测性表述。
+  已放弃的推理）；预算耗尽才报错完单。死亡取证三路并下：`ApplicationExitInfo`
+  （API 30+，MainActivity 的 `exitReason`，小间隔重试查询 AMS 落库延迟，命中时
+  附次新记录作上下文；查无记录＝进程可能仍在运行、仅连接断开）；服务端断连
+  取证（EOF/读错误 + 任务在飞标记，重连接问候帧直达日志页）；管线逐阶段心跳
+  （SAM 编码/生成开始）让日志时间戳定位死在哪个模型。停服即自杀
+  （`InferenceService.onDestroy` killProcess）：杜绝「stop→start 同进程复用」
+  的原生残留（真机实测第二次加载 RSS +90MB），每次 start 必得干净进程。
 - 取消/关闭/空闲到期/内存压力（空闲门控）在两条路径上都落到「归还 ~300MB 会话」；
   空闲保留时长随 ResourceTier 分级下发（≥6GB 5min / 4–6GB 2min / 低档 60s），
   连续多图不重付模型加载。

@@ -200,12 +200,19 @@ The fully-automatic pipeline (`AutoEngine`/worker RPC in
   plus one warn line carrying the death reason. A user cancel/shutdown during
   the retry window aborts the revive immediately (no inference is resurrected
   behind a cancelled task); once the budget is exhausted the job fails as
-  before. The death reason is captured via `ApplicationExitInfo` (API 30+,
-  `exitReason` on MainActivity) — the main process queries the last exit
-  record of `:inference` (only entries fresher than 10 minutes, to avoid
-  misleading stale records) and the log page shows the actual root cause
-  ("low-memory kill (LMK)" / "native crash (signal n)" / ANR) instead of a
-  vague guess.
+  before. Death forensics run on three tracks: `ApplicationExitInfo` (API 30+,
+  `exitReason` on MainActivity — queried with short-interval retries to cover
+  AMS record-commit lag, attaching the second-newest record as context; no
+  record at all means the process likely never died and only the connection
+  dropped); server-side disconnect forensics (EOF vs read error plus an
+  in-flight flag, replayed to the next connection as a greeting log frame
+  straight into the app's log page); and per-stage pipeline heartbeats (SAM
+  encode / generate start) so log timestamps pinpoint which model died. The
+  service also kills its own process in `onDestroy`: without that, a stop→
+  start cycle would reuse the same process and the destroyed engine's native
+  residue would linger (measured +90MB RSS on the second load); killing makes
+  every start a pristine process and turns "sessions are always returned" into
+  a hard guarantee.
 - Cancel/shutdown/idle-expiry/memory-pressure (idle-gated) all end up
   returning the ~300MB of sessions on both paths; the idle retention is
   tiered via ResourceTier (≥6GB 5min / 4–6GB 2min / low tier 60s) so
