@@ -1,0 +1,72 @@
+.dart_tool/
+build/
+*.iml
+.idea/
+*.log
+
+# 本地素材、权重、运行环境及临时产物不随社区源码分发
+models/
+out/
+.venv/
+__pycache__/
+*.pyc
+node_modules/
+web/node_modules/
+web/.vite/
+.env
+.env.*
+!.env.example
+.playwright-cli/
+.workbuddy/
+.mimosa/
+.reasonix/
+
+# desktop shell
+src-tauri/target/
+src-tauri/binaries/*.exe
+src-tauri/gen/
+
+# flutter mobile
+mobile/build/
+mobile/.dart_tool/
+mobile/android/.gradle/
+**/flutter_export_environment.sh
+
+# superpowers 本地开发文档（spec/plan 仅评审与计划输入，不纳入仓库）
+docs/superpowers/
+
+# Android release signing — DO NOT COMMIT (private key + passwords)
+mobile/android/key.properties
+mobile/android/upload-keystore.jks
+mobile/android/*.jks
+mobile/android/*.keystore
+
+# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
+.git/
+.hg/
+.svn/
+bower_components/
+jspm_packages/
+site-packages/
+venv/
+coverage/
+htmlcov/
+lcov-report/
+cmakefiles/
+cmake-build-*/
+bazel-*/
+pods/
+deriveddata/
+storybook-static/
+playwright-report/
+test-results/
+allure-results/
+allure-report/
+cdk.out/
+*.egg-info/
+*.dist-info/
+eggs/
+pip-wheel-metadata/
+wheels/
+# ----- ↑ 以上为 ZCode 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----
+# 自定义规则写在下方（本行提示可删除）

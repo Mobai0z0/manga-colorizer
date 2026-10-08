@@ -38,9 +38,10 @@ class ResourceTier {
   /// [fallback] 保持 60s（探测失败=未知设备，保守）。
   final Duration idleRelease;
 
-  /// 与 v0.5.4 相同的默认档：无探测数据时的安全回退。
+  /// 与 v0.5.4 相同的默认档：无探测数据时的安全回退。arena 跟随高档关闭
+  /// （v0.5.14）：探测失败=未知设备，保守取「单块峰值最低」的分配策略。
   static const ResourceTier fallback = ResourceTier(
-      maxPickSide: kMaxPickSide, intraThreads: 4, useArena: true);
+      maxPickSide: kMaxPickSide, intraThreads: 4, useArena: false);
 
   /// 档位表（纯函数，宿主测试直测）：<4GB 或系统 lowRam 标记 → 最低档；
   /// 4–6GB → 中档；≥6GB → 满配。内存越紧，越偏向「峰值最低」的 arena 关闭
@@ -61,10 +62,14 @@ class ResourceTier {
           useArena: false,
           idleRelease: Duration(minutes: 2));
     }
+    // ≥6GB 满配档同样关闭 arena（v0.5.14）：桌面标定实证 arena+shrinkage
+    // 单 Run 工作区 ~740MB 且收缩键在 Run 间并未把 RSS 压回（172→937→1511MB
+    // 持续抬升），no-arena 峰值仅 195MB、首 Run 只慢 ~33%——真机 :inference
+    // 死亡点恒定在首个 Run 飞行中（arena 高水位时刻），关 arena 是主修复。
     return const ResourceTier(
         maxPickSide: kMaxPickSide,
         intraThreads: 4,
-        useArena: true,
+        useArena: false,
         idleRelease: Duration(minutes: 5));
   }
 

@@ -10,6 +10,7 @@ import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:manga_colorizer_mobile/inference/inference_server.dart';
 import 'package:manga_colorizer_mobile/logs/log_bus.dart';
@@ -193,8 +194,10 @@ void main() {
     await server.close();
   });
 
-  test('查询替身抛错：死亡消息保持原表述，上报不被阻塞', () async {
-    inferenceExitReason = () => Future.error(StateError('binding 未初始化'));
+  test('查询替身抛 MissingPluginException：死亡消息保持原表述，上报不被阻塞',
+      () async {
+    inferenceExitReason = () => Future.error(MissingPluginException(
+        'No implementation found for method exitReason on channel'));
     final core = InferenceServerCore();
     final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
     Socket? serverSide;
@@ -215,6 +218,37 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 2));
     }
     expect(died, 'inference 进程连接断开（进程退出或被杀）');
+    await handle.kill();
+    toMain.close();
+    await server.close();
+  });
+
+  test('查询替身抛其他异常：死亡消息透传具体错误（v0.5.14 取证加固）', () async {
+    inferenceExitReason =
+        () => Future.error(StateError('binding 未初始化'));
+    final core = InferenceServerCore();
+    final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    Socket? serverSide;
+    server.listen((s) {
+      serverSide = s;
+      serveClient(s, core).onError<Object>((_, __) {});
+    });
+    inferenceCandidatePorts = [server.port];
+    startInferenceService = () async {};
+    stopInferenceService = () async {};
+    final toMain = ReceivePort();
+    Object? died;
+    final handle = await spawnInferenceServiceWorker(toMain.sendPort,
+        onDied: (e) => died = e);
+    serverSide!.destroy();
+    final sw = Stopwatch()..start();
+    while (died == null && sw.elapsed < const Duration(seconds: 5)) {
+      await Future<void>.delayed(const Duration(milliseconds: 2));
+    }
+    expect(
+        died,
+        'inference 进程连接断开；'
+        '系统退出原因：查询异常: Bad state: binding 未初始化');
     await handle.kill();
     toMain.close();
     await server.close();
