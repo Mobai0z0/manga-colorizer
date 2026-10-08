@@ -14,6 +14,7 @@ import 'package:flutter/foundation.dart' show visibleForTesting;
 
 import '../mem_info.dart';
 import '../onnx/backend.dart';
+import '../onnx/backend_log.dart';
 import '../onnx/pipeline.dart';
 import '../onnx/serving_seams.dart';
 import '../onnx/socket_protocol.dart';
@@ -81,6 +82,17 @@ class InferenceServerCore {
     }
     _busy = true;
     final gen = _gen;
+    // job 范围内安装 backend 阶段日志：log 帧（日志页可见）+ stderr 镜像
+    // （logcat 可检索 `[manga-inference]`；进程死亡后这是唯一取证来源）。
+    // 前一条日志带时间戳，配合下一帧的间隔能把「死亡发生在哪两步之间」
+    // 钉死到具体阶段（Run 内/回传拷贝/dispose）。
+    void jobLog(String line) {
+      final stamped = '[backend] $line';
+      stderr.writeln('[manga-inference] $stamped');
+      send(Frame(FrameType.log, jobId: f.jobId, data: {'line': stamped}));
+    }
+
+    backendLogSink = jobLog;
     try {
       final gray = f.bytes;
       final width = (f.data['width'] as num?)?.toInt() ?? 0;
@@ -108,16 +120,22 @@ class InferenceServerCore {
         overlap: autoOverlap,
         onProgress: (p) => send(
             Frame(FrameType.progress, jobId: f.jobId, data: {'p': p})),
-        onLog: (line) =>
-            send(Frame(FrameType.log, jobId: f.jobId, data: {'line': line})),
+        onLog: (line) {
+          stderr.writeln('[manga-inference] [pipeline] $line');
+          send(Frame(FrameType.log, jobId: f.jobId, data: {'line': line}));
+        },
       );
       // socket 路径没有「取消返回 null」：取消=主进程停服务进程，进程死亡
       // 前本任务不会收到 stop。out 为 null 属协议异常，按 result(null) 透传
       // 让引擎以「已取消」完单。
       send(Frame(FrameType.result, jobId: f.jobId, bytes: out));
-    } on Object catch (e) {
+    } on Object catch (e, st) {
+      // 任务级异常同步镜像 stderr：error 帧只对活着的连接有意义，logcat
+      // 侧的完整堆栈才是进程死亡前的最后痕迹。
+      stderr.writeln('[manga-inference] 任务异常: $e\n$st');
       send(Frame(FrameType.error, jobId: f.jobId, data: {'message': e.toString()}));
     } finally {
+      backendLogSink = null;
       if (gen == _gen) _busy = false;
     }
   }

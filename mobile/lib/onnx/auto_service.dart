@@ -42,6 +42,7 @@ import 'package:flutter/services.dart'
 import '../logs/log_bus.dart';
 import '../mem_info.dart';
 import 'backend.dart';
+import 'backend_log.dart';
 import 'pipeline.dart';
 import 'serving_seams.dart';
 
@@ -214,6 +215,9 @@ Future<void> _runAutoWorker(ReceivePort rx, SendPort main) async {
     try {
       final backend = b ??= autoBackendFactory(dirPath!,
           intraThreads: intraThreads, useArena: useArena);
+      // job 范围内安装 backend 阶段日志（isolate 路径无 stderr 取证需求，
+      // 直达 ['log'] 事件 → LogBus）。
+      backendLogSink = (line) => main.send(['log', '[backend] $line']);
       await backend.load(); // 幂等；首次约模型大小级别的耗时
       main.send([
         'log',
@@ -237,6 +241,7 @@ Future<void> _runAutoWorker(ReceivePort rx, SendPort main) async {
     } on Object catch (e) {
       main.send(['error', e.toString()]);
     } finally {
+      backendLogSink = null;
       jobInFlight = false;
       if (stopRequested) {
         await drainAndAck();
