@@ -291,7 +291,6 @@ class AutoEngine {
 
   /// 最近一次 ensureStarted 的参数：死亡自动重启按原档位复活。
   String? _lastDir;
-  int? _lastThreads;
   bool? _lastArena;
 
   /// 在飞 job 的入参：worker 死亡后重发当前图用（与 UI 侧持有的 _gray 同一份
@@ -336,7 +335,6 @@ class AutoEngine {
     _idle?.cancel();
     if (idleRelease != null) _idleRelease = idleRelease;
     _lastDir = dirPath;
-    _lastThreads = intraThreads;
     _lastArena = useArena;
     final rx = ReceivePort();
     // 握手：worker 把它的命令口作为第一条消息发回（见 autoWorkerMain）；
@@ -461,14 +459,15 @@ class AutoEngine {
     unawaited(_beginTeardown(workerDied: true));
   }
 
-  /// 死亡自动重启：收尸（job 由本方法接管，不在拆机中完单）→ 按原档位复活 →
+  /// 死亡自动重启：收尸（job 由本方法接管，不在拆机中完单）→ 降单线程复活 →
   /// 重发当前图并把结果转交给原始 job。用户在重试窗口内取消/关闭（_epoch
   /// 变化）→ 中止重试：已复活的引擎立即拆掉，job 以 null 完结（按取消语义）。
   ///
-  /// v0.5.16 鉴别实验：末次重试（第 2 次）降 intraThreads=1——若单线程下
-  /// 推理活过来，即坐实「首个 ORT Run 的多线程并发缺陷」；若照死，并发假
-  /// 设出局、矛头指向进程外部（系统侧杀/冻结）。同时是一次生产可用的自愈
-  /// 尝试：单线程慢但能完成，用户的图不至于两连死全败。
+  /// v0.5.16 鉴别实验 → v0.5.17 全重试降级：SIGABRT 实锤后（真机遗嘱命中，
+  /// will signal=6 addr=0x279b00008415），每次重试都降 intraThreads=1——
+  /// 单线程照死与否是「多线程并发缺陷」假设的直接判据，且不必等到末次才
+  /// 拿证据（SIGABRT 场景下第 2 次重试大概率照死，预算耗尽全败）。同时是
+  /// 生产自愈：单线程慢但若能完成，用户的图不至于全败。
   Future<void> _reviveAndRetry(
       int epoch,
       Completer<Uint8List?> job,
@@ -482,14 +481,12 @@ class AutoEngine {
         job.complete(null);
         return;
       }
-      // 末次重试降单线程（鉴别实验 + 自愈）：ensureStarted 会把该值记进
+      // 全部重试降单线程（鉴别实验 + 自愈）：ensureStarted 会把该值记进
       // _lastThreads，之后的 revive 按已降档位原样复活。
-      final isLastAttempt = _reviveAttempt >= _maxWorkerRetries;
-      final threads = isLastAttempt ? 1 : (_lastThreads ?? kDefaultIntraThreads);
-      if (isLastAttempt) {
-        _logBus?.warn('auto',
-            '末次重试降级单线程推理（threads=1）：成功＝多线程并发缺陷实锤');
-      }
+      const threads = 1;
+      _logBus?.warn('auto',
+          '重试降级单线程推理（threads=1）：成功＝多线程并发缺陷实锤，'
+          '照死＝并发假设出局');
       await ensureStarted(_lastDir!,
           intraThreads: threads,
           useArena: _lastArena ?? true,

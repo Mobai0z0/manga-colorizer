@@ -20,6 +20,7 @@
 // 降级为「无此项证据」，绝不妨碍推理主链路。
 import 'dart:async';
 import 'dart:io';
+import 'dart:convert';
 
 import 'package:path_provider/path_provider.dart';
 
@@ -28,6 +29,13 @@ const String kHeartbeatFileName = 'forensics/heartbeat';
 
 /// 遗嘱文件的文件名（C 层写入；InferenceService 传给 JNI 的同一路径）。
 const String kWillFileName = 'forensics/will';
+
+/// v0.5.17：stderr 镜像文件（C 层 dup2 落盘；:inference 进程内 fd2 输出
+/// 全部进这里——ORT 报错原文 + Dart '[manga-inference]' 日志同框）。
+const String kStderrFileName = 'forensics/stderr.log';
+
+/// v0.5.17：崩溃时刻的 /proc/self/maps 快照（遗嘱 C 层同窗口落盘）。
+const String kMapsFileName = 'forensics/will.maps';
 
 /// 心跳间隔：断连后 mtime 停滞 >[kHeartbeatStallThreshold] 判「冻结后杀」。
 const Duration kHeartbeatInterval = Duration(seconds: 1);
@@ -131,6 +139,60 @@ Future<void> clearInferenceWill() async {
     if (f.existsSync()) await f.delete();
   } on Object {
     // 取证清理失败不影响主链路：遗嘱最多是旧的（读取侧按 mtime 判新旧）。
+  }
+}
+
+/// 主进程侧：读取 stderr 镜像尾部（[maxChars] 上限；null＝无文件）。
+/// SIGABRT 前 ORT/std::terminate 写的报错原文在这里——取证最值钱的一句。
+Future<String?> readInferenceStderrTail({int maxChars = 4000}) async {
+  try {
+    final dir = await _sharedCacheDir();
+    if (dir == null) return null;
+    final f = File('$dir/$kStderrFileName');
+    if (!f.existsSync()) return null;
+    final bytes = f.readAsBytesSync();
+    if (bytes.isEmpty) return null;
+    // 只取尾部：stderr 全量可能大（含 Dart 日志镜像），abort 原文总在最后。
+    const maxBytes = 16 * 1024;
+    final tail = bytes.length > maxBytes
+        ? bytes.sublist(bytes.length - maxBytes)
+        : bytes;
+    var text = utf8.decode(tail, allowMalformed: true);
+    if (text.length > maxChars) text = text.substring(text.length - maxChars);
+    return text.trim();
+  } on Object {
+    return null;
+  }
+}
+
+/// 遗嘱行里的 backtrace（v0.5.17）：「bt=0x…,0x…,…」裸 PC 列表。
+final RegExp _btLinePattern = RegExp(r'bt=([0-9a-fx,]+)');
+
+/// 从遗嘱文本解析 backtrace PC 列表（无 bt 行＝null）。
+List<Uri>? parseWillBacktrace(String will) {
+  for (final line in will.split('\n')) {
+    final m = _btLinePattern.firstMatch(line);
+    if (m == null) continue;
+    final pcs = <Uri>[];
+    for (final tok in m.group(1)!.split(',')) {
+      final v = int.tryParse(tok.replaceFirst('0x', ''), radix: 16);
+      if (v != null) pcs.add(Uri.parse('elf:0x${v.toRadixString(16)}'));
+    }
+    return pcs;
+  }
+  return null;
+}
+
+/// 主进程侧：读取 maps 快照文本（null＝无文件；v0.5.17 崩溃归属表）。
+Future<String?> readInferenceMapsSnapshot() async {
+  try {
+    final dir = await _sharedCacheDir();
+    if (dir == null) return null;
+    final f = File('$dir/$kMapsFileName');
+    if (!f.existsSync()) return null;
+    return f.readAsStringSync();
+  } on Object {
+    return null;
   }
 }
 

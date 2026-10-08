@@ -53,5 +53,28 @@ object Forensics {
         return available
     }
 
+    /**
+     * v0.5.17：stderr 重定向落盘（dup2 fd2→文件）。
+     * path＝stderr 镜像文件绝对路径（应用私有目录内）。O_TRUNC：进程每次
+     * 新生清空。失败只记 lastError，绝不抛出。
+     */
+    fun redirectStderr(path: String): Boolean {
+        if (!loaded) return false
+        return try {
+            val rc = installStderrRedirection(path)
+            if (rc != 0) {
+                lastError = "stderr 重定向失败 rc=$rc"
+                false
+            } else {
+                true
+            }
+        } catch (t: Throwable) {
+            lastError = "${t.javaClass.simpleName}: ${t.message}"
+            false
+        }
+    }
+
     private external fun installNativeWills(path: String): Int
+
+    private external fun installStderrRedirection(path: String): Int
 }

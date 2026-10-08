@@ -20,7 +20,10 @@ import '../forensics.dart'
         clearInferenceWill,
         describeFatalSignal,
         kHeartbeatStallThreshold,
+        parseWillBacktrace,
         readInferenceHeartbeatAge,
+        readInferenceMapsSnapshot,
+        readInferenceStderrTail,
         readInferenceWill;
 import '../logs/log_bus.dart';
 import 'auto_service.dart';
@@ -273,11 +276,12 @@ class _SocketBridge implements AutoWorkerHandle {
   }
 
   /// 死亡上报前先查系统侧的退出原因（[inferenceExitReason]）与本进程自建
-  /// 证据线（原生遗嘱 + 心跳文件，v0.5.16）：日志页直接看到「原生崩溃
-  /// SIGSEGV / SIGKILL 被杀 / 冻结后杀」，不再只是猜测性表述。
+  /// 证据线（原生遗嘱 + 心跳文件 + stderr 镜像，v0.5.16/17）：日志页直接
+  /// 看到「原生崩溃 SIGSEGV / SIGKILL 被杀 / 冻结后杀」，不再只是猜测性表述。
   ///
   /// 三条证据的定罪表：
-  ///   · 遗嘱存在 → 原生崩溃（signal 编号即死因）；
+  ///   · 遗嘱存在 → 原生崩溃（signal 编号即死因；含 bt= 行时附 so+offset
+  ///     符号化结果与 stderr 尾部）；
   ///   · 遗嘱缺失 + 心跳停滞 >3s → 进程冻结后被杀（厂商省电）；
   ///   · 遗嘱缺失 + 心跳活跃 → SIGKILL（LMK/厂商直接杀，内核不给写遗嘱）；
   ///   · 全部缺失 → 回退系统退出原因/回退表述（取证未安装或旧服务端）。
@@ -290,11 +294,28 @@ class _SocketBridge implements AutoWorkerHandle {
         // 行格式 will signal=N addr=0x…；翻译编号为可读名。
         final line = will.split('\n').last.trim();
         final m = RegExp(r'will signal=(\d+)').firstMatch(line);
-        final sigName = m == null
-            ? null
-            : describeFatalSignal(int.parse(m.group(1)!));
-        why = 'inference 进程原生崩溃'
+        final sigNum = m == null ? null : int.tryParse(m.group(1)!);
+        final sigName = sigNum == null ? null : describeFatalSignal(sigNum);
+        var detail = 'inference 进程原生崩溃'
             '${sigName == null ? '' : '（$sigName）'}：$line';
+        // v0.5.17：遗嘱带 bt= 行 → maps 快照换算 so+offset（离线再对 so
+        // 出符号）；崩在哪个 .so 是锁定根因的关键一步。
+        final bt = parseWillBacktrace(will);
+        if (bt != null && bt.isNotEmpty) {
+          final maps = await readInferenceMapsSnapshot();
+          if (maps != null) {
+            final sym = _symbolizeBacktrace(bt, maps);
+            if (sym != null && sym.isNotEmpty) {
+              detail += '；调用栈(PC→so+offset)：$sym';
+            }
+          }
+        }
+        // v0.5.17：stderr 镜像尾部——abort 前 ORT/断言写的报错原文。
+        final stderrTail = await readInferenceStderrTail();
+        if (stderrTail != null && stderrTail.isNotEmpty) {
+          detail += '；stderr 尾部：${_condense(stderrTail, 1200)}';
+        }
+        why = detail;
       } else {
         // 无遗嘱：看心跳——停滞 >3s＝冻结后杀；活跃＝SIGKILL 被杀。
         final age = await readInferenceHeartbeatAge();
@@ -326,6 +347,59 @@ class _SocketBridge implements AutoWorkerHandle {
       }
     }
     _onDied?.call(why);
+  }
+
+  /// v0.5.17：把遗嘱 backtrace 的裸 PC 列表对照 maps 快照换算成
+  /// 「so 名+offset」列表。maps 行格式：
+  /// `7a2b400000-7a2b460000 r--p 00000000 ... /data/app/.../libonnxruntime.so`。
+  /// PC 落在哪个文件的地址区间即归属该 so，offset = pc - 区间起。
+  /// 系统库（/system/**、/apex/**，可能就是 abort 源头）照记——归属本身
+  /// 就是信息。无匹配（PC 在匿名映射）返回空列表。
+  static String? _symbolizeBacktrace(List<Uri> pcs, String maps) {
+    final ranges = <(int, int, String)>[]; // (start, end, so 名)
+    for (final line in maps.split('\n')) {
+      final m = RegExp(r'^([0-9a-f]+)-([0-9a-f]+)\s+\S+\s+\S+\s+\S+\s+\S+\s+(.*)$')
+          .firstMatch(line);
+      if (m == null) continue;
+      final start = int.tryParse(m.group(1)!, radix: 16);
+      final end = int.tryParse(m.group(2)!, radix: 16);
+      final path = m.group(3)!.trim();
+      if (start == null || end == null || path.isEmpty) continue;
+      ranges.add((start, end, path));
+    }
+    if (ranges.isEmpty) return null;
+    final out = <String>[];
+    for (var i = 0; i < pcs.length; i++) {
+      final raw = pcs[i].toString(); // elf:0x…
+      final v = int.tryParse(raw.replaceFirst('elf:0x', ''), radix: 16);
+      if (v == null) continue;
+      String? hit;
+      for (final r in ranges) {
+        if (v >= r.$1 && v < r.$2) {
+          final path = r.$3;
+          final so = path.split('/').last;
+          hit = '$so+0x${(v - r.$1).toRadixString(16)}'
+              '${path.contains('/system/') || path.contains('/apex/') ? '[system]' : ''}';
+          break;
+        }
+      }
+      out.add('#$i ${hit ?? 'anon(0x${v.toRadixString(16)})'}');
+    }
+    return out.isEmpty ? null : out.join(' ← ');
+  }
+
+  /// 压缩长文本进日志行：去空白行、留尾（abort 原文在最后）、总长截断。
+  static String _condense(String text, int maxChars) {
+    final lines = text
+        .split('\n')
+        .map((l) => l.trimRight())
+        .where((l) => l.trim().isNotEmpty)
+        .toList();
+    var joined = lines.join(' ⏎ ');
+    if (joined.length > maxChars) {
+      joined = '…${joined.substring(joined.length - maxChars)}';
+    }
+    return joined;
   }
 
   @override

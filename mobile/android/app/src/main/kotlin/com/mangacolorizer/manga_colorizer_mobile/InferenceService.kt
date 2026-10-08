@@ -49,6 +49,13 @@ class InferenceService : Service() {
         // 丢失遗嘱。
         runCatching { File(cacheDir, "forensics").mkdirs() }
         Forensics.install(cacheDir.resolve("forensics/will").absolutePath)
+        // v0.5.17 取证：stderr（fd2）重定向落盘。Android 上进程 stderr 默认
+        // 直通 /dev/null——SIGABRT 前 ORT/std::terminate/assert 写到 stderr
+        // 的报错原文全部丢失；dup2 到文件后按时间序落盘（Dart 侧
+        // '[manga-inference]' 日志镜像同 fd 同框）。必须在引擎创建前做：
+        // ORT session 创建/Run 的报错都要赶在第一个字节出现之前接住。
+        // O_TRUNC=进程每次新生清空；幂等重入（engine!=null）不会误清。
+        Forensics.redirectStderr(cacheDir.resolve("forensics/stderr.log").absolutePath)
         // 心跳由 Dart 侧 inferenceMain 启动（path_provider 需 binding 先行）。
         if (engine == null) {
             try {
