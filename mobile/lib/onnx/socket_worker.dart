@@ -61,19 +61,28 @@ Future<String?> _exitReasonViaChannel() async {
   // AMS 落退出记录可能略晚于 socket 断开信号：小间隔重试三次再下结论。
   // 三次都查到「无记录」时返回说明文字（≠ null）：进程很可能仍在运行、只是
   // 连接断开——与「通道不可用」的 null（回退到猜测性表述）明确区分。
+  // v0.5.14：通道异常也透传（≠ null）——Kotlin 侧已把查询异常转诊断文字，
+  // 这里再抛说明是通道本身坏了（方法缺失/绑定失败），具体错误进死亡消息，
+  // 不再静默回退到猜测性表述、把取证链断在通道层。
+  Object? channelError;
   for (var attempt = 0; attempt < 3; attempt++) {
     try {
       final reason =
           await kInferenceServiceChannel.invokeMethod<String>('exitReason');
       if (reason != null && reason.isNotEmpty) return reason;
-    } on Object {
-      // 宿主测试/Windows/低版本：通道不可用，重试无意义。
-      return null;
+    } on Object catch (e) {
+      // 宿主测试/Windows/低版本：通道不可用（MissingPluginException 等）。
+      channelError ??= e;
+      if (e is MissingPluginException) return null;
+      // 其他异常（PlatformException 等）：Kotlin 侧已在 handler 内兜底，
+      // 这里再抛说明通道状态异常——透传一次具体错误，证据不丢。
+      return '通道异常: $e';
     }
     if (attempt < 2) {
       await Future<void>.delayed(const Duration(milliseconds: 500));
     }
   }
+  if (channelError != null) return '通道异常: $channelError';
   return '系统无退出记录（进程可能仍在运行，仅连接断开）';
 }
 
@@ -262,8 +271,13 @@ class _SocketBridge implements AutoWorkerHandle {
       if (reason != null && reason.isNotEmpty) {
         why = 'inference 进程连接断开；系统退出原因：$reason';
       }
-    } on Object {
-      // 查询替身抛错也保持原表述。
+    } on Object catch (e) {
+      // v0.5.14 取证加固：查询本身抛错不再静默丢弃——MissingPluginException
+      // （通道不可用：宿主测试/Windows/低版本）保持回退表述；其他异常转为
+      // 诊断文字进死亡消息（上报不被阻塞，证据也不丢）。
+      if (e is! MissingPluginException) {
+        why = 'inference 进程连接断开；系统退出原因：查询异常: $e';
+      }
     }
     _onDied?.call(why);
   }

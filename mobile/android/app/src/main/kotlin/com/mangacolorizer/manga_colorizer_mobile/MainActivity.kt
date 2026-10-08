@@ -72,6 +72,17 @@ class MainActivity : FlutterActivity() {
      */
     private fun lastInferenceExitReason(): String? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
+        // v0.5.14 取证加固：部分 ROM 的 ApplicationExitInfo 实现有怪癖（安全
+        // 异常、parcel 异常等），异常一旦抛回 Dart 会被当作「通道不可用」吞掉，
+        // 取证链断在通道层——改为异常转诊断文字透传，证据不丢。
+        return try {
+            queryInferenceExitReason()
+        } catch (t: Throwable) {
+            "退出记录查询异常: ${t.javaClass.simpleName}: ${t.message}"
+        }
+    }
+
+    private fun queryInferenceExitReason(): String? {
         val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
         val records = am.getHistoricalProcessExitReasons("$packageName:inference", 0, 2)
         if (records.isEmpty()) return null
