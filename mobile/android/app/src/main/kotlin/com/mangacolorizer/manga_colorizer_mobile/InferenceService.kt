@@ -14,6 +14,7 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.engine.FlutterEngineGroup
 import io.flutter.embedding.engine.dart.DartExecutor.DartEntrypoint
 import io.flutter.plugins.GeneratedPluginRegistrant
+import java.io.File
 
 /**
  * :inference 独立进程的托管服务（架构参考 xororz/local-dream 的 BackendService）：
@@ -40,6 +41,15 @@ class InferenceService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startAsForeground()
+        // v0.5.16 断连取证：本进程（:inference）安装原生遗嘱 + 心跳。
+        // 幂等：重复 start 只重装（C 层覆写路径 + sigaction 语义不变）。
+        // 取证失败绝不伤推理主链路（Forensics.install 内部已吞异常）。
+        // 目录必须在这里建好：崩溃可能发生在 Dart 心跳（forensics/ 的另一
+        // 个创建者）启动之前，届时 C 层 open(O_CREAT) 会因目录缺失而静默
+        // 丢失遗嘱。
+        runCatching { File(cacheDir, "forensics").mkdirs() }
+        Forensics.install(cacheDir.resolve("forensics/will").absolutePath)
+        // 心跳由 Dart 侧 inferenceMain 启动（path_provider 需 binding 先行）。
         if (engine == null) {
             try {
                 // :inference 进程没有 FlutterActivity，Application 又是 Flutter

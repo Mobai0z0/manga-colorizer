@@ -30,6 +30,20 @@ android {
         // flag during build.
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+
+        // v0.5.16 断连取证：原生信号遗嘱库（只 arm64-v8a 设备在用；其余 ABI
+        // 留给模拟器调试，体积可忽略——源码是单个 C 文件）。
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+        }
+    }
+
+    // v0.5.16 断连取证：C 层 fatal-signal 遗嘱（崩溃 vs 被杀的定罪证据）。
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     val keyPropsFile = rootProject.file("key.properties")

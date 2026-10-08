@@ -15,6 +15,13 @@ import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/services.dart'
     show MethodChannel, MissingPluginException;
 
+import '../forensics.dart'
+    show
+        clearInferenceWill,
+        describeFatalSignal,
+        kHeartbeatStallThreshold,
+        readInferenceHeartbeatAge,
+        readInferenceWill;
 import '../logs/log_bus.dart';
 import 'auto_service.dart';
 import 'socket_protocol.dart';
@@ -123,6 +130,9 @@ Future<AutoWorkerHandle> defaultAutoSpawn(SendPort toMain,
 /// 任何失败都会先拆桥/停服务再抛（别留一个空转前台服务）。
 Future<AutoWorkerHandle> spawnInferenceServiceWorker(SendPort toMain,
     {void Function(Object error)? onDied}) async {
+  // v0.5.16 取证：新 spawn＝新观察窗口，旧遗嘱是上一次死亡的证据，留着会
+  // 伪证本次断连。清理尽力而为（失败读取侧还有 mtime 兜底）。
+  unawaited(clearInferenceWill());
   await startInferenceService();
   Socket socket;
   try {
@@ -262,21 +272,57 @@ class _SocketBridge implements AutoWorkerHandle {
     unawaited(_notifyDiedWithExitReason());
   }
 
-  /// 死亡上报前先查系统侧的退出原因（[inferenceExitReason]）：日志页直接
-  /// 看到「LMK 回收 / 原生崩溃(signal n)」，不再只是猜测性表述。
+  /// 死亡上报前先查系统侧的退出原因（[inferenceExitReason]）与本进程自建
+  /// 证据线（原生遗嘱 + 心跳文件，v0.5.16）：日志页直接看到「原生崩溃
+  /// SIGSEGV / SIGKILL 被杀 / 冻结后杀」，不再只是猜测性表述。
+  ///
+  /// 三条证据的定罪表：
+  ///   · 遗嘱存在 → 原生崩溃（signal 编号即死因）；
+  ///   · 遗嘱缺失 + 心跳停滞 >3s → 进程冻结后被杀（厂商省电）；
+  ///   · 遗嘱缺失 + 心跳活跃 → SIGKILL（LMK/厂商直接杀，内核不给写遗嘱）；
+  ///   · 全部缺失 → 回退系统退出原因/回退表述（取证未安装或旧服务端）。
   Future<void> _notifyDiedWithExitReason() async {
     var why = 'inference 进程连接断开（进程退出或被杀）';
     try {
-      final reason = await inferenceExitReason();
-      if (reason != null && reason.isNotEmpty) {
-        why = 'inference 进程连接断开；系统退出原因：$reason';
+      // 遗嘱先行：最硬的证据（崩溃 vs 被杀一锤定音）。
+      final will = await readInferenceWill();
+      if (will != null && will.isNotEmpty) {
+        // 行格式 will signal=N addr=0x…；翻译编号为可读名。
+        final line = will.split('\n').last.trim();
+        final m = RegExp(r'will signal=(\d+)').firstMatch(line);
+        final sigName = m == null
+            ? null
+            : describeFatalSignal(int.parse(m.group(1)!));
+        why = 'inference 进程原生崩溃'
+            '${sigName == null ? '' : '（$sigName）'}：$line';
+      } else {
+        // 无遗嘱：看心跳——停滞 >3s＝冻结后杀；活跃＝SIGKILL 被杀。
+        final age = await readInferenceHeartbeatAge();
+        if (age != null) {
+          why = age > kHeartbeatStallThreshold
+              ? 'inference 进程连接断开；死亡前心跳已停滞 ${age.inSeconds}s'
+                '（进程先被冻结后遭终止——厂商冻结策略嫌疑）'
+              : 'inference 进程连接断开；死亡前心跳活跃'
+                '（${age.inMilliseconds}ms 前）：无遗嘱＝非崩溃，'
+                '应为 SIGKILL 直接终止（LMK/厂商杀后台）';
+        }
       }
-    } on Object catch (e) {
-      // v0.5.14 取证加固：查询本身抛错不再静默丢弃——MissingPluginException
-      // （通道不可用：宿主测试/Windows/低版本）保持回退表述；其他异常转为
-      // 诊断文字进死亡消息（上报不被阻塞，证据也不丢）。
-      if (e is! MissingPluginException) {
-        why = 'inference 进程连接断开；系统退出原因：查询异常: $e';
+    } on Object {
+      // 取证读取失败：降级到系统退出原因线（原有逻辑），证据不阻塞上报。
+    }
+    if (!why.contains('原生崩溃') && !why.contains('心跳')) {
+      // 自建证据线无果：尝试系统退出原因（v0.5.14/15 逻辑）。
+      try {
+        final reason = await inferenceExitReason();
+        if (reason != null && reason.isNotEmpty) {
+          why = 'inference 进程连接断开；系统退出原因：$reason';
+        }
+      } on Object catch (e) {
+        // MissingPluginException（通道不可用：宿主测试/Windows/低版本）保持
+        // 回退表述；其他异常转为诊断文字进死亡消息（上报不被阻塞）。
+        if (e is! MissingPluginException) {
+          why = 'inference 进程连接断开；系统退出原因：查询异常: $e';
+        }
       }
     }
     _onDied?.call(why);

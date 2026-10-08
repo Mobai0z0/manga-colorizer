@@ -464,6 +464,11 @@ class AutoEngine {
   /// 死亡自动重启：收尸（job 由本方法接管，不在拆机中完单）→ 按原档位复活 →
   /// 重发当前图并把结果转交给原始 job。用户在重试窗口内取消/关闭（_epoch
   /// 变化）→ 中止重试：已复活的引擎立即拆掉，job 以 null 完结（按取消语义）。
+  ///
+  /// v0.5.16 鉴别实验：末次重试（第 2 次）降 intraThreads=1——若单线程下
+  /// 推理活过来，即坐实「首个 ORT Run 的多线程并发缺陷」；若照死，并发假
+  /// 设出局、矛头指向进程外部（系统侧杀/冻结）。同时是一次生产可用的自愈
+  /// 尝试：单线程慢但能完成，用户的图不至于两连死全败。
   Future<void> _reviveAndRetry(
       int epoch,
       Completer<Uint8List?> job,
@@ -477,8 +482,16 @@ class AutoEngine {
         job.complete(null);
         return;
       }
+      // 末次重试降单线程（鉴别实验 + 自愈）：ensureStarted 会把该值记进
+      // _lastThreads，之后的 revive 按已降档位原样复活。
+      final isLastAttempt = _reviveAttempt >= _maxWorkerRetries;
+      final threads = isLastAttempt ? 1 : (_lastThreads ?? kDefaultIntraThreads);
+      if (isLastAttempt) {
+        _logBus?.warn('auto',
+            '末次重试降级单线程推理（threads=1）：成功＝多线程并发缺陷实锤');
+      }
       await ensureStarted(_lastDir!,
-          intraThreads: _lastThreads ?? kDefaultIntraThreads,
+          intraThreads: threads,
           useArena: _lastArena ?? true,
           idleRelease: _idleRelease);
       if (_epoch != epoch) {

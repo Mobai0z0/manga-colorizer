@@ -11,6 +11,7 @@ import 'dart:io' show stderr;
 
 import 'package:flutter/widgets.dart' show WidgetsFlutterBinding;
 
+import 'forensics.dart' show startInferenceHeartbeat;
 import 'inference/inference_server.dart';
 
 /// 由 main.dart 的根库转发调用，@pragma 让 AOT 保留此入口。
@@ -25,6 +26,11 @@ void inferenceMain() {
   // "Binding has not yet been initialized."）。握手是纯 dart:io socket 所以
   // 一直正常，失败只发生在首个 job（v0.5.10 真机日志实锤）。
   WidgetsFlutterBinding.ensureInitialized();
+  // v0.5.16 断连取证：心跳文件（1s 间隔 touch）。断连后主进程读 mtime：
+  // 停滞 >3s＝进程先被冻结再杀；≈0＝活跃中死亡（遗嘱文件定罪崩溃 vs 被杀）。
+  // 遗嘱安装（Forensics.install）在 Kotlin 侧 InferenceService.onStartCommand
+  // 完成（那里才有 cacheDir 与原生库加载点）。
+  unawaited(startInferenceHeartbeat());
   // 根 isolate 没有 runApp 的 zone 兜底：任何未捕获异步错误（弃置任务写帧
   // 的无监听 socket 错误、插件通道回调抛错等）都可能终结 isolate/引擎——
   // 外观恰是「连接断开但进程未死、系统无退出记录」（v0.5.11 真机 ~48s 断连
