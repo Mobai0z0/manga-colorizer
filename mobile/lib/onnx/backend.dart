@@ -25,7 +25,9 @@
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter_onnxruntime/flutter_onnxruntime.dart';
+import '../mem_info.dart';
 import 'backend_api.dart';
+import 'backend_log.dart';
 import 'weights.dart';
 
 export 'backend_api.dart';
@@ -162,9 +164,19 @@ class OrtOnnxBackend implements OnnxBackend {
     // 权重绝不入 APK/assets：只从 WeightsStore 的下载目录按文件路径加载
     // （插件 Kotlin 层 createSession(modelPath, options)——路径直达 ORT，
     // 不经 Java 字节数组双拷贝）。
+    final sw = Stopwatch()..start();
+    backendLog('encoder session 创建开始（${kWeightFiles[1].name}，'
+        'threads=$intraThreads，arena=$useArena）${rssSuffix()}');
     final sam = await _createSession(ort, kWeightFiles[1]);
+    backendLog('encoder session 创建完成（${sw.elapsedMilliseconds}ms）'
+        '${rssSuffix()}');
     try {
+      final genSw = Stopwatch()..start();
+      backendLog('generator session 创建开始（${kWeightFiles[0].name}）'
+          '${rssSuffix()}');
       _gen = await _createSession(ort, kWeightFiles[0]);
+      backendLog('generator session 创建完成（${genSw.elapsedMilliseconds}ms）'
+          '${rssSuffix()}');
       _sam = sam;
     } on Object {
       // generator 加载失败不能把 encoder 的 100MB+ 原生内存留在进程里。
@@ -189,12 +201,15 @@ class OrtOnnxBackend implements OnnxBackend {
               intraOpNumThreads: intraThreads, useArena: false));
     }
     try {
-      return await ort.createSession(path,
+      final s = await ort.createSession(path,
           options: OrtSessionOptions(
               intraOpNumThreads: intraThreads,
               useArena: true,
               sessionConfigs: _kShrinkageConfigs));
-    } on Object {
+      backendLog('${weight.name}: arena+shrinkage 会话创建成功');
+      return s;
+    } on Object catch (e) {
+      backendLog('${weight.name}: arena+shrinkage 被拒（$e），降级 no-arena');
       return await ort.createSession(path,
           options: OrtSessionOptions(
               intraOpNumThreads: intraThreads, useArena: false));
@@ -208,13 +223,16 @@ class OrtOnnxBackend implements OnnxBackend {
     requireSamInput(chw, s);
     final input = await OrtValue.fromList(chw, [1, 3, s, s]);
     Map<String, OrtValue>? outputs;
+    final sw = Stopwatch()..start();
     try {
       // encoder 只有一个输入 rgb_input；用绑定名而非硬编码，防模型重导出漂移。
       final names = sam.inputNames;
       if (names.isEmpty) throw StateError('encoder session 没有输入名，绑定异常');
+      backendLog('SAM Run 开始（s=$s）${rssSuffix()}');
       outputs = await sam.run({names.first: input});
-      final f0 = await _flatten(_pickOutput(outputs, _kSam0, 0, 2), _kSam0);
-      final f1 = await _flatten(_pickOutput(outputs, _kSam1, 1, 2), _kSam1);
+      backendLog('SAM Run 完成（${sw.elapsedMilliseconds}ms）${rssSuffix()}');
+      final f0 = await _flattenTimed(_pickOutput(outputs, _kSam0, 0, 2), _kSam0);
+      final f1 = await _flattenTimed(_pickOutput(outputs, _kSam1, 1, 2), _kSam1);
       return ((f0.$1, f0.$2), (f1.$1, f1.$2));
     } finally {
       await input.dispose();
@@ -238,6 +256,7 @@ class OrtOnnxBackend implements OnnxBackend {
     // 整体失败、feed 根本不存在，未登记的张量将活到进程结束。
     final created = <OrtValue>[];
     Map<String, OrtValue>? outputs;
+    final sw = Stopwatch()..start();
     try {
       Future<OrtValue> make(Float32List data, List<int> shape) async {
         final v = await OrtValue.fromList(data, shape);
@@ -251,9 +270,12 @@ class OrtOnnxBackend implements OnnxBackend {
         _kSam1: await make(sam1.$1, sam1.$2),
         _kWd14: await make(Float32List(1024), [1, 1024]),
       };
+      backendLog('生成 Run 开始（s=$s，feed=${created.length} 张量）'
+          '${rssSuffix()}');
       outputs = await gen.run(_remapInputs(gen, feed));
+      backendLog('生成 Run 完成（${sw.elapsedMilliseconds}ms）${rssSuffix()}');
       final pred = _pickOutput(outputs, _kRgbPred, 0, 1);
-      final (chw, shape) = await _flatten(pred, _kRgbPred);
+      final (chw, shape) = await _flattenTimed(pred, _kRgbPred);
       if (shape.length != 4 ||
           shape[1] != 3 ||
           shape[2] != s ||
@@ -339,8 +361,18 @@ class OrtOnnxBackend implements OnnxBackend {
     };
   }
 
-  Future<(Float32List, List<int>)> _flatten(OrtValue v, String label) async =>
-      flattenToFloat32(await v.asFlattenedList(), v.shape, label);
+  /// 带计时的回传：asFlattenedList 是「原生堆 → Dart 堆」的大数组跨通道拷贝，
+  /// 真机断连若发生在 Run 完成之后、这一步之中，日志能把死亡位置钉死在拷贝段。
+  Future<(Float32List, List<int>)> _flattenTimed(
+      OrtValue v, String label) async {
+    final shape = v.shape;
+    final sw = Stopwatch()..start();
+    final data = await v.asFlattenedList();
+    final out = flattenToFloat32(data, shape, label);
+    backendLog('$label 回传完成（shape=$shape，'
+        '${sw.elapsedMilliseconds}ms）${rssSuffix()}');
+    return out;
+  }
 }
 
 /// 模型原生 `rgb_pred [1,3,S,S]` → 行优先、像素步长 3 的 RGB（值域不变）。
