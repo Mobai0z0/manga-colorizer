@@ -22,6 +22,7 @@ import '../forensics.dart'
         kHeartbeatStallThreshold,
         parseWillBacktrace,
         readInferenceHeartbeatAge,
+        readInferenceLogcatFatal,
         readInferenceMapsSnapshot,
         readInferenceStderrTail,
         readInferenceWill;
@@ -32,6 +33,23 @@ import 'socket_protocol.dart';
 /// MainActivity 上的服务控制通道（Kotlin 侧同名注册：start/stop）。
 const MethodChannel kInferenceServiceChannel =
     MethodChannel('manga_colorizer/inference');
+
+/// v0.5.18：各 so 在 base.apk 内的数据窗口（arm64-v8a，本地 file offset）。
+/// Flutter 从 APK 内直接 dlopen so，maps 里它们共享同一个 `base.apk` 路径；
+/// 崩溃帧的「pgoff + (pc - 区间起)」落在哪个窗口即归属哪个 so。
+/// ⚠ 窗口随构建变化（so 体积/对齐/新增 so 都会移动偏移）——发版前用
+/// `python -c "import zipfile…" + LocalFileHeader` 重新核对，构建脚本
+/// tool/dump_apk_so_windows.py 可自动生成此表。
+const Map<String, (int, int)> kApkSoWindows = {
+  'libapp.so': (393216, 6554504),
+  'libapp_native.so': (6569984, 6600056),
+  'libdartjni.so': (6602752, 6734152),
+  'libflutter.so': (6750208, 18497736),
+  'libonnxruntime.so': (18513920, 46499864),
+  'libonnxruntime4j_jni.so': (46514176, 46597384),
+};
+
+(int, int) kApkSoWindow(String so) => kApkSoWindows[so] ?? (0, 0);
 
 typedef ServiceStarter = Future<void> Function();
 typedef ServiceStopper = Future<void> Function();
@@ -315,6 +333,12 @@ class _SocketBridge implements AutoWorkerHandle {
         if (stderrTail != null && stderrTail.isNotEmpty) {
           detail += '；stderr 尾部：${_condense(stderrTail, 1200)}';
         }
+        // v0.5.18：logcat dump（dump 即清）——ART 的 FATAL 原文
+        // （Fatal signal/Abort message/tombstone 摘要）只走 logcat。
+        final logcat = await readInferenceLogcatFatal();
+        if (logcat != null && logcat.isNotEmpty) {
+          detail += '；logcat：${_condense(logcat, 1500)}';
+        }
         why = detail;
       } else {
         // 无遗嘱：看心跳——停滞 >3s＝冻结后杀；活跃＝SIGKILL 被杀。
@@ -349,23 +373,52 @@ class _SocketBridge implements AutoWorkerHandle {
     _onDied?.call(why);
   }
 
-  /// v0.5.17：把遗嘱 backtrace 的裸 PC 列表对照 maps 快照换算成
-  /// 「so 名+offset」列表。maps 行格式：
-  /// `7a2b400000-7a2b460000 r--p 00000000 ... /data/app/.../libonnxruntime.so`。
-  /// PC 落在哪个文件的地址区间即归属该 so，offset = pc - 区间起。
+  /// v0.5.17/18：把遗嘱 backtrace 的裸 PC 列表对照 maps 快照换算成
+  /// 「so 名+offset」列表。maps 行格式（第 3 列=文件内 pgoff，v0.5.18 起用）：
+  /// `7a2b400000-7a2b460000 r--p 00000000 08:02 12345 /data/app/.../libonnxruntime.so`。
+  ///
+  /// 普通 so 帧：offset = pc - 区间起（so 内偏移）。
+  /// base.apk 帧（Flutter 直接从 APK 内 dlopen，多个 so 共享同一路径）：
+  /// file_off = pgoff + (pc - 区间起)，再对照 [kApkSoWindows] 的
+  /// 「so 在 APK 内的数据窗口」归属到具体 so（libonnxruntime/libapp/
+  /// libflutter/…）。v0.5.17 真机 #8-#10 三帧就是这样从「base.apk+0x…」
+  /// 钉到 libonnxruntime.so 的。
+  ///
   /// 系统库（/system/**、/apex/**，可能就是 abort 源头）照记——归属本身
   /// 就是信息。无匹配（PC 在匿名映射）返回空列表。
-  static String? _symbolizeBacktrace(List<Uri> pcs, String maps) {
-    final ranges = <(int, int, String)>[]; // (start, end, so 名)
+  /// v0.5.17：向后兼容的私有名（内部调用点不改）。
+  static String? _symbolizeBacktrace(List<Uri> pcs, String maps) =>
+      symbolizeBacktrace(pcs, maps);
+
+  /// v0.5.17/18：把遗嘱 backtrace 的裸 PC 列表对照 maps 快照换算成
+  /// 「so 名+offset」列表。maps 行格式（第 3 列=文件内 pgoff，v0.5.18 起用）：
+  /// `7a2b400000-7a2b460000 r--p 00000000 08:02 12345 /data/app/.../libonnxruntime.so`。
+  ///
+  /// 普通 so 帧：offset = pc - 区间起（so 内偏移）。
+  /// base.apk 帧（Flutter 直接从 APK 内 dlopen，多个 so 共享同一路径）：
+  /// file_off = pgoff + (pc - 区间起)，再对照 [kApkSoWindows] 的
+  /// 「so 在 APK 内的数据窗口」归属到具体 so（libonnxruntime/libapp/
+  /// libflutter/…）。v0.5.17 真机 #8-#10 三帧就是这样从「base.apk+0x…」
+  /// 钉到 libonnxruntime.so 的。
+  ///
+  /// 系统库（/system/**、/apex/**，可能就是 abort 源头）照记——归属本身
+  /// 就是信息。无匹配（PC 在匿名映射）返回空列表。
+  static String? symbolizeBacktrace(List<Uri> pcs, String maps) {
+    // (start, end, pgoff, path)
+    final ranges = <(int, int, int, String)>[];
     for (final line in maps.split('\n')) {
-      final m = RegExp(r'^([0-9a-f]+)-([0-9a-f]+)\s+\S+\s+\S+\s+\S+\s+\S+\s+(.*)$')
+      final m = RegExp(
+              r'^([0-9a-f]+)-([0-9a-f]+)\s+\S+\s+([0-9a-f]+)\s+\S+\s+\S+\s+(.*)$')
           .firstMatch(line);
       if (m == null) continue;
       final start = int.tryParse(m.group(1)!, radix: 16);
       final end = int.tryParse(m.group(2)!, radix: 16);
-      final path = m.group(3)!.trim();
-      if (start == null || end == null || path.isEmpty) continue;
-      ranges.add((start, end, path));
+      final pgoff = int.tryParse(m.group(3)!, radix: 16);
+      final path = m.group(4)!.trim();
+      if (start == null || end == null || pgoff == null || path.isEmpty) {
+        continue;
+      }
+      ranges.add((start, end, pgoff, path));
     }
     if (ranges.isEmpty) return null;
     final out = <String>[];
@@ -375,13 +428,28 @@ class _SocketBridge implements AutoWorkerHandle {
       if (v == null) continue;
       String? hit;
       for (final r in ranges) {
-        if (v >= r.$1 && v < r.$2) {
-          final path = r.$3;
-          final so = path.split('/').last;
-          hit = '$so+0x${(v - r.$1).toRadixString(16)}'
+        if (v < r.$1 || v >= r.$2) continue;
+        final path = r.$4;
+        if (path.endsWith('base.apk')) {
+          // APK 内嵌 so：按数据窗口归属（窗口表见 [kApkSoWindows]）。
+          final fileOff = r.$3 + (v - r.$1);
+          String? so;
+          for (final w in kApkSoWindows.entries) {
+            if (fileOff >= w.value.$1 && fileOff < w.value.$2) {
+              so = w.key;
+              break;
+            }
+          }
+          hit = so == null
+              ? 'base.apk!file+0x${fileOff.toRadixString(16)}'
+              : '$so+0x${(fileOff - kApkSoWindow(so).$1).toRadixString(16)}'
+                  '<apk>';
+        } else {
+          final soName = path.split('/').last;
+          hit = '$soName+0x${(v - r.$1).toRadixString(16)}'
               '${path.contains('/system/') || path.contains('/apex/') ? '[system]' : ''}';
-          break;
         }
+        break;
       }
       out.add('#$i ${hit ?? 'anon(0x${v.toRadixString(16)})'}');
     }
@@ -410,3 +478,8 @@ class _SocketBridge implements AutoWorkerHandle {
     await _stopQuietly();
   }
 }
+
+/// 测试接缝：v0.5.18 so+offset 符号化（裸 PC + maps 文本 → 归属行）。
+@visibleForTesting
+String? symbolizeBacktraceForTest(List<Uri> pcs, String maps) =>
+    _SocketBridge.symbolizeBacktrace(pcs, maps);

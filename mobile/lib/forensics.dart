@@ -196,6 +196,41 @@ Future<String?> readInferenceMapsSnapshot() async {
   }
 }
 
+/// v0.5.18 logcat 取证：ART/平台的 FATAL 原文（`Fatal signal 6`、
+/// `Abort message: …`、`pid … :inference [tombstone` 头）走 logcat 不进
+/// stderr——abort 后主进程第一时间 dump 内核环形缓冲再清空，防多轮重试
+/// 串味。只留与 :inference 死亡相关的行（FATAL/DEBUG/[manga-inference]）。
+///
+/// 全程尽力而为：无 logcat 权限（部分 ROM 限制同 app 读取）/进程隔离下
+/// 返回 null——证据缺失不阻塞死亡上报。
+Future<String?> readInferenceLogcatFatal() async {
+  if (!Platform.isAndroid) return null;
+  try {
+    // -d：dump 后退出；-t 500：只看每个缓冲最近 500 行（崩溃必在尾部）；
+    // -v brief：默认格式带 pid/tag 足够。main+system+crash 三缓冲全覆盖
+    // （crash 缓冲是 ART tombstone 摘要的主场）。
+    final res = await Process.run('logcat',
+        ['-d', '-t', '500', '-b', 'main', '-b', 'system', '-b', 'crash']);
+    if (res.exitCode != 0) return null;
+    final text = res.stdout.toString();
+    // 只捞相关行：死亡进程的自述 / FATAL / tombstone 摘要。
+    final keep = RegExp(
+        r'\[ *manga-inference\]|FATAL EXCEPTION|Fatal signal|Abort message'
+        r'|tombstone|>>> |backtrace:|stack:|pid: .*, tid:');
+
+    final lines = text
+        .split('\n')
+        .where((l) => keep.hasMatch(l))
+        .toList();
+    // dump 成功即清空缓冲：下一次死亡从干净缓冲开始（防两轮证据混淆）。
+    await Process.run('logcat', ['-c']).catchError((_) => ProcessResult(0, 0, '', ''));
+    if (lines.isEmpty) return null;
+    return lines.take(60).join('\n');
+  } on Object {
+    return null;
+  }
+}
+
 /// 信号编号 → 可读名（遗嘱行 will signal=N 的翻译；C 层只写十进制编号）。
 String? describeFatalSignal(int sig) => switch (sig) {
       1 => 'SIGHUP',
