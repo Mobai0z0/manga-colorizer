@@ -84,7 +84,17 @@ class MainActivity : FlutterActivity() {
 
     private fun queryInferenceExitReason(): String? {
         val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-        val records = am.getHistoricalProcessExitReasons("$packageName:inference", 0, 2)
+        // ApplicationExitInfo 按「调用方 uid」过滤本应用进程；:inference 与主
+        // 进程同 uid 同包，理论上无需权限。部分 ROM（v0.5.14 真机实锤）在查询
+        // 路径上错误要求 android.permission.DUMP（signature|development 级，
+        // 普通 app 拿不到 grant）。此处把 SecurityException 转成明确诊断文字
+        // 而非 null：null 会触发 Dart 侧三次重试并最终显示「进程可能仍在运行」，
+        // 对这台山设备是误导——真相是「ROM 不让查，取证改走 stderr/logcat」。
+        val records: List<ApplicationExitInfo> = try {
+            am.getHistoricalProcessExitReasons("$packageName:inference", 0, 2)
+        } catch (e: SecurityException) {
+            return "退出记录不可用（ROM 拒绝查询: ${e.message?.take(120) ?: e.javaClass.simpleName}）"
+        }
         if (records.isEmpty()) return null
         val newest = records[0]
         val ageMs = System.currentTimeMillis() - newest.timestamp
