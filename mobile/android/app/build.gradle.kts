@@ -31,11 +31,12 @@ android {
         versionCode = flutter.versionCode
         versionName = flutter.versionName
 
-        // v0.5.16 断连取证：原生信号遗嘱库（只 arm64-v8a 设备在用；其余 ABI
-        // 留给模拟器调试，体积可忽略——源码是单个 C 文件）。
-        ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
-        }
+        // v0.5.16 断连取证：原生信号遗嘱库（单 C 文件，所有 ABI 通用）。
+        // 注意：不在 defaultConfig 设 ndk.abiFilters——否则与
+        // `flutter build apk --split-per-abi` 注入的 splits.abi 冲突，AGP 报
+        // "ndk abiFilters cannot be present when splits abi filters are set"。
+        // ABI 过滤交给 Flutter 的 split-per-abi（arm64-v8a/armeabi-v7a/x86_64 各出包），
+        // 原生 .so 由各 split 触发对应 ABI 构建，模拟器 x86_64 包仍含该库。
     }
 
     // v0.5.16 断连取证：C 层 fatal-signal 遗嘱（崩溃 vs 被杀的定罪证据）。
