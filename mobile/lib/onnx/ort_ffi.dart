@@ -237,7 +237,10 @@ class OrtFfi {
     } else {
       step('槽位值越界（非 so 映射区间），跳过原生调用，直接 RELA 自愈…');
     }
-    if (api == nullptr) {
+    // api == null 表示未走原生路径（槽位越界）；自愈判定用 null 而不是
+    // nullptr——Dart 里 null != nullptr（后者是地址 0 的指针对象），
+    // v0.5.23 首版就是写成 == nullptr 导致自愈被跳过、掉进 api! 空检查。
+    if (api == null) {
       // v0.5.23 自愈：MuMu/卓易通系 linker 把 RELATIVE 重定位错误实现为
       // 「抄 addend 处文件内容」——槽值=代码字节，调用即 SIGSEGV@0x0。
       // 自愈 = 解析 so 文件 RELA，按 base+addend 重算全部函数地址，
@@ -267,7 +270,7 @@ class OrtFfi {
       return f;
     }
     step('OrtApi 指针已取得，绑定 31 个成员…');
-    final f = OrtFfi._(lib, api!, nullptr);
+    final f = OrtFfi._(lib, api, nullptr);
     f._bind();
     step('成员绑定完成，versionString=${f.versionString()}');
     // CreateEnv（WARNING 级，logid 与 logcat 前缀同名便于归并）。
