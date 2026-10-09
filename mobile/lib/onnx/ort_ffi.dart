@@ -33,6 +33,7 @@ import 'dart:typed_data';
 import 'package:ffi/ffi.dart';
 
 import 'backend_log.dart';
+import 'ort_relocate.dart';
 
 /// ORT C API 版本（vendor header ORT_API_VERSION）——与 gradle force 的
 /// onnxruntime-android 1.27.0 一致。GetApi 版本不匹配时 ORT 返回 nullptr。
@@ -209,18 +210,64 @@ class OrtFfi {
     // v0.5.21 鉴别：GetApi 之前先调 GetVersionString（第 1 槽，纯静态串）。
     // 它成功 = OrtApiBase 基址有效，崩点只可能在 GetApi 调用本身；
     // 它崩 = OrtApiBase 指针就是垃圾（so 加载/重定位层问题）。
-    step('GetVersionString（第 1 槽）调用中…');
-    final ver = slot1raw.asFunction<Pointer<Utf8> Function()>()();
-    step('GetVersionString 成功：${ver.toDartString()}');
-    step('GetApi($kOrtApiVersion) 调用中…');
-    final api = getApi(kOrtApiVersion);
+    //
+    // v0.5.23 关键：**坏槽不能调**——MuMu 实测调用即 SIGSEGV（进程死，Dart
+    // try-catch 拦不住原生信号）。自愈决策必须在**调用前**完成：槽值合理性
+    // 检查（合法函数地址应落在 so 映射区间内 = 与 getApiBase 同域），
+    // 越界即直接走自愈，绝不调用坏槽。
+    bool slotPlausible(Pointer p) {
+      final a = p.address;
+      // x86_64/arm64 用户空间地址形态 + 与 apiBase 差值 ≤ 64MB（so 尺寸量级）。
+      final d = (a - getApiBase.address).abs();
+      return a > 0x10000 && d < 0x4000000;
+    }
+
+    Pointer<Void>? api;
+    if (slotPlausible(slot1raw) && slotPlausible(slot0raw)) {
+      step('GetVersionString（第 1 槽）调用中…');
+      final ver = slot1raw.asFunction<Pointer<Utf8> Function()>()();
+      step('GetVersionString 成功：${ver.toDartString()}');
+      step('GetApi($kOrtApiVersion) 调用中…');
+      api = getApi(kOrtApiVersion);
+      if (api == nullptr) {
+        throw OrtFfiException(
+            -1, 'OrtGetApiBase()->GetApi($kOrtApiVersion) 返回 null：运行时 '
+            'ORT 版本低于 vendor header 的 API 版本');
+      }
+    } else {
+      step('槽位值越界（非 so 映射区间），跳过原生调用，直接 RELA 自愈…');
+    }
     if (api == nullptr) {
-      throw OrtFfiException(
-          -1, 'OrtGetApiBase()->GetApi($kOrtApiVersion) 返回 null：运行时 ORT '
-          '版本低于 vendor header 的 API 版本');
+      // v0.5.23 自愈：MuMu/卓易通系 linker 把 RELATIVE 重定位错误实现为
+      // 「抄 addend 处文件内容」——槽值=代码字节，调用即 SIGSEGV@0x0。
+      // 自愈 = 解析 so 文件 RELA，按 base+addend 重算全部函数地址，
+      // 完全绕开坏槽（详见 ort_relocate.dart 文件头）。
+      step('原生查表不可用，启动 RELA 自愈…');
+      final loc = locateLibrary();
+      step('maps 定位：base=0x${loc.loadBase.toRadixString(16)}，'
+          'so=${loc.path}');
+      final fixed = selfRelocate(
+          loadBase: loc.loadBase, apiBaseAddr: getApiBase, soPath: loc.path);
+      step('自愈完成：412 槽已按 base+addend 重算，改走自愈表绑定');
+      final f = OrtFfi._(lib, nullptr, nullptr);
+      f._bindFromSlots(fixed.apiSlots);
+      // CreateEnv（WARNING 级，logid 与 logcat 前缀同名便于归并）。
+      final logId = 'manga-inference'.toNativeUtf8();
+      final envOut = malloc<Pointer<Void>>();
+      try {
+        step('CreateEnv 调用中…');
+        f.check(f._createEnv(_kOrtLoggingWarning, logId, envOut));
+        f._env = envOut.value;
+        step('CreateEnv 完成：OrtFfi.load()（自愈路径）全部成功');
+      } finally {
+        malloc.free(logId);
+        malloc.free(envOut);
+      }
+      _instance = f;
+      return f;
     }
     step('OrtApi 指针已取得，绑定 31 个成员…');
-    final f = OrtFfi._(lib, api, nullptr);
+    final f = OrtFfi._(lib, api!, nullptr);
     f._bind();
     step('成员绑定完成，versionString=${f.versionString()}');
     // CreateEnv（WARNING 级，logid 与 logcat 前缀同名便于归并）。
@@ -377,6 +424,80 @@ class OrtFfi {
     _releaseTensorTypeAndShapeInfo =
         member<_ReleaseC>(_idxReleaseTensorTypeAndShapeInfo)
             .asFunction<_ReleaseD>();
+    _appendExecutionProviderCpu = _lib
+        .lookupFunction<_AppendExecutionProviderCpuC, _AppendEpCpuD>(
+            'OrtSessionOptionsAppendExecutionProvider_CPU');
+  }
+
+  /// v0.5.23 自愈绑定：OrtApi 全部成员从 [apiSlots]（RELA 自算的运行时
+  /// 地址，见 ort_relocate.dart）取，完全绕开内存里的坏槽。槽序号与
+  /// _bind 的 idx 常量同一张表。
+  void _bindFromSlots(List<Pointer<Void>> apiSlots) {
+    Pointer<NativeFunction<T>> member<T extends Function>(int idx) =>
+        apiSlots[idx].cast<NativeFunction<T>>();
+    _createEnv = member<_CreateEnvC>(_idxCreateEnv).asFunction<_CreateEnvD>();
+    _createSessionOptions = member<_CreateSessionOptionsC>(
+            _idxCreateSessionOptions)
+        .asFunction<_CreateSessionOptionsD>();
+    _setIntraOpNumThreads = member<_SetIntraOpNumThreadsC>(
+            _idxSetIntraOpNumThreads)
+        .asFunction<_SetThreadsD>();
+    _addSessionConfigEntry = member<_AddConfigEntryC>(_idxAddSessionConfigEntry)
+        .asFunction<_AddConfigEntryD>();
+    _createSession =
+        member<_CreateSessionC>(_idxCreateSession).asFunction<_CreateSessionD>();
+    _sessionGetInputCount = member<_SessionGetIOCountC>(
+            _idxSessionGetInputCount)
+        .asFunction<_GetIOCountD>();
+    _sessionGetOutputCount = member<_SessionGetIOCountC>(
+            _idxSessionGetOutputCount)
+        .asFunction<_GetIOCountD>();
+    _sessionGetInputName = member<_SessionGetIONameC>(_idxSessionGetInputName)
+        .asFunction<_GetIONameD>();
+    _sessionGetOutputName =
+        member<_SessionGetIONameC>(_idxSessionGetOutputName)
+            .asFunction<_GetIONameD>();
+    _createCpuMemoryInfo = member<_CreateCpuMemoryInfoC>(
+            _idxCreateCpuMemoryInfo)
+        .asFunction<_CreateCpuMemoryInfoD>();
+    _createTensorWithData = member<_CreateTensorWithDataC>(
+            _idxCreateTensorWithDataAsOrtValue)
+        .asFunction<_CreateTensorWithDataD>();
+    _run = member<_RunC>(_idxRun).asFunction<_RunD>();
+    _getTensorTypeAndShape = member<_GetTensorTypeAndShapeC>(
+            _idxGetTensorTypeAndShape)
+        .asFunction<_GetTypeAndShapeD>();
+    _getDimensionsCount = member<_GetDimensionsCountC>(_idxGetDimensionsCount)
+        .asFunction<_GetDimCountD>();
+    _getDimensions =
+        member<_GetDimensionsC>(_idxGetDimensions).asFunction<_GetDimsD>();
+    _getTensorMutableData = member<_GetTensorMutableDataC>(
+            _idxGetTensorMutableData)
+        .asFunction<_GetMutableDataD>();
+    _getAllocatorWithDefaultOptions = member<_GetAllocatorWithDefaultOptionsC>(
+            _idxGetAllocatorWithDefaultOptions)
+        .asFunction<_GetAllocatorD>();
+    _allocatorFree =
+        member<_AllocatorFreeC>(_idxAllocatorFree).asFunction<_AllocatorFreeD>();
+    _getErrorCode = member<_GetErrorCodeC>(_idxGetErrorCode)
+        .asFunction<int Function(Pointer<Void>)>();
+    _getErrorMessage = member<_GetErrorMessageC>(_idxGetErrorMessage)
+        .asFunction<Pointer<Utf8> Function(Pointer<Void>)>();
+    _releaseEnv = member<_ReleaseC>(_idxReleaseEnv).asFunction<_ReleaseD>();
+    _releaseStatus =
+        member<_ReleaseC>(_idxReleaseStatus).asFunction<_ReleaseD>();
+    _releaseMemoryInfo =
+        member<_ReleaseC>(_idxReleaseMemoryInfo).asFunction<_ReleaseD>();
+    _releaseSession =
+        member<_ReleaseC>(_idxReleaseSession).asFunction<_ReleaseD>();
+    _releaseValue =
+        member<_ReleaseC>(_idxReleaseValue).asFunction<_ReleaseD>();
+    _releaseSessionOptions =
+        member<_ReleaseC>(_idxReleaseSessionOptions).asFunction<_ReleaseD>();
+    _releaseTensorTypeAndShapeInfo =
+        member<_ReleaseC>(_idxReleaseTensorTypeAndShapeInfo)
+            .asFunction<_ReleaseD>();
+    // EP CPU 独立导出不经过 OrtApi 表，任何路径都走 lib lookup（同 _bind）。
     _appendExecutionProviderCpu = _lib
         .lookupFunction<_AppendExecutionProviderCpuC, _AppendEpCpuD>(
             'OrtSessionOptionsAppendExecutionProvider_CPU');
