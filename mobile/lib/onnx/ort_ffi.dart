@@ -186,6 +186,10 @@ class OrtFfi {
           -1, 'OrtGetApiBase() 返回 null：libonnxruntime.so 加载异常');
     }
     step('OrtGetApiBase 已调用，读 GetApi（第 0 槽）…');
+    // dladdr lookup 委托：dladdr 在 libdl.so（Android linker 透传）。
+    Pointer<NativeFunction<DlAddrC>> lookupDladdr(String sym) =>
+        DynamicLibrary.process()
+            .lookup<NativeFunction<DlAddrC>>(sym);
     // OrtApiBase 第 0 槽 = GetApi（header 逐字核对：GetApi 在前）。
     final slots = getApiBase.cast<Pointer<Pointer<NativeFunction<_GetApiC>>>>();
     final getApi = slots[0].value.asFunction<Pointer<Void> Function(int)>();
@@ -246,11 +250,9 @@ class OrtFfi {
       // 自愈 = 解析 so 文件 RELA，按 base+addend 重算全部函数地址，
       // 完全绕开坏槽（详见 ort_relocate.dart 文件头）。
       step('原生查表不可用，启动 RELA 自愈…');
-      final loc = locateLibrary();
-      step('maps 定位：base=0x${loc.loadBase.toRadixString(16)}，'
-          'so=${loc.path}');
-      final fixed = selfRelocate(
-          loadBase: loc.loadBase, apiBaseAddr: getApiBase, soPath: loc.path);
+      final loc = locateLibrary(getApiBase, lookupDladdr);
+      step('定位完成：base=0x${loc.loadBase.toRadixString(16)}，${loc.soDesc}');
+      final fixed = selfRelocate(location: loc, apiBaseAddr: getApiBase);
       step('自愈完成：412 槽已按 base+addend 重算，改走自愈表绑定');
       final f = OrtFfi._(lib, nullptr, nullptr);
       f._bindFromSlots(fixed.apiSlots);
