@@ -29,6 +29,7 @@
 #include <errno.h>
 #include <setjmp.h>
 #include <unwind.h>
+#include <ucontext.h>
 
 // 遗嘱文件路径（JNI 注册时从 Dart 侧传入并缓存；open 时才解引用）。
 static char g_will_path[512];
@@ -145,13 +146,18 @@ static void snapshot_maps(void) {
   close(dst);
 }
 
-// 遗嘱：信号 + 触发地址 + backtrace；maps 另落一份。
-static void write_will(int sig, siginfo_t *info) {
+// 遗嘱：信号 + 触发地址 + 原始 PC + backtrace；maps 另落一份。
+//
+// v0.5.22 pc= 行：MuMu 实测 _Unwind_Backtrace 在信号上下文早停（bt 只有
+// handler 自身 2 帧 + libc 2 帧），原始崩溃点不在栈里——从 ucontext 直接读
+// 触发时的 PC 寄存器落盘（平台相关：x86_64=gregs[REG_RIP]，arm64=pc，
+// arm32=arm_pc），这是不受 unwind 可靠性影响的「第一现场」。
+static void write_will(int sig, siginfo_t *info, void *ucontext) {
   // O_CREAT|O_WRONLY|O_APPEND：多次崩溃追加不覆盖；权限 0600 私有。
   int fd = open(g_will_path, O_CREAT | O_WRONLY | O_APPEND, 0600);
   if (fd < 0) return; // 写不了就算了：取证不可妨碍死亡本身
-  // 行格式：will signal=<n> addr=<hex>\n
-  char buf[128];
+  // 行格式：will signal=<n> addr=<hex>\npc=<hex>\n
+  char buf[192];
   char *p = buf;
   const char *head = "will signal=";
   for (const char *q = head; *q; q++) *p++ = *q;
@@ -162,6 +168,27 @@ static void write_will(int sig, siginfo_t *info) {
   for (const char *q = mid; *q; q++) *p++ = *q;
   p = append_hex(p, (uintptr_t)info->si_addr);
   *p++ = '\n';
+  // 原始 PC（ucontext 可用时）。没有则省略该行。
+  uintptr_t pc = 0;
+  int have_pc = 0;
+  if (ucontext != NULL) {
+#if defined(__x86_64__)
+    pc = (uintptr_t)((ucontext_t *)ucontext)->uc_mcontext.gregs[REG_RIP];
+    have_pc = 1;
+#elif defined(__aarch64__)
+    pc = (uintptr_t)((ucontext_t *)ucontext)->uc_mcontext.pc;
+    have_pc = 1;
+#elif defined(__arm__)
+    pc = (uintptr_t)((ucontext_t *)ucontext)->uc_mcontext.arm_pc;
+    have_pc = 1;
+#endif
+  }
+  if (have_pc) {
+    const char *pcHead = "pc=";
+    for (const char *q = pcHead; *q; q++) *p++ = *q;
+    p = append_hex(p, pc);
+    *p++ = '\n';
+  }
   ssize_t rc = write(fd, buf, (size_t)(p - buf));
   (void)rc; // handler 里无法报告写失败；尽力而为
   // v0.5.17：崩在哪比崩没崩更重要——PC 列表 + 归属表一起落盘。
@@ -181,7 +208,7 @@ static void forensics_handler(int sig, siginfo_t *info, void *ucontext) {
     g_unwind_active = 0;
     siglongjmp(g_unwind_jmp, 1);
   }
-  write_will(sig, info);
+  write_will(sig, info, ucontext);
   // 恢复默认处置并 re-raise：系统照常记录 tombstone/ANR，进程按原始死因
   // 死亡（不吞信号、不假装活着）。SIGKILL 到不了这里（内核直杀）。
   signal(sig, SIG_DFL);

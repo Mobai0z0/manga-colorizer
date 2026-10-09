@@ -188,13 +188,29 @@ class OrtFfi {
     // OrtApiBase 第 0 槽 = GetApi（header 逐字核对：GetApi 在前）。
     final slots = getApiBase.cast<Pointer<Pointer<NativeFunction<_GetApiC>>>>();
     final getApi = slots[0].value.asFunction<Pointer<Void> Function(int)>();
-    // v0.5.21 鉴别：GetApi 之前先读 GetVersionString（第 1 槽，纯静态串）。
+    // v0.5.22 槽位自检：MuMu x86_64 实测死在「GetVersionString（第 1 槽）调用中」
+    // 之后、遗嘱 SIGSEGV addr=0x0——跳到空指针的指纹（call 0x0 取指失败）。
+    // 静态分析：AAR 的 .data.rel.ro 里 OrtApiBase 模板两槽文件值=0，真值靠
+    // 标准 RELA 重定位（已实证 RELA 表含 off=0x1fe9598/0x1fe95a0 → addend
+    // 0xa651e0/0xa65220）。若某环境的 linker 未应用 RELA，两槽运行时=0，
+    // 第一个被调用的槽函数指针就跳 0。这里直接读原始指针值打日志：0 = 铁证。
+    final slot0raw = slots[0].value;
+    final slot1raw = getApiBase
+        .cast<Pointer<Pointer<NativeFunction<Pointer<Utf8> Function()>>>>()[1]
+        .value;
+    step('槽位自检：slot0(GetApi)=0x${slot0raw.address.toRadixString(16)}、'
+        'slot1(GetVersionString)=0x${slot1raw.address.toRadixString(16)}');
+    if (slot0raw == nullptr || slot1raw == nullptr) {
+      throw OrtFfiException(
+          -2, 'OrtApiBase 槽位为空（slot0=${slot0raw.address}，'
+          'slot1=${slot1raw.address}）：libonnxruntime.so 的 RELA 重定位未生效'
+          '（linker 兼容问题），FFI 查表路径不可用');
+    }
+    // v0.5.21 鉴别：GetApi 之前先调 GetVersionString（第 1 槽，纯静态串）。
     // 它成功 = OrtApiBase 基址有效，崩点只可能在 GetApi 调用本身；
     // 它崩 = OrtApiBase 指针就是垃圾（so 加载/重定位层问题）。
-    final verSlot =
-        getApiBase.cast<Pointer<Pointer<NativeFunction<Pointer<Utf8> Function()>>>>()[1].value;
     step('GetVersionString（第 1 槽）调用中…');
-    final ver = verSlot.asFunction<Pointer<Utf8> Function()>()();
+    final ver = slot1raw.asFunction<Pointer<Utf8> Function()>()();
     step('GetVersionString 成功：${ver.toDartString()}');
     step('GetApi($kOrtApiVersion) 调用中…');
     final api = getApi(kOrtApiVersion);

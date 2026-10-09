@@ -320,6 +320,12 @@ class _SocketBridge implements AutoWorkerHandle {
         final sigName = sigNum == null ? null : describeFatalSignal(sigNum);
         var detail = 'inference 进程原生崩溃'
             '${sigName == null ? '' : '（$sigName）'}：$line';
+        // v0.5.22：pc= 行（ucontext 直读的原始 PC）优先展示——unwind 在信号
+        // 上下文早停时 bt= 缺第一现场，pc= 是唯一不受影响的一手证据。
+        final pcLine = lines.where((l) => l.startsWith('pc=')).toList();
+        if (pcLine.isNotEmpty) {
+          detail += '；原始 PC：${pcLine.first}';
+        }
         if (lines.length > 1) {
           // 多行遗嘱：第一行之后都是 handler 内二次崩（unwind 展开踩空等），
           // 追加原始行便于核对；「原生崩溃」判定以第一行为准。
