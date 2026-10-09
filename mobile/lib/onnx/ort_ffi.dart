@@ -32,6 +32,8 @@ import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 
+import 'backend_log.dart';
+
 /// ORT C API 版本（vendor header ORT_API_VERSION）——与 gradle force 的
 /// onnxruntime-android 1.27.0 一致。GetApi 版本不匹配时 ORT 返回 nullptr。
 const int kOrtApiVersion = 27;
@@ -162,30 +164,49 @@ class OrtFfi {
 
   /// 打开 libonnxruntime.so、解析 OrtApi、创建进程级 OrtEnv。
   /// so 缺失时抛 ArgumentError（原样透传，调用方按需包装）。
+  ///
+  /// v0.5.20 分步取证：真机/模拟器实测 load() 内秒死（SIGSEGV，无任何
+  /// backend 日志）——每一步完成即打点（backendLog → 日志页 + stderr 镜像），
+  /// 死点可钉到 open/GetApiBase/GetApi/bind/CreateEnv 具体一步。
   static OrtFfi load() {
     final cached = _instance;
     if (cached != null) return cached;
+    void step(String m) => backendLog('[ffi-load] $m');
+    step('打开 libonnxruntime.so…');
     final lib = DynamicLibrary.open('libonnxruntime.so');
+    step('so 已打开，lookup OrtGetApiBase…');
     final getApiBase = lib
         .lookupFunction<Pointer<Void> Function(), Pointer<Void> Function()>(
             'OrtGetApiBase')();
+    if (getApiBase == nullptr) {
+      // 不加这层检查就是「读 null+第0槽」→ SIGSEGV 秒死且无任何 Dart 栈
+      // （模拟器首战死法）。lookup 成功但调用返回 null 属异常环境，明确报错。
+      throw const OrtFfiException(
+          -1, 'OrtGetApiBase() 返回 null：libonnxruntime.so 加载异常');
+    }
+    step('OrtGetApiBase 已调用，读 GetApi（第 0 槽）…');
     // OrtApiBase 第 0 槽 = GetApi（header 逐字核对：GetApi 在前）。
     final slots = getApiBase.cast<Pointer<Pointer<NativeFunction<_GetApiC>>>>();
     final getApi = slots[0].value.asFunction<Pointer<Void> Function(int)>();
+    step('GetApi($kOrtApiVersion) 调用中…');
     final api = getApi(kOrtApiVersion);
     if (api == nullptr) {
       throw OrtFfiException(
           -1, 'OrtGetApiBase()->GetApi($kOrtApiVersion) 返回 null：运行时 ORT '
           '版本低于 vendor header 的 API 版本');
     }
+    step('OrtApi 指针已取得，绑定 31 个成员…');
     final f = OrtFfi._(lib, api, nullptr);
     f._bind();
+    step('成员绑定完成，versionString=${f.versionString()}');
     // CreateEnv（WARNING 级，logid 与 logcat 前缀同名便于归并）。
     final logId = 'manga-inference'.toNativeUtf8();
     final envOut = malloc<Pointer<Void>>();
     try {
+      step('CreateEnv 调用中…');
       f.check(f._createEnv(_kOrtLoggingWarning, logId, envOut));
       f._env = envOut.value;
+      step('CreateEnv 完成：OrtFfi.load() 全部成功');
     } finally {
       malloc.free(logId);
       malloc.free(envOut);
