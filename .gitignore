@@ -40,3 +40,8 @@ mobile/android/key.properties
 mobile/android/upload-keystore.jks
 mobile/android/*.jks
 mobile/android/*.keystore
+
+# Android/iOS release artifacts — large binaries, never commit (GitHub 100MB 上限)
+*.apk
+*.aab
+*.ipa
