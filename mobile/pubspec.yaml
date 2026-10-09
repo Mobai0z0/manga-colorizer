@@ -2,7 +2,7 @@ name: manga_colorizer_mobile
 description: Manga Colorizer Android app - embeds manga_colorizer_core (pure-Dart hint-based colorization).
 publish_to: none
 resolution: workspace
-version: 0.5.18+24
+version: 0.5.19+25
 
 environment:
   sdk: ^3.6.0
@@ -23,6 +23,9 @@ dependencies:
   # 提为直接依赖不改变解析版本。
   image: ^4.3.0
   image_picker: ^1.1.2
+  # ort_ffi.dart 直调 libonnxruntime.so C API 所需（malloc/Utf8 助手）。
+  # 2.2.0 已是传递依赖，提为直接依赖不改变解析版本。
+  ffi: ^2.2.0
   share_plus: ^10.0.0
   path_provider: ^2.1.4
   manga_colorizer_core:
