@@ -45,3 +45,10 @@ mobile/android/*.keystore
 *.apk
 *.aab
 *.ipa
+
+# 内部文档 / 临时产物 / 测试（不入库）
+.zcode/
+.zcodeignore
+tmp/
+mobile/test/
+packages/*/test/
