@@ -188,6 +188,14 @@ class OrtFfi {
     // OrtApiBase 第 0 槽 = GetApi（header 逐字核对：GetApi 在前）。
     final slots = getApiBase.cast<Pointer<Pointer<NativeFunction<_GetApiC>>>>();
     final getApi = slots[0].value.asFunction<Pointer<Void> Function(int)>();
+    // v0.5.21 鉴别：GetApi 之前先读 GetVersionString（第 1 槽，纯静态串）。
+    // 它成功 = OrtApiBase 基址有效，崩点只可能在 GetApi 调用本身；
+    // 它崩 = OrtApiBase 指针就是垃圾（so 加载/重定位层问题）。
+    final verSlot =
+        getApiBase.cast<Pointer<Pointer<NativeFunction<Pointer<Utf8> Function()>>>>()[1].value;
+    step('GetVersionString（第 1 槽）调用中…');
+    final ver = verSlot.asFunction<Pointer<Utf8> Function()>()();
+    step('GetVersionString 成功：${ver.toDartString()}');
     step('GetApi($kOrtApiVersion) 调用中…');
     final api = getApi(kOrtApiVersion);
     if (api == nullptr) {

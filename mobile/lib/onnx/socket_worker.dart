@@ -310,12 +310,22 @@ class _SocketBridge implements AutoWorkerHandle {
       final will = await readInferenceWill();
       if (will != null && will.isNotEmpty) {
         // 行格式 will signal=N addr=0x…；翻译编号为可读名。
-        final line = will.split('\n').last.trim();
+        // v0.5.21：取**第一行**=原始信号（handler 的 unwind 自身二次崩会
+        // 追加第二行 signal=11——取 last 会把原始死因吞掉，MuMu 实测）。
+        final lines =
+            will.split('\n').map((l) => l.trim()).where((l) => l.isNotEmpty).toList();
+        final line = lines.first;
         final m = RegExp(r'will signal=(\d+)').firstMatch(line);
         final sigNum = m == null ? null : int.tryParse(m.group(1)!);
         final sigName = sigNum == null ? null : describeFatalSignal(sigNum);
         var detail = 'inference 进程原生崩溃'
             '${sigName == null ? '' : '（$sigName）'}：$line';
+        if (lines.length > 1) {
+          // 多行遗嘱：第一行之后都是 handler 内二次崩（unwind 展开踩空等），
+          // 追加原始行便于核对；「原生崩溃」判定以第一行为准。
+          detail += '；遗嘱共 ${lines.length} 行（后续行为 handler 内二次崩）：'
+              '${lines.skip(1).take(3).join(' | ')}';
+        }
         // v0.5.17：遗嘱带 bt= 行 → maps 快照换算 so+offset（离线再对 so
         // 出符号）；崩在哪个 .so 是锁定根因的关键一步。
         final bt = parseWillBacktrace(will);

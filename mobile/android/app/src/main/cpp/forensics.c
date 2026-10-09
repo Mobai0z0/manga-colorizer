@@ -27,6 +27,7 @@
 #include <jni.h>
 #include <string.h>
 #include <errno.h>
+#include <setjmp.h>
 #include <unwind.h>
 
 // 遗嘱文件路径（JNI 注册时从 Dart 侧传入并缓存；open 时才解引用）。
@@ -80,10 +81,30 @@ static _Unwind_Reason_Code bt_callback(struct _Unwind_Context *ctx, void *data) 
 // 进程将死不存在并发重入，static 竞争无意义。
 static char g_bt_buf[2048];
 
+// v0.5.21：unwind 防二次崩。实测（MuMu x86_64）_Unwind_Backtrace 在信号上下文
+// 展开时自身 SIGSEGV（崩溃 PC=call 返回地址 libapp_native+0x2b59），handler
+// 嵌套重入直至 SIG_DFL 死亡——遗嘱只留下二次崩的 signal=11，**原始信号被吞**。
+// sigsetjmp/siglongjmp 是 async-signal-safe 的（POSIX 明确列出）：forensics_handler
+// 识别 unwind 活动标志后长跳回这里，改写「bt=unwind-crashed」，保住原始信号记录。
+static sigjmp_buf g_unwind_jmp;
+static volatile sig_atomic_t g_unwind_active = 0;
+
 static void write_backtrace(int fd) {
   struct bt_ctx c;
   c.count = 0;
-  _Unwind_Backtrace(bt_callback, &c);
+  g_unwind_active = 1;
+  if (sigsetjmp(g_unwind_jmp, 1) == 0) {
+    _Unwind_Backtrace(bt_callback, &c);
+  } else {
+    // 二次崩：栈展开不可信，记录事实即可。
+    c.count = 0;
+    const char *msg = "bt=unwind-crashed\n";
+    ssize_t rc = write(fd, msg, strlen(msg));
+    (void)rc;
+    g_unwind_active = 0;
+    return;
+  }
+  g_unwind_active = 0;
   if (c.count == 0) return;
   char *p = g_bt_buf;
   const char *head = "bt=";
@@ -151,6 +172,15 @@ static void write_will(int sig, siginfo_t *info) {
 
 static void forensics_handler(int sig, siginfo_t *info, void *ucontext) {
   (void)ucontext;
+  // v0.5.21：_Unwind_Backtrace 展开期间若二次崩溃（MuMu x86_64 实测崩在
+  // unwind 内部，PC=call 返回地址 +0x2b59），仍会进入本 handler（disposition
+  // 未变）。识别 unwind 活动标志 → siglongjmp 跳回 write_backtrace 的
+  // sigsetjmp 点改写「bt=unwind-crashed」——保住遗嘱里的原始信号记录，
+  // 不再嵌套重入直至 SIG_DFL。
+  if (g_unwind_active) {
+    g_unwind_active = 0;
+    siglongjmp(g_unwind_jmp, 1);
+  }
   write_will(sig, info);
   // 恢复默认处置并 re-raise：系统照常记录 tombstone/ANR，进程按原始死因
   // 死亡（不吞信号、不假装活着）。SIGKILL 到不了这里（内核直杀）。
