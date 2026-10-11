@@ -67,6 +67,23 @@ input[type="file"][hidden] { display: none !important; }
 .q-item.is-ok .q-st { background: var(--md-sys-color-secondary-container); color: var(--md-sys-color-on-secondary-container); }
 .q-item.is-fail .q-st { background: var(--md-sys-color-on-error-container); color: var(--md-sys-color-error); }
 
+/* 行内移除按钮 */
+.q-item .q-del {
+  flex: none; width: 26px; height: 26px; padding: 0;
+  border: none; border-radius: var(--md-sys-shape-corner-full);
+  background: transparent; color: var(--md-sys-color-on-surface-variant);
+  font-size: 15px; line-height: 1; cursor: pointer;
+  display: grid; place-items: center;
+}
+.q-item .q-del:hover { background: var(--md-sys-color-error-container); color: var(--md-sys-color-on-error-container); }
+.q-item .q-del:focus-visible { outline: 2px solid var(--md-sys-color-primary); outline-offset: -2px; }
+.q-item .q-del:disabled { opacity: .35; cursor: default; background: transparent; color: var(--md-sys-color-on-surface-variant); }
+
+/* 拖拽排序：被拖行半透明，插入位置用主色指示线标出 */
+.q-item.is-dragging { opacity: .45; }
+.q-item.drop-above { box-shadow: 0 -2px 0 0 var(--md-sys-color-primary); }
+.q-item.drop-below { box-shadow: 0 2px 0 0 var(--md-sys-color-primary); }
+
 .q-empty {
   border: 1.5px dashed var(--md-sys-color-outline-variant); border-radius: var(--md-sys-shape-corner-lg);
   padding: 34px 16px; text-align: center; color: var(--md-sys-color-on-surface-variant); font-size: .82rem;

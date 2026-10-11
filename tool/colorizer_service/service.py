@@ -15,8 +15,11 @@
 长图说明: 长边超过 TILE=1024 自动分块推理 (OVERLAP=256, 线性羽化融合),
 避免整页下采样到 1024 方形造成的精度损失。
 
-色彩收尾 v2: 输出端统一走 _finish_bgr —— ①纸白中和（原稿 L≥234 smoothstep
-把近白像素色度收向中性, 去除模型对纸白的系统性暖偏, 是「偏黄」主因）→
+色彩收尾 v2: 输出端统一走 _finish_bgr —— ⓪白色前景救援（封闭近白区域:
+模型想上色的白发/白衣/画格内背景, 在原稿 L=255 处没有色度渲染空间——
+跳过纸白中和并按色度把 L 压低, 色度才可见）→ ①纸白中和（原稿 L≥234
+smoothstep 把近白像素色度收向中性, 去除模型对纸白的系统性暖偏, 是「偏黄」
+主因）→
 ②自适应色度（弱色度全增益、强色度趋缓的软膝点, 修复「偏灰」而不过饱和）→
 ③方案色温 →④超 sRGB 色域像素按「亮度不变、色度等比收缩」做色域映射
 （替代 cv2 LAB2BGR 逐通道硬截断——截断拉偏色相, 是发灰发闷主因）→
@@ -392,12 +395,70 @@ def _smoothstep(e0: float, e1: float, x: np.ndarray) -> np.ndarray:
     return t * t * (3.0 - 2.0 * t)
 
 
+# ---- 白色前景救援（封闭近白区域在 L=255 处没有色度渲染空间） ----
+# 门限参数与移动端 core white_rescue.dart 同公式（白 rescue 标记 0/1/2）。
+_RESCUE_DL = 16.0        # L 压低上限（字节）; 255→239 ≈ Lab 93.7, 淡色足够
+_RESCUE_GATE_W = 18.0    # c1 - c0: smoothstep 全程宽度
+
+
+def _white_rescue_marks(l_u8: np.ndarray) -> np.ndarray | None:
+    """白色前景救援标记: 0=非近白 1=纸白(连通边缘) 2=封闭近白(救援候选)。
+
+    近白(L≥234, 与纸白 smoothstep 起点一致)四邻接连通域——接触图像边缘的
+    是纸白; 被墨线包围的是白发/白衣/画格内背景等白色前景, 它们模型有输出
+    色度, 但收尾端 ①中和清色度 ②原稿 L=255(Lab L=100) 处色域映射必然收缩
+    成纯白, 两道关卡都吃掉颜色。极端图（近白占比 <0.2% 或全白）不救援。
+    """
+    near = l_u8 >= 234
+    n_near = int(near.sum())
+    if n_near < l_u8.size * 0.002 or n_near >= l_u8.size:
+        return None
+    marks = near.astype(np.uint8)  # 1 = 近白, 先全部按纸白处理
+    num, labels = cv2.connectedComponents(near.astype(np.uint8), connectivity=4)
+    border_ids = np.unique(np.concatenate(
+        [labels[0], labels[-1], labels[:, 0], labels[:, -1]]))
+    border_ids = border_ids[border_ids != 0]
+    paper = np.isin(labels, border_ids)
+    marks[near & ~paper] = 2
+    return marks
+
+
+def _with_rescue(l_u8: np.ndarray, ab: np.ndarray, opt: dict) -> dict:
+    """给收尾参数注入白色前景救援项（无救援候选时原样返回 opt）。
+
+    门限自适应: 纸白像素的色度中位数即模型暖偏（实测 ~3.4, 增益前测量所以
+    与方案无关）, c0 = clamp(bias+1.5, 4.5, 8)。扫描黑边会把页边距切成
+    「封闭」, 误判的纸白色度停在暖偏量级、远低于门限, 不会被染色。
+    色度中位数用 0.5 Lab 步进的直方图取（与移动端 whiteRescueC0 同公式）。
+    """
+    marks = _white_rescue_marks(l_u8)
+    if marks is None or not (marks == 2).any():
+        return opt
+    c = np.hypot(ab[..., 0] - 128.0, ab[..., 1] - 128.0)
+    paper_c = c[marks == 1]
+    if paper_c.size:
+        bins = np.bincount(np.minimum((paper_c * 2.0).astype(np.int32), 511),
+                           minlength=512)
+        median2 = int(np.searchsorted(np.cumsum(bins), (paper_c.size + 1) // 2))
+        bias = min(median2, 511) / 2.0
+    else:
+        bias = 3.4  # 无纸白参考时的模型暖偏常数
+    c0 = min(8.0, max(4.5, bias + 1.5))
+    return dict(opt, rescue_mask=(marks == 2), rescue_c0=c0, rescue_c1=c0 + _RESCUE_GATE_W,
+                rescue_dl=_RESCUE_DL)
+
+
 def _finish_bgr(l_u8: np.ndarray, ab: np.ndarray, opt: dict | None = None) -> np.ndarray:
     """色彩收尾 v2: 原稿明度 L + 浮点 a/b（cv2 8bit 约定, +128 偏置）→ BGR uint8。
 
     opt 缺省 = 平增益(gain=1)的纯色域映射（与旧 gain=1 语义一致）。
 
     与 cv2.cvtColor(LAB2BGR) 的差别, 按作用次序:
+      0. 白色前景救援（opt['rescue_mask']）: 封闭近白区域（_with_rescue 判定）
+         的 a/b 不吃纸白中和, 且 L 按 keep 压低（keep = smoothstep(c0,c1,C)·
+         smoothstep(244,252,L_byte), C 取增益前的模型色度——门限与方案无关;
+         dl 上限 opt['rescue_dl']）, 给色度让出渲染空间。纸白（连通边缘）不
+         在掩码内, 行为与无救援完全一致。
       1. 纸白中和（opt['neutral_paper']）: 原稿 L 234→248 smoothstep, 近白像素
          的 a/b 收向中性——模型对纸白有系统性暖偏（实测 b≈+3.4, 与推理分辨率
          无关）, 是「偏黄」的主因; 用户显式色路径用 flat opt 关闭。
@@ -429,6 +490,10 @@ def _finish_bgr(l_u8: np.ndarray, ab: np.ndarray, opt: dict | None = None) -> np
     warmth_c0 = float(o.get('warmth_c0', 16.0))
     tone = o.get('paper_tone')
     tone_s = float(o.get('paper_tone_strength', 0.0)) if tone else 0.0
+    rescue = o.get('rescue_mask')
+    r_c0 = float(o.get('rescue_c0', 5.0))
+    r_c1 = float(o.get('rescue_c1', 20.0))
+    r_dl = float(o.get('rescue_dl', 16.0))
     h, w = l_u8.shape
     out = np.empty((h, w, 3), dtype=np.uint8)
     lut = _gamma_lut()
@@ -440,8 +505,16 @@ def _finish_bgr(l_u8: np.ndarray, ab: np.ndarray, opt: dict | None = None) -> np
         L = l_byte * (100.0 / 255.0)
         a = ab[y0:y1, :, 0] - 128.0
         b = ab[y0:y1, :, 1] - 128.0
+        keep = None
+        if rescue is not None:
+            m = rescue[y0:y1]
+            if m.any():
+                keep = _smoothstep(r_c0, r_c1, np.sqrt(a * a + b * b)) \
+                    * _smoothstep(244.0, 252.0, l_byte) * m
         if neutral:
             t_paper = _smoothstep(234.0, 248.0, l_byte)
+            if keep is not None:
+                t_paper = t_paper * (1.0 - keep)
             a *= (1.0 - t_paper)
             b *= (1.0 - t_paper)
         if knee > 0.0:
@@ -457,6 +530,8 @@ def _finish_bgr(l_u8: np.ndarray, ab: np.ndarray, opt: dict | None = None) -> np
             wt = C / (C + warmth_c0)
             a = a + warmth[0] * wt
             b = b + warmth[1] * wt
+        if keep is not None:
+            L = (l_byte - r_dl * keep) * (100.0 / 255.0)
         fy = (L + 16.0) / 116.0
         fx = fy + a * (1.0 / 500.0)
         fz = fy - b * (1.0 / 200.0)
@@ -580,7 +655,8 @@ def colorize_tiled(gray: np.ndarray, opt: dict, tile: int = 1024, overlap: int =
     ab = np.empty((h, w, 2), dtype=np.float32)
     ab[..., 0] = chroma[..., 0] / weight
     ab[..., 1] = chroma[..., 1] / weight
-    return _finish_bgr(cv2.cvtColor(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), cv2.COLOR_BGR2LAB)[..., 0], ab, opt)
+    lab_l = cv2.cvtColor(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), cv2.COLOR_BGR2LAB)[..., 0]
+    return _finish_bgr(lab_l, ab, _with_rescue(lab_l, ab, opt))
 
 
 def colorize(gray: np.ndarray, opt: dict) -> np.ndarray:
@@ -591,7 +667,8 @@ def colorize(gray: np.ndarray, opt: dict) -> np.ndarray:
     # 模型输出 RGB；OpenCV 编码要求 BGR。不能在错误的通道空间回写亮度。
     lab_c = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB)
     lab_l = cv2.cvtColor(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), cv2.COLOR_BGR2LAB)[..., 0]
-    return _finish_bgr(lab_l, lab_c[..., 1:].astype(np.float32), opt)
+    ab = lab_c[..., 1:].astype(np.float32)
+    return _finish_bgr(lab_l, ab, _with_rescue(lab_l, ab, opt))
 
 
 app = FastAPI(title='Manga Colorizer · Community Preview', version='0.4.0')
@@ -899,10 +976,15 @@ def _process_hints(data: bytes, hints_raw: str, source_name: str = 'image.png') 
         chroma_mag = np.sqrt(lab_h[..., 1] ** 2 + lab_h[..., 2] ** 2)
         auto_mag = np.sqrt(lab_a[..., 1] ** 2 + lab_a[..., 2] ** 2)
         mask = (chroma_mag > 6) & (chroma_mag > auto_mag * 0.5)
+        ab = np.where(mask[..., None], lab_h[..., 1:3], lab_o[..., 1:3]).astype(np.float32)
         # 收尾只做色域映射、不再施加增益: 模型底色在 colorize() 内已增益过
         # 一次，用户提示色是显式选定的颜色，二次放大只会过饱和。
-        ab = np.where(mask[..., None], lab_h[..., 1:3], lab_o[..., 1:3]).astype(np.float32)
-        out = _finish_bgr(lab_o[..., 0].astype(np.uint8), ab)
+        # 白色前景救援同样适用（提示点落在白发/白衣等封闭近白区时, 不压缩 L
+        # 提示色不可见; 门限 c0 用提示融合后的色度估计——纸白处无提示色时
+        # 偏低, 对高饱和提示色无影响）。
+        lab_l_hint = lab_o[..., 0].astype(np.uint8)
+        out = _finish_bgr(lab_l_hint, ab,
+                          _with_rescue(lab_l_hint, ab, dict(_FLAT_FINISH)))
         resp = _encode_png(out)
         _persist_gallery(resp, bgr, source_name=source_name, mode='hints', t0=t0, suffix='_hints.png')
         return resp

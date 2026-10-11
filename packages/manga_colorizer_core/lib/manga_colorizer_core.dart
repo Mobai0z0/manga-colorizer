@@ -23,4 +23,5 @@ export 'src/skin.dart';
 export 'src/tiling.dart';
 export 'src/tint.dart';
 export 'src/transfer.dart';
+export 'src/white_rescue.dart';
 export 'src/yuv.dart';

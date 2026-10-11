@@ -2,7 +2,7 @@
 
 用法: ..\\.venv\\Scripts\\python.exe tool/colorizer_service/quality_check.py
 
-断言八件事:
+断言九件事:
   1. 色域内像素与 cv2 LAB2BGR 逐值差 ≤1（平增益收尾时是无损替代）;
   2. 超色域像素的输出色相偏移 <2.5°（旧逐通道截断可偏 30°+，是发灰发闷主因）;
   3. 亮度严格保持（色域映射前后 L 差 ≤1，8bit 量化容差）;
@@ -10,7 +10,8 @@
   5. 极暗像素不被色度"提亮"成彩黑色（L=0 时旧路径会输出 ~RGB(103,0,0)）;
   6. 纸白中和: 近白像素的暖偏被定点去除（偏黄修复）;
   7. L=100 纯白 + 任意色度输出纯白（t≥0 钳制后无负系数外推）;
-  8. 参考图迁移: 亮度保真 + 纸白保护 + strength=0 恒等。
+  8. 参考图迁移: 亮度保真 + 纸白保护 + strength=0 恒等;
+  9. 白色前景救援: 封闭近白吃到模型色度（L 压低）, 纸白保持纯白。
 """
 import math
 import os
@@ -157,10 +158,17 @@ def test_colorize_wiring():
         service.colorize_single = orig
     assert out.shape == (48, 64, 3) and out.dtype == np.uint8
     # 亮度保真: 输出 L == 原稿灰度的 L（±2 = 8bit BGR 量化回环 Lab 的地板;
-    # 随机域外色度映射后 L 线性严格保持, 误差只来自量化）
+    # 随机域外色度映射后 L 线性严格保持, 误差只来自量化）。白色前景救援像素
+    # 除外——救援按设计压低封闭近白区的 L 给色度让位。
     l_out = cv2.cvtColor(out, cv2.COLOR_BGR2LAB)[..., 0]
     l_ref = cv2.cvtColor(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), cv2.COLOR_BGR2LAB)[..., 0]
-    assert np.abs(l_out.astype(int) - l_ref.astype(int)).max() <= 2, 'L 未保真'
+    marks = service._white_rescue_marks(l_ref)
+    exempt = (marks == 2) if marks is not None else np.zeros(gray.shape, bool)
+    diff = np.abs(l_out.astype(int) - l_ref.astype(int))
+    assert diff[~exempt].max() <= 2, 'L 未保真'
+    if exempt.any():
+        assert diff[exempt].max() >= 3 or (l_ref[exempt] < 244).all(), \
+            '救援像素既未压低 L 也不在无需压低的亮度'
     # 增益生效: 标准方案输出色度高于平增益收尾
     lab_stub = cv2.cvtColor(rgb_stub, cv2.COLOR_RGB2LAB)
     ab = lab_stub[..., 1:].astype(np.float32)
@@ -168,6 +176,39 @@ def test_colorize_wiring():
     c = lambda im: float(np.hypot(cv2.cvtColor(im, cv2.COLOR_BGR2LAB)[..., 1].astype(float) - 128,
                                  cv2.cvtColor(im, cv2.COLOR_BGR2LAB)[..., 2].astype(float) - 128).mean())
     assert c(out) > c(out_g1), 'colorize() 输出色度未高于平增益基线'
+
+
+def test_white_rescue():
+    """白色前景救援: 封闭近白吃到模型色度（L 压低）, 纸白保持纯白。"""
+    # 24×24 全纸白, 中央 8×8 纯白块被墨线框住（封闭 → 救援候选）,
+    # 全图 b=+25（模拟模型对白色前景的显性配色; 平收尾下 L=100 处必然纯白）
+    gray = np.full((24, 24), 255, np.uint8)
+    gray[7, 7:17] = 0
+    gray[16, 7:17] = 0
+    gray[7:17, 7] = 0
+    gray[7:17, 16] = 0
+    l_ref = cv2.cvtColor(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), cv2.COLOR_BGR2LAB)[..., 0]
+    ab = np.full((24, 24, 2), 128.0, np.float32)
+    ab[..., 1] = 128.0 + 25.0
+    marks = service._white_rescue_marks(l_ref)
+    assert marks is not None and (marks == 2).sum() == 64, \
+        f'封闭近白识别错误: {(marks == 2).sum()}'
+    assert (marks[0:4, 0:4] == 1).all(), '贴边纸白应标记为纸白'
+    # 无救援: 封闭块输出纯白（L=100 色域收缩）; 有救援: 吃到黄色
+    opt = service._with_rescue(l_ref, ab, dict(service._FLAT_FINISH))
+    assert 'rescue_mask' in opt, '救援参数未注入'
+    out = service._finish_bgr(l_ref, ab, opt)
+    lab_out = cv2.cvtColor(out, cv2.COLOR_BGR2LAB).astype(np.float64)
+    b_in = lab_out[10:14, 10:14, 2].mean() - 128.0
+    assert b_in > 8.0, f'封闭近白没有被上色: b={b_in:.1f}'
+    l_in = lab_out[10:14, 10:14, 0].mean()
+    assert l_in < 253.0, f'救援未压低 L: {l_in:.1f}'
+    spread = out[0:4, 0:4].astype(int).max(axis=-1) - out[0:4, 0:4].astype(int).min(axis=-1)
+    assert spread.max() <= 2, f'贴边纸白被染色: spread={spread.max()}'
+    # 无救援 opt 时封闭块仍是纯白（向后兼容路径）
+    out0 = service._finish_bgr(l_ref, ab, dict(service._FLAT_FINISH))
+    spread0 = out0[10:14, 10:14].astype(int).max(axis=-1) - out0[10:14, 10:14].astype(int).min(axis=-1)
+    assert spread0.max() <= 2, '无救援参数时行为应与旧版一致（纯白）'
 
 
 def test_reference_transfer():
@@ -199,7 +240,7 @@ if __name__ == '__main__':
              test_knee_boosts_chroma, test_gain_leaves_neutral_unchanged,
              test_black_not_tinted, test_paper_neutralization,
              test_pure_white_no_negative_extrapolation, test_colorize_wiring,
-             test_reference_transfer]
+             test_reference_transfer, test_white_rescue]
     for t in tests:
         t()
         print(f'PASS {t.__name__}')

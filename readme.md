@@ -21,7 +21,8 @@ a deterministic pure-Dart implementation.
 - **Reference image** — transfer the overall tone of any colored image onto the page (Reinhard / histogram matching, strength control, paper-white protection; also available model-free in the Android app)
 - **Batch queue** — up to 32 pages per run; a single failure never blocks the rest
 - **Long pages** — automatic tiled inference above 1024px (256px overlap, linear feathering)
-- **Luminance fidelity** — every mode writes only Lab a/b chroma; L always comes from the original page
+- **Luminance fidelity** — every mode writes only Lab a/b chroma; L always comes from the original page (sole exception: enclosed near-white foreground like white hair gets a small chroma-proportional L dip — at paper-white L there is no room for chroma to render)
+- **White-foreground rescue** — white regions enclosed by ink (white hair, clothes, in-panel backgrounds) keep the model's intended colors; paper white connected to the page edge stays pure white
 - **GPU acceleration** — DirectML first on Windows (any DX12 GPU), CUDA on NVIDIA, automatic CPU fallback
 
 ### Repository layout (monorepo)
@@ -124,7 +125,8 @@ with the repo; downloaded by the app or the user separately
 - **参考图** — 上传任意彩图，提取整体色调迁移到原稿（Reinhard / 直方图两种算法 + 强度，纸白保护；Android 端另有免模型参考图调色）
 - **批量队列** — 一次最多 32 张，逐个处理，单张失败不阻断
 - **长图** — >1024px 自动分块推理（overlap 256 + 线性羽化融合），整页漫画无下采样损失
-- **亮度保真** — 所有模式只写 Lab a/b 色度，L 通道始终回写原稿
+- **亮度保真** — 所有模式只写 Lab a/b 色度，L 通道始终回写原稿（唯一例外：白发等被墨线包围的封闭近白区按色度小幅压低 L——纸白亮度处色度没有渲染空间）
+- **白色前景救援** — 被墨线包围的白色区域（白发、白衣、画格内背景）保留模型配色；连通页边的纸白保持纯白
 - **GPU 自动加速** — Windows 优先 DirectML（任意 DX12 显卡），NVIDIA 可用 CUDA，无 GPU 自动回退 CPU
 
 ### 仓库结构（monorepo）

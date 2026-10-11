@@ -3,9 +3,11 @@
 //     INTER_CUBIC 放大回原尺寸后直取 a/b，**不做羽化归一**；L 恒取原稿。
 //   · 多块 ＝ colorize_tiled（service.py:375-398）：tile=infer / overlap 重叠，
 //     每块独立 缩 infer² → SAM+generator → 只羽化融合 a/b 色度；L 恒取原稿。
-//   · 输出端色彩收尾 v2（两端同数学）：labToRgbFinish = 纸白中和（去模型
-//     纸白暖偏——「偏黄」主因）→ 自适应软膝增益（弱色多提强色少提——「偏灰」
-//     主因）→ 方案色温 → 色域映射（亮度不变等比收缩替代逐通道截断）。
+//   · 输出端色彩收尾 v2（两端同数学）：labToRgbFinish = 白色前景救援（封闭
+//     近白区域跳过中和并按色度压低 L，见 core white_rescue.dart；L 压低是
+//     「L 恒取原稿」的唯一例外——L=255 处色度没有渲染空间）→ 纸白中和（去
+//     模型纸白暖偏——「偏黄」主因）→ 自适应软膝增益（弱色多提强色少提——
+//     「偏灰」主因）→ 方案色温 → 色域映射（亮度不变等比收缩替代逐通道截断）。
 //     方案表 kFinishSchemes 与桌面 FINISH_SCHEMES 同表（默认 standard，
 //     桌面 COLORIZER_CHROMA_GAIN 环境变量可覆写 standard 增益）。已知微小
 //     偏差：桌面 tiled 路径全程浮点直达收尾，本端在 8bit a/b 量化后收尾
@@ -56,9 +58,18 @@ Future<Uint8List?> autoColorize({
     onLog: onLog,
   );
   if (outLab == null) return null;
-  // 色彩收尾 v2：纸白中和（去偏黄）→ 自适应软膝增益（去偏灰）→ 方案色温 →
-  // 色域映射，语义对拍桌面 _finish_bgr（金样 finish_golden.json ±1）。
-  return labToRgbFinish(outLab, n, fin);
+  // 白色前景救援: 封闭近白区域（白发/白衣/画格内背景）在 L=255 处没有色度
+  // 渲染空间, 收尾对这些像素跳过纸白中和并按色度压低 L（与桌面 `_with_rescue`
+  // 同公式）。放在推理返回之后计算——BFS 的临时缓冲（visited/queue ~20MB）
+  // 不与块累加缓冲（~50MB）叠峰; marks（4B/px n≈4.2MP 时 4MB）活到收尾。
+  final rescueMarks = whiteRescueMarks(gray, width, height);
+  final rescueC0 = whiteRescueC0(outLab, rescueMarks, n);
+  // 色彩收尾 v2：白色前景救援 → 纸白中和（去偏黄）→ 自适应软膝增益（去偏灰）
+  // → 方案色温 → 色域映射，语义对拍桌面 _finish_bgr（金样 finish_golden.json ±1）。
+  return labToRgbFinish(outLab, n, fin,
+      rescue: rescueMarks,
+      rescueC0: rescueC0,
+      rescueC1: rescueC0 + kRescueGateWidth);
 }
 
 /// 逐块推理并把 a/b 色度加权累加进整页 Lab（L 由原稿灰度直取，见

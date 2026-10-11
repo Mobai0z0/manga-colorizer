@@ -1,6 +1,7 @@
-// 色彩收尾 v2（两端同数学的 Dart 侧）：纸白中和 → 自适应色度 → 方案色温 →
-// 色域映射 →（可选）纸色渲染。桌面镜像实现在 tool/colorizer_service/service.py
-// `_finish_bgr`，改任何一侧必须同步另一侧并重新生成金样（test/goldens/）。
+// 色彩收尾 v2（两端同数学的 Dart 侧）：白色前景救援 → 纸白中和 → 自适应色度 →
+// 方案色温 → 色域映射 →（可选）纸色渲染。桌面镜像实现在
+// tool/colorizer_service/service.py `_finish_bgr`（救援掩码/门限在 `_with_rescue`/
+// `_white_rescue_marks`），改任何一侧必须同步另一侧并重新生成金样（test/goldens/）。
 //
 // 背景取证（2026-10-10，样张 + 模型实测）：
 //   · 偏黄——模型对近白区域有系统性暖偏（纸白 a≈+0.4、b≈+3.4，与推理分辨率
@@ -8,7 +9,10 @@
 //   · 偏灰——模型色度普遍偏低（中间调色度 ~6.6），且平坦增益会把已经鲜艳的
 //   · 强色一起放大造成过饱和；自适应膝点（弱色全增益、强色趋缓）两全；
 //   · L=255 纯白在色域映射下必然输出纯白（任何 a/b 都超域被收缩），因此
-//     「昭和复古」的暖纸改为映射后的 RGB 空间纸色渲染才可见。
+//     「昭和复古」的暖纸改为映射后的 RGB 空间纸色渲染才可见；同理，白色
+//     前景（白发/白衣/画格内背景等封闭近白区）的模型色也被抹掉——白色前景
+//     救援（rescue，2026-10-11）对这些像素跳过中和并按色度压低 L 让出渲染
+//     空间，掩码/门限由 white_rescue.dart 判定（纸白不参与，行为不变）。
 import 'dart:math' as math;
 import 'dart:typed_data';
 
@@ -98,19 +102,33 @@ double _smoothstep01(double e0, double e1, double x) {
 /// 色彩收尾 v2：8bit Lab（n*3，L 恒取原稿）→ RGB（n*3）。
 ///
 /// [lab] 的 L 字节同时充当「源稿亮度」用于纸白判定；a/b 为 +128 偏置。
-/// 数学次序：①纸白中和 → ②自适应色度 → ③方案色温 → ④色域映射（t 钳 ≥0，
-/// 修 L=100 处 Y>1 的负系数退化）→ ⑤纸色渲染。与桌面 `_finish_bgr` 同数学，
-/// 金样对拍容差 ±1（8bit 查表/舍入路径差异，既有约定）。
-Uint8List labToRgbFinish(Uint8List lab, int n, FinishOptions o) {
+/// [rescue] 非空时为白色前景救援掩码（whiteRescueMarks 的 0/1/2，值 2 生效）：
+/// 这些像素 ①纸白中和按 keep 渐退 ②L 压低 [rescueDl]·keep——keep =
+/// smoothstep([rescueC0],[rescueC1],C)·smoothstep(244,252,L字节)，C 取增益前
+/// 的模型色度（门限与方案无关）。rescue 为 null 时与旧版逐值一致。
+/// 数学次序：⓪白色前景救援 → ①纸白中和 → ②自适应色度 → ③方案色温 →
+/// ④色域映射（t 钳 ≥0，修 L=100 处 Y>1 的负系数退化）→ ⑤纸色渲染。
+/// 与桌面 `_finish_bgr` 同数学，金样对拍容差 ±1（8bit 查表/舍入路径差异，
+/// 既有约定）。
+Uint8List labToRgbFinish(Uint8List lab, int n, FinishOptions o,
+    {Uint8List? rescue,
+    double rescueC0 = 5.0,
+    double rescueC1 = 20.0,
+    double rescueDl = 16.0}) {
   final out = Uint8List(n * 3);
   final hasTone = o.paperToneR != null && o.paperToneStrength > 0.0;
   for (var i = 0; i < n; i++) {
     final lByte = lab[i * 3].toDouble();
     var a = lab[i * 3 + 1] - 128.0;
     var b = lab[i * 3 + 2] - 128.0;
+    var keep = 0.0;
+    if (rescue != null && rescue[i] != 0) {
+      keep = _smoothstep01(rescueC0, rescueC1, math.sqrt(a * a + b * b)) *
+          _smoothstep01(244.0, 252.0, lByte);
+    }
     var paperT = 0.0;
     if (o.neutralPaper) {
-      paperT = _smoothstep01(234.0, 248.0, lByte);
+      paperT = _smoothstep01(234.0, 248.0, lByte) * (1.0 - keep);
       a *= 1.0 - paperT;
       b *= 1.0 - paperT;
     }
@@ -127,7 +145,7 @@ Uint8List labToRgbFinish(Uint8List lab, int n, FinishOptions o) {
       a += o.warmthA * wt;
       b += o.warmthB * wt;
     }
-    final l = lByte / 255.0 * 100.0;
+    final l = (lByte - rescueDl * keep) / 255.0 * 100.0;
     final fy = (l + 16) / 116, fx = fy + a / 500, fz = fy - b / 200;
     final x = _invLab(fx) * 0.950456,
         y = l > 8 ? fy * fy * fy : l / 903.3,

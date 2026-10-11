@@ -5,9 +5,11 @@ Dart 端 `labToRgbFinish` / `transferReference` 的期望值，锁死两端同�
 输出: packages/manga_colorizer_core/test/goldens/finish_golden.json
       packages/manga_colorizer_core/test/goldens/transfer_golden.json
 
-finish 样本: 每方案（FINISH_SCHEMES 全表 + flat）各 2 路 × 512 像素:
+finish 样本: 每方案（FINISH_SCHEMES 全表 + flat + rescue）各 2 路 × 512 像素:
   rgb  — 随机 sRGB 原色经 cv2 RGB2LAB（色域内, 含边界量化噪声）;
   grid — L/a/b 全随机（大量真超域, 触发等比收缩与纸白中和路径）。
+rescue 用例额外带确定性掩码（每第 3 个像素）与固定门限参数（随 JSON 下发）,
+锁白色前景救援「跳过纸白中和 + 按色度压低 L」路径两端同数学。
 
 transfer 样本: 确定性合成 原稿(大面积纸白+墨迹渐变) × 参考图(彩色渐变),
 reinhard/histogram × strength {1.0, 0.6}。
@@ -43,17 +45,32 @@ def gen_finish() -> None:
     data = {}
     cases = {name: service._resolve_finish(name) for name in service.FINISH_SCHEMES}
     cases['flat'] = dict(service._FLAT_FINISH)
+    # 白色前景救援用例: 固定门限参数 + 确定性掩码（标准方案基底）
+    cases['rescue'] = dict(service._resolve_finish('standard'),
+                           rescue_c0=5.0, rescue_c1=23.0, rescue_dl=16.0)
     for name, opt in cases.items():
-        l_all, ab_all, bgr_all = [], [], []
+        l_all, ab_all, bgr_all, mask_all = [], [], [], []
         for mode in ('rgb', 'grid'):
             lab = sample(mode, 512)
+            mask = None
+            call_opt = opt
+            if name == 'rescue':
+                mask = (np.arange(512) % 3 == 0).astype(np.uint8)
+                call_opt = dict(opt, rescue_mask=mask.reshape(1, -1).astype(bool))
             bgr = service._finish_bgr(lab[:, 0].reshape(1, -1),
                                       lab[:, 1:].astype(np.float32).reshape(1, -1, 2),
-                                      opt)[0]
+                                      call_opt)[0]
             l_all.extend(int(v) for v in lab[:, 0])
             ab_all.extend([[float(a), float(b)] for a, b in lab[:, 1:]])
             bgr_all.extend([list(map(int, row)) for row in bgr])
+            if mask is not None:
+                mask_all.extend(int(v) for v in mask)
         data[name] = {'l': l_all, 'ab': ab_all, 'bgr': bgr_all}
+        if mask_all:
+            data[name]['mask'] = mask_all
+            data[name]['rescue_c0'] = opt['rescue_c0']
+            data[name]['rescue_c1'] = opt['rescue_c1']
+            data[name]['rescue_dl'] = opt['rescue_dl']
     out = GOLDENS / 'finish_golden.json'
     out.write_text(json.dumps(data), encoding='utf-8')
     print(f'written {out} ({len(cases)} schemes x 1024 pixels)')

@@ -1,5 +1,5 @@
 /* Manga Colorizer 前端逻辑（唯一脚本，供 index.html 使用）：
-   导航 / 服务与设备状态 / 批量队列 / 提示点画布编辑 / 参考图 / 图库台账 / 控制台日志 / 设置持久化。
+   导航 / 服务与设备状态 / 批量队列（拖拽排序、单条移除）/ 提示点画布编辑 / 参考图 / 图库台账 / 控制台日志 / 设置持久化。
    后端接口见 tool/colorizer_service/service.py。 */
 (() => {
   'use strict';
@@ -135,6 +135,7 @@
         row.className = 'q-item';
         const th = document.createElement('img');
         th.className = 'q-thumb'; th.alt = '';
+        th.draggable = false; // 让拖拽作用于行排序, 而不是触发浏览器默认的图片拖拽
         it.thumbUrl = it.thumbUrl || URL.createObjectURL(it.file);
         th.src = it.thumbUrl;
         const nm = document.createElement('span');
@@ -142,26 +143,97 @@
         nm.textContent = it.file.name;
         const st = document.createElement('span');
         st.className = 'q-st';
-        row.append(th, nm, st);
-        row.addEventListener('click', () => selectItem(it));
+        const del = document.createElement('button');
+        del.className = 'q-del';
+        del.type = 'button';
+        del.textContent = '×';
+        del.title = '从队列移除';
+        del.setAttribute('aria-label', '移除 ' + it.file.name);
+        del.addEventListener('click', (e) => { e.stopPropagation(); removeItem(it); });
+        // Enter/Space 已由按钮本身处理, 不再冒泡到行（避免同时触发选中）
+        del.addEventListener('keydown', (e) => e.stopPropagation());
+        row.append(th, nm, st, del);
         row.tabIndex = 0;
         row.setAttribute('role', 'button');
+        row.addEventListener('click', () => selectItem(it));
         row.addEventListener('keydown', (e) => {
           if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectItem(it); }
         });
-        it.row = row; it.nameEl = nm; it.statusEl = st;
+        attachDragHandlers(row, it);
+        it.row = row; it.nameEl = nm; it.statusEl = st; it.delEl = del;
         box.appendChild(row);
       }
       it.row.className = 'q-item is-' + it.status + (selected === it ? ' is-sel' : '');
+      it.row.draggable = !running;
+      it.delEl.disabled = running;
       it.statusEl.textContent = { wait: '等待', run: '处理中', ok: '完成', fail: '失败' }[it.status] || it.status;
       it.nameEl.title = it.file.name + ' · ' + (it.file.size / 1048576).toFixed(1) + 'MB'
         + (it.hints.length ? ' · ' + it.hints.length + ' 个提示点' : '')
         + (it.error ? ' · ' + it.error : '');
     }
+    // 行按队列当前顺序重排（appendChild 移动已有节点, 不重建、不重新解码缩略图）
+    for (const it of queue) box.appendChild(it.row);
     $('q-count').textContent = queue.length + ' 项';
     $('btn-run').disabled = running || queue.length === 0;
     $('btn-cancel').disabled = !running;
     $('btn-clear').disabled = running || queue.length === 0;
+  }
+
+  function removeItem(it) {
+    if (running) return;
+    const i = queue.indexOf(it);
+    if (i < 0) return;
+    queue.splice(i, 1);
+    if (it.row) { it.row.remove(); it.row = null; }
+    if (it.thumbUrl) URL.revokeObjectURL(it.thumbUrl);
+    if (selected === it) { selected = null; syncHintCanvas(); }
+    renderQueue();
+  }
+
+  /* 行拖拽排序：HTML5 DnD，行中点判定插入到目标之前/之后 */
+  let dragItem = null;
+  function clearDropMarkers() {
+    document.querySelectorAll('.q-item.drop-above, .q-item.drop-below')
+      .forEach((r) => r.classList.remove('drop-above', 'drop-below'));
+  }
+  function attachDragHandlers(row, it) {
+    row.addEventListener('dragstart', (e) => {
+      if (running) { e.preventDefault(); return; }
+      dragItem = it;
+      row.classList.add('is-dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', it.file.name);
+    });
+    row.addEventListener('dragend', () => {
+      dragItem = null;
+      row.classList.remove('is-dragging');
+      clearDropMarkers();
+    });
+    row.addEventListener('dragover', (e) => {
+      if (!dragItem || dragItem === it) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      const rect = row.getBoundingClientRect();
+      const before = e.clientY < rect.top + rect.height / 2;
+      row.classList.toggle('drop-above', before);
+      row.classList.toggle('drop-below', !before);
+    });
+    row.addEventListener('dragleave', () => row.classList.remove('drop-above', 'drop-below'));
+    row.addEventListener('drop', (e) => {
+      if (!dragItem || dragItem === it) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = row.getBoundingClientRect();
+      moveItem(dragItem, it, e.clientY < rect.top + rect.height / 2);
+    });
+  }
+  function moveItem(drag, over, before) {
+    const from = queue.indexOf(drag), to = queue.indexOf(over);
+    if (from < 0 || to < 0) return;
+    queue.splice(from, 1);
+    // 摘除后目标索引前移一位（from < to 时）
+    queue.splice(from < to ? (before ? to - 1 : to) : (before ? to : to + 1), 0, drag);
+    renderQueue();
   }
 
   $('btn-clear').addEventListener('click', () => {
