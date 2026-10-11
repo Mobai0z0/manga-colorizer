@@ -9,12 +9,15 @@ import 'package:flutter/foundation.dart';
 
 import 'app_theme.dart';
 import 'onnx/weights.dart';
+import 'package:manga_colorizer_core/manga_colorizer_core.dart'
+    show isValidFinishScheme, kDefaultFinishScheme;
 
 class AppSettings {
   const AppSettings({
     this.downloadSource = DownloadSource.auto,
     this.themeMode = AppThemeMode.system,
     this.themePreset = ThemePreset.dynamic,
+    this.colorScheme = kDefaultFinishScheme,
   });
 
   /// 权重下载源，见 [DownloadSource]。默认自动（主站优先、失败回退镜像）。
@@ -26,6 +29,9 @@ class AppSettings {
   /// 配色预设，默认墨绿。
   final ThemePreset themePreset;
 
+  /// 全自动色彩收尾方案 id（kFinishSchemes 的 key），默认 standard。
+  final String colorScheme;
+
   static const _fileName = 'settings.json';
 
   static AppSettings defaults() => const AppSettings();
@@ -34,26 +40,31 @@ class AppSettings {
   bool operator ==(Object other) => other is AppSettings &&
       other.downloadSource == downloadSource &&
       other.themeMode == themeMode &&
-      other.themePreset == themePreset;
+      other.themePreset == themePreset &&
+      other.colorScheme == colorScheme;
 
   @override
-  int get hashCode => Object.hash(downloadSource, themeMode, themePreset);
+  int get hashCode =>
+      Object.hash(downloadSource, themeMode, themePreset, colorScheme);
 
   AppSettings copyWith({
     DownloadSource? downloadSource,
     AppThemeMode? themeMode,
     ThemePreset? themePreset,
+    String? colorScheme,
   }) =>
       AppSettings(
         downloadSource: downloadSource ?? this.downloadSource,
         themeMode: themeMode ?? this.themeMode,
         themePreset: themePreset ?? this.themePreset,
+        colorScheme: colorScheme ?? this.colorScheme,
       );
 
   Map<String, Object?> toJson() => {
         'downloadSource': downloadSource.name,
         'themeMode': themeMode.name,
         'themePreset': themePreset.name,
+        'colorScheme': colorScheme,
       };
 
   factory AppSettings.fromJson(Map<String, Object?> json) => AppSettings(
@@ -63,7 +74,12 @@ class AppSettings {
             _enumFrom(json['themeMode'], AppThemeMode.values, AppThemeMode.system),
         themePreset: _enumFrom(
             json['themePreset'], ThemePreset.values, ThemePreset.dynamic),
+        colorScheme: _schemeFrom(json['colorScheme']),
       );
+
+  /// 方案 id 白名单校验：未知值（旧版本/损坏）回退默认。
+  static String _schemeFrom(Object? raw) =>
+      raw is String && isValidFinishScheme(raw) ? raw : kDefaultFinishScheme;
 
   static T _enumFrom<T extends Enum>(
       Object? raw, List<T> values, T fallback) {

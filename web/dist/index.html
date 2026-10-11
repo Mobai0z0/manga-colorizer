@@ -123,6 +123,18 @@
             <label class="seg"><input type="radio" name="mode" value="reference"><span>参考图</span></label>
           </div>
         </div>
+        <div class="set-row" id="scheme-row" hidden>
+          <span class="set-label">色彩方案</span>
+          <div class="ref-picker">
+            <select id="scheme-select" aria-label="色彩方案" class="set-select">
+              <option value="standard">标准（修复偏黄偏灰）</option>
+              <option value="vivid-cel">鲜明赛璐璐</option>
+              <option value="soft-pastel">柔和淡彩</option>
+              <option value="impasto">厚涂浓郁</option>
+              <option value="retro-showa">昭和复古</option>
+            </select>
+          </div>
+        </div>
         <div class="set-row" id="ref-row" hidden>
           <span class="set-label">参考图</span>
           <div class="ref-picker">
@@ -130,6 +142,16 @@
             <input type="file" id="ref-input" accept="image/png,image/jpeg,image/webp" hidden>
             <span class="ref-name" id="ref-name">未选择</span>
           </div>
+        </div>
+        <div class="set-row" id="ref-opt-row" hidden>
+          <span class="set-label">迁移选项</span>
+          <div class="seg-group" role="radiogroup" aria-label="迁移算法">
+            <label class="seg"><input type="radio" name="ref-method" value="reinhard"><span>氛围对齐</span></label>
+            <label class="seg"><input type="radio" name="ref-method" value="histogram"><span>分布对齐</span></label>
+          </div>
+          <span class="set-note">强度</span>
+          <input type="range" id="ref-strength" min="0" max="100" step="5" value="100" aria-label="迁移强度">
+          <span class="set-note" id="ref-strength-val">100%</span>
         </div>
         <div class="set-row">
           <span class="set-label">处理器</span>

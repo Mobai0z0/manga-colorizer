@@ -88,14 +88,15 @@ class _AutoScreenState extends State<AutoScreen> with WidgetsBindingObserver {
           required Uint8List sourcePng,
           required int width,
           required int height,
+          required String mode,
         }) {
-          widget.logs.info('auto', '全自动完成 $width×$height');
+          widget.logs.info('auto', '任务完成 $width×$height mode=$mode');
           unawaited(widget.gallery.add(
             resultPng: resultPng,
             sourcePng: sourcePng,
             width: width,
             height: height,
-            mode: 'auto',
+            mode: mode,
           ));
         },
       ),

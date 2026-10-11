@@ -11,6 +11,8 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:manga_colorizer_core/manga_colorizer_core.dart'
+    show finishOptionsFor, kDefaultFinishScheme;
 
 import '../mem_info.dart';
 import '../onnx/backend.dart';
@@ -118,6 +120,8 @@ class InferenceServerCore {
         backend: backend,
         infer: autoInfer,
         overlap: autoOverlap,
+        // 色彩收尾方案（job json 可选字段, 缺省 standard）
+        finish: finishOptionsFor((f.data['scheme'] as String?) ?? kDefaultFinishScheme),
         onProgress: (p) => send(
             Frame(FrameType.progress, jobId: f.jobId, data: {'p': p})),
         onLog: (line) {

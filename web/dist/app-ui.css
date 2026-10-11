@@ -172,3 +172,15 @@ input[type="file"][hidden] { display: none !important; }
 .rail-theme:hover { background: color-mix(in srgb, var(--md-sys-color-secondary-container) 50%, transparent); color: var(--md-sys-color-on-surface); }
 .rail-theme:active { transform: scale(.92); }
 .rail-theme:focus-visible { outline: 3px solid var(--md-sys-color-primary); outline-offset: 2px; }
+
+/* ---------- 色彩方案下拉与迁移强度滑杆 ---------- */
+.set-select {
+  font: inherit; font-size: .8rem; color: var(--md-sys-color-on-surface);
+  background: var(--md-sys-color-surface-container);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-sm);
+  padding: 8px 10px; cursor: pointer;
+}
+.set-select:focus-visible { outline: 3px solid var(--md-sys-color-primary); outline-offset: 1px; }
+#ref-strength { width: 140px; accent-color: var(--md-sys-color-primary); cursor: pointer; }
+#ref-opt-row .set-note { color: var(--md-sys-color-on-surface-variant); margin-left: 2px; }

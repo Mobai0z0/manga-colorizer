@@ -4,7 +4,8 @@
 //   工作 isolate 是新堆拿不到 LogBus 引用，只能走事件）|
 //   ['stopped']（优雅收尾 ack：dispose() 完成即回，然后 worker 退出）
 // 命令协议（main→worker）: ['dir', String, int threads, bool useArena] |
-//   ['job', Uint8List, int, int] | ['stop']
+//   ['job', Uint8List, int, int, String scheme] | ['stop']
+//   （job 的 scheme 第 5 位可选：色彩收尾方案 id，缺省 standard）
 // spawn 引导（main→worker 首条消息）: _WorkerBoot(RootIsolateToken, SendPort)——
 // worker 进口先 BackgroundIsolateBinaryMessenger.ensureInitialized，平台通道才可用。
 //
@@ -38,6 +39,9 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/services.dart'
     show BackgroundIsolateBinaryMessenger, RootIsolateToken;
+
+import 'package:manga_colorizer_core/manga_colorizer_core.dart'
+    show finishOptionsFor, kDefaultFinishScheme;
 
 import '../logs/log_bus.dart';
 import '../mem_info.dart';
@@ -232,6 +236,10 @@ Future<void> _runAutoWorker(ReceivePort rx, SendPort main) async {
         backend: backend,
         infer: autoInfer,
         overlap: autoOverlap,
+        // 色彩方案（可选第 5 位, 缺省 standard——兼容旧测试/旧消息）。
+        finish: m.length > 4 && m[4] is String
+            ? finishOptionsFor(m[4] as String)
+            : null,
         // stop 到达时做完当前块即收（管道在块间查此标志）。
         cancelled: () => stopRequested,
         onProgress: (p) => main.send(['progress', p]),
@@ -297,6 +305,7 @@ class AutoEngine {
   /// 字节，无额外拷贝；任务完结/拆机即清）。
   Uint8List? _pendingGray;
   int _pendingW = 0, _pendingH = 0;
+  String _pendingScheme = kDefaultFinishScheme;
 
   /// 优雅停止的宽限：覆盖「当前块跑完 + dispose()」。原生运行不可中断，真机
   /// 上一块可达 10–30s、load() 可达 10–20s，90s 已是宽裕上限；超时意味着
@@ -409,19 +418,20 @@ class AutoEngine {
   }
 
   Future<Uint8List?> colorize(Uint8List gray, int w, int h,
-      {void Function(double)? onProgress}) async {
+      {void Function(double)? onProgress,
+      String scheme = kDefaultFinishScheme}) async {
     // 保持 async：守卫错误以失败 Future 出现（调用方/测试按 await 或
     // expectLater(future, throwsA) 消费，同步抛出会破坏该契约）。
     if (!alive) throw StateError('先 ensureStarted');
     if (_job != null) throw StateError('并发 1：已有任务在跑');
     _reviveAttempt = 0; // 新的用户任务：死亡重试预算重置
-    return _sendJob(gray, w, h, onProgress: onProgress);
+    return _sendJob(gray, w, h, scheme: scheme, onProgress: onProgress);
   }
 
   /// 下发 job（colorize 与死亡自动重试共用）：重试路径**不得**重置重试预算，
   /// 否则「加载→推理→死亡」的确定性循环会无限复活。
   Future<Uint8List?> _sendJob(Uint8List gray, int w, int h,
-      {void Function(double)? onProgress}) {
+      {String scheme = kDefaultFinishScheme, void Function(double)? onProgress}) {
     _idle?.cancel();
     _onProgress = onProgress;
     final job = Completer<Uint8List?>();
@@ -429,7 +439,8 @@ class AutoEngine {
     _pendingGray = gray;
     _pendingW = w;
     _pendingH = h;
-    _to!.send(['job', gray, w, h]);
+    _pendingScheme = scheme;
+    _to!.send(['job', gray, w, h, scheme]);
     return job.future;
   }
 
@@ -496,7 +507,8 @@ class AutoEngine {
         job.complete(null);
         return;
       }
-      final out = await _sendJob(gray, w, h, onProgress: onProgress);
+      final out = await _sendJob(gray, w, h,
+          scheme: _pendingScheme, onProgress: onProgress);
       job.complete(out);
     } on Object catch (e) {
       job.completeError(Exception('自动重启重试失败: $e'));

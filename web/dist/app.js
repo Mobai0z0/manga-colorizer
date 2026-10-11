@@ -279,6 +279,10 @@
           if (!refFile) throw new Error('参考图模式：请先选择参考图');
           endpoint = '/colorize_reference';
           fd.append('reference', refFile, refFile.name);
+          fd.append('method', settings.refMethod);
+          fd.append('strength', String(settings.refStrength));
+        } else {
+          fd.append('scheme', settings.scheme);
         }
         const r = await fetch(api(endpoint), { method: 'POST', body: fd });
         if (r.status === 429) { it.status = 'fail'; it.error = '模型忙碌，请稍后重试'; }
@@ -393,17 +397,19 @@
   function scrollConsole() { const box = $('console'); box.scrollTop = box.scrollHeight; }
 
 
-  /* ---------- 设置面板：模式 / 处理器 / 免责声明 / 主题 ---------- */
+  /* ---------- 设置面板：模式 / 方案 / 处理器 / 免责声明 / 主题 ---------- */
   const SET_KEY = 'mc-settings-v1';
   const settings = Object.assign(
-    { mode: 'auto', device: 'auto', disclaimer_accepted: false, theme: null, refName: '' },
+    { mode: 'auto', device: 'auto', disclaimer_accepted: false, theme: null, refName: '',
+      scheme: 'standard', refMethod: 'reinhard', refStrength: 1.0 },
     JSON.parse(localStorage.getItem(SET_KEY) || '{}')
   );
 
   function saveSettings(patch) {
     Object.assign(settings, patch);
     localStorage.setItem(SET_KEY, JSON.stringify(settings));
-    const payload = { mode: settings.mode, device: settings.device, disclaimer_accepted: settings.disclaimer_accepted };
+    const payload = { mode: settings.mode, device: settings.device, disclaimer_accepted: settings.disclaimer_accepted,
+      scheme: settings.scheme, ref_method: settings.refMethod, ref_strength: settings.refStrength };
     if (settings.theme) payload.theme = settings.theme;
     fetch(api('/api/v1/settings'), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -416,6 +422,11 @@
     if (modeInput) modeInput.checked = true;
     toggleModePanels();
     if (settings.refName) $('ref-name').textContent = settings.refName;
+    if ($('scheme-select')) $('scheme-select').value = settings.scheme;
+    const rm = document.querySelector('input[name=ref-method][value="' + settings.refMethod + '"]');
+    if (rm) rm.checked = true;
+    $('ref-strength').value = Math.round((settings.refStrength ?? 1.0) * 100);
+    $('ref-strength-val').textContent = Math.round((settings.refStrength ?? 1.0) * 100) + '%';
     // device: default by machine ability after pollHealth() probes; explicit choice wins
     if (settings.device && settings.device !== 'auto') {
       const dInput = document.querySelector('input[name=device][value="' + settings.device + '"]');
@@ -424,9 +435,11 @@
     $('disclaimer').checked = !!settings.disclaimer_accepted;
   }
 
-  // 模式附属面板：参考图选择行 / 提示点画布
+  // 模式附属面板：色彩方案（全自动）/ 参考图选择与迁移选项 / 提示点画布
   function toggleModePanels() {
     $('ref-row').hidden = settings.mode !== 'reference';
+    $('ref-opt-row').hidden = settings.mode !== 'reference';
+    $('scheme-row').hidden = settings.mode !== 'auto';
     $('hint-card').hidden = settings.mode !== 'hints';
     if (settings.mode === 'hints') {
       if (!selected && queue.length) selected = queue[0];
@@ -436,6 +449,17 @@
 
   document.querySelectorAll('input[name=mode]').forEach((el) =>
     el.addEventListener('change', () => { if (el.checked) { saveSettings({ mode: el.value }); toggleModePanels(); } }));
+
+  /* 色彩方案与参考图迁移选项 */
+  if ($('scheme-select')) $('scheme-select').addEventListener('change', () =>
+    saveSettings({ scheme: $('scheme-select').value }));
+  document.querySelectorAll('input[name=ref-method]').forEach((el) =>
+    el.addEventListener('change', () => { if (el.checked) saveSettings({ refMethod: el.value }); }));
+  $('ref-strength').addEventListener('input', () => {
+    const v = Number($('ref-strength').value);
+    $('ref-strength-val').textContent = v + '%';
+    saveSettings({ refStrength: v / 100 });
+  });
 
   document.querySelectorAll('input[name=device]').forEach((el) =>
     el.addEventListener('change', () => { if (el.checked) {

@@ -7,18 +7,21 @@
 端点:
   GET  /health
   GET  /api/v1/capabilities
-  POST /colorize_auto       multipart: image → PNG (全自动, 亮度回写原稿)
+  POST /colorize_auto       multipart: image [+ scheme] → PNG (全自动, 亮度回写原稿)
   POST /colorize_hints      multipart: image + hints(JSON) → PNG (色度扩散引擎)
-  POST /colorize_reference  multipart: image + reference → PNG (主色迁移)
+  POST /colorize_reference  multipart: image + reference [+ method, strength] → PNG (主色迁移)
   POST /shutdown            仅回环: 释放模型显存/内存并请求服务优雅退出
 
 长图说明: 长边超过 TILE=1024 自动分块推理 (OVERLAP=256, 线性羽化融合),
 避免整页下采样到 1024 方形造成的精度损失。
 
-色彩收尾: 输出端统一走 _finish_bgr —— 对融合色度施加增益
-(COLORIZER_CHROMA_GAIN, 默认 1.2, 模型输出普遍偏灰), 超出 sRGB 色域的
-像素按「亮度不变、色度等比收缩」做色域映射, 替代 cv2 LAB2BGR 的逐通道
-硬截断 (截断会拉偏色相, 是输出发灰发闷的主因之一)。
+色彩收尾 v2: 输出端统一走 _finish_bgr —— ①纸白中和（原稿 L≥234 smoothstep
+把近白像素色度收向中性, 去除模型对纸白的系统性暖偏, 是「偏黄」主因）→
+②自适应色度（弱色度全增益、强色度趋缓的软膝点, 修复「偏灰」而不过饱和）→
+③方案色温 →④超 sRGB 色域像素按「亮度不变、色度等比收缩」做色域映射
+（替代 cv2 LAB2BGR 逐通道硬截断——截断拉偏色相, 是发灰发闷主因）→
+⑤（可选）纸色渲染。方案表 FINISH_SCHEMES 与移动端 core finish.dart 同表,
+默认 standard。COLORIZER_CHROMA_GAIN 环境变量可覆写 standard 方案的增益。
 
 启动: cd tool/colorizer_service && python -m uvicorn service:app --port 8788
 """
@@ -100,15 +103,55 @@ if DEVICE not in ('cpu', 'auto', 'cuda'):
     raise ValueError('COLORIZER_DEVICE must be cpu, auto or cuda')
 
 
-def _env_chroma_gain() -> float:
-    """全自动输出色度增益。1.0 = 关闭增益（仅剩色域映射）。"""
+# ---- 色彩方案（与移动端 packages/manga_colorizer_core/lib/src/finish.dart 同表） ----
+# 取证调参记录(2026-10-10): 模型对近白区域有系统性暖偏(纸白 a≈+0.4,b≈+3.4,
+# 512/768/1024 推理分辨率同在), 中间调色度普遍偏低(~6.6)——偏黄用纸白中和
+# 定点去除, 偏灰用自适应软膝增益修复(平坦增益会把已鲜艳的强色一起放大)。
+DEFAULT_SCHEME = 'standard'
+FINISH_SCHEMES: dict[str, dict] = {
+    # 标准: 纸白中和 + 适度自适应增益——修复偏黄偏灰的新默认。
+    'standard': dict(gain=1.40, knee=16.0, neutral_paper=True),
+    # 鲜明赛璐璐: 高饱和高清晰的人气赛璐璐投稿感。
+    'vivid-cel': dict(gain=1.80, knee=24.0, neutral_paper=True),
+    # 柔和淡彩: ふんわり低饱和淡色, 奶油白纸面。
+    'soft-pastel': dict(gain=0.95, knee=10.0, neutral_paper=True),
+    # 厚涂浓郁: 油画感重彩, 强色度也增益, 微暖色温。
+    'impasto': dict(gain=1.70, knee=40.0, neutral_paper=True,
+                    warmth=(0.5, 2.0), warmth_c0=20.0),
+    # 昭和复古: 暖褐阴影 + 奶油暖纸(保留模型暖偏 + 纸色渲染)。
+    'retro-showa': dict(gain=1.20, knee=16.0, neutral_paper=False,
+                        warmth=(2.0, 8.0), warmth_c0=24.0,
+                        paper_tone=(248, 238, 216), paper_tone_strength=0.55),
+}
+
+
+def _env_chroma_gain() -> float | None:
+    """覆写 standard 方案增益的环境变量; 未设置返回 None(用方案表默认)。"""
+    raw = os.environ.get('COLORIZER_CHROMA_GAIN')
+    if raw is None:
+        return None
     try:
-        return float(os.environ.get('COLORIZER_CHROMA_GAIN', '1.2'))
+        return min(2.0, max(0.5, float(raw)))
     except (TypeError, ValueError):
-        return 1.2
+        return None
 
 
-CHROMA_GAIN = min(2.0, max(0.5, _env_chroma_gain()))
+_ENV_GAIN = _env_chroma_gain()
+# 平增益收尾（用户显式色路径: 提示点融合 / 参考图迁移 / hints 中间步）
+_FLAT_FINISH = dict(gain=1.0, knee=0.0, neutral_paper=False)
+
+
+def _resolve_finish(scheme: str, *, flat: bool = False) -> dict:
+    """解析方案为收尾参数 dict; flat=True 给平增益(gain=1)的旧语义收尾
+    （提示点融合/参考图迁移等用户显式色路径: 不二次增益、不中和用户色）。"""
+    if flat:
+        return dict(_FLAT_FINISH)
+    if scheme not in FINISH_SCHEMES:
+        scheme = DEFAULT_SCHEME
+    opt = dict(FINISH_SCHEMES[scheme])
+    if scheme == DEFAULT_SCHEME and _ENV_GAIN is not None:
+        opt['gain'] = _ENV_GAIN
+    return opt
 _state = {'gen': None, 'sam': None, 'providers': None}
 _runtime_device = {'value': None}
 _load_state = {'status': 'idle', 'error': None}  # idle | loading | ready | failed
@@ -344,24 +387,48 @@ def _gamut_cap(c: np.ndarray, Y: np.ndarray) -> np.ndarray:
                     np.where(dn, Y / np.where(dn, -d, 1.0), np.inf))
 
 
-def _finish_bgr(l_u8: np.ndarray, ab: np.ndarray, gain: float = 1.0) -> np.ndarray:
-    """色彩收尾: 原稿明度 L + 浮点 a/b（cv2 8bit 约定, +128 偏置）→ BGR uint8。
+def _smoothstep(e0: float, e1: float, x: np.ndarray) -> np.ndarray:
+    t = np.clip((x - e0) / (e1 - e0), 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
 
-    与 cv2.cvtColor(LAB2BGR) 的两点差别:
-      1. a/b 先施加增益: a' = 128 + (a-128)·gain，补偿模型输出的普遍偏灰;
-      2. 大幅超出 sRGB 色域的像素不做逐通道截断（截断把通道拉到 0/1, 色相被
-         拉向三原色、颜色发脏），而是在线性 RGB 空间按「亮度不变、色度等比
-         收缩」取最大可行 t: rgb' = Y + (rgb-Y)·t。Y 用 XYZ 矩阵 Y 行系数，
-         收缩前后亮度严格不变、色品朝 D65 白点方向（主导波长≈色相）不变。
-         t≥0.95 的微量出域是 8bit Lab 往返的量化噪声（色域边界贴边色）,
-         维持 cv2 逐通道截断——恰好还原原色; 两种行为在切换点相差 ≤5% 色度。
-         色域内像素与 cv2 逐值一致（±1）。gain=1 时对常规内容是 cv2 的
-         无损替代。
+
+def _finish_bgr(l_u8: np.ndarray, ab: np.ndarray, opt: dict | None = None) -> np.ndarray:
+    """色彩收尾 v2: 原稿明度 L + 浮点 a/b（cv2 8bit 约定, +128 偏置）→ BGR uint8。
+
+    opt 缺省 = 平增益(gain=1)的纯色域映射（与旧 gain=1 语义一致）。
+
+    与 cv2.cvtColor(LAB2BGR) 的差别, 按作用次序:
+      1. 纸白中和（opt['neutral_paper']）: 原稿 L 234→248 smoothstep, 近白像素
+         的 a/b 收向中性——模型对纸白有系统性暖偏（实测 b≈+3.4, 与推理分辨率
+         无关）, 是「偏黄」的主因; 用户显式色路径用 flat opt 关闭。
+      2. 自适应色度: knee>0 时增益 = 1+(gain-1)/(1+(C/knee)²)——弱色度全增益
+         （修复「偏灰」）, 强色度趋近 1（已鲜艳的色不被放大过饱和）; knee=0
+         退化为平增益 (a-128)·gain（旧行为）。
+      3. 方案色温: a += warmth[0]·wt, b += warmth[1]·wt, wt = C/(C+warmth_c0)
+         ——纸白（C≈0）不吃色, 只染有色的区域。
+      4. 色域映射: 大幅超出 sRGB 色域的像素不做逐通道截断（截断把通道拉到
+         0/1, 色相被拉向三原色、颜色发脏）, 而是在线性 RGB 空间按「亮度不变、
+         色度等比收缩」取最大可行 t: rgb' = Y + (rgb-Y)·t。t 钳制 ≥0——L=100
+         处任何色度都超域（Y>1）, 旧负系数路径会把像素外推成纯白（对纸白恰
+         好无害, 但对微灰纸会造成色相畸变）。t≥0.95 的微量出域是 8bit Lab
+         往返的量化噪声, 维持 cv2 逐通道截断——恰好还原原色; 色域内像素与
+         cv2 逐值一致（±1）。gain=1 且 knee=0 时与旧 _finish_bgr 等价。
+      5. 纸色渲染（opt['paper_tone']）: 映射后在 RGB 空间把近白像素向目标纸色
+         按 smoothstep 混合（L=100 的纯白经色域映射必然输出纯白, 暖纸风格
+         只能在此施加）。astype(uint8) 截断语义与移动端金样逐值对齐。
 
     l_u8: uint8 [H,W]（0-255 缩放的 Lab L 通道，即原稿灰度的 Lab L）;
     ab: float32 [H,W,2]（+128 偏置的 a/b，允许浮点精度）。
     分块行处理控内存: 峰值额外 float32 ≈ 64 行 × 宽 × 3 × 4B × 少量临时量。
     """
+    o = opt or {}
+    gain = float(o.get('gain', 1.0))
+    knee = float(o.get('knee', 0.0))
+    neutral = bool(o.get('neutral_paper', False))
+    warmth = o.get('warmth') or (0.0, 0.0)
+    warmth_c0 = float(o.get('warmth_c0', 16.0))
+    tone = o.get('paper_tone')
+    tone_s = float(o.get('paper_tone_strength', 0.0)) if tone else 0.0
     h, w = l_u8.shape
     out = np.empty((h, w, 3), dtype=np.uint8)
     lut = _gamma_lut()
@@ -369,9 +436,27 @@ def _finish_bgr(l_u8: np.ndarray, ab: np.ndarray, gain: float = 1.0) -> np.ndarr
     rows = 64
     for y0 in range(0, h, rows):
         y1 = min(y0 + rows, h)
-        L = l_u8[y0:y1].astype(np.float32) * (100.0 / 255.0)
-        a = (ab[y0:y1, :, 0] - 128.0) * gain
-        b = (ab[y0:y1, :, 1] - 128.0) * gain
+        l_byte = l_u8[y0:y1].astype(np.float32)
+        L = l_byte * (100.0 / 255.0)
+        a = ab[y0:y1, :, 0] - 128.0
+        b = ab[y0:y1, :, 1] - 128.0
+        if neutral:
+            t_paper = _smoothstep(234.0, 248.0, l_byte)
+            a *= (1.0 - t_paper)
+            b *= (1.0 - t_paper)
+        if knee > 0.0:
+            C = np.sqrt(a * a + b * b)
+            boost = 1.0 + (gain - 1.0) / (1.0 + (C / knee) ** 2)
+            a *= boost
+            b *= boost
+        elif gain != 1.0:
+            a *= gain
+            b *= gain
+        if warmth != (0.0, 0.0):
+            C = np.sqrt(a * a + b * b)
+            wt = C / (C + warmth_c0)
+            a = a + warmth[0] * wt
+            b = b + warmth[1] * wt
         fy = (L + 16.0) / 116.0
         fx = fy + a * (1.0 / 500.0)
         fz = fy - b * (1.0 / 200.0)
@@ -384,12 +469,19 @@ def _finish_bgr(l_u8: np.ndarray, ab: np.ndarray, gain: float = 1.0) -> np.ndarr
         # 亮度系数 = XYZ 矩阵 Y 行，保证 rgb' = Y + (rgb-Y)·t 亮度严格不变
         Y = 0.212671 * r + 0.715160 * g + 0.072169 * bl
         t = np.minimum(_gamut_cap(r, Y), np.minimum(_gamut_cap(g, Y), _gamut_cap(bl, Y)))
+        np.maximum(t, 0.0, out=t)
         rgb = np.stack([r, g, bl], axis=-1)
         # 微量出域（量化噪声, t≥0.95）→ cv2 式截断还原原色; 真超域 → 等比收缩
         scaled = Y[..., None] + (rgb - Y[..., None]) * np.minimum(t, 1.0)[..., None]
         rgb = np.where((t < 0.95)[..., None], scaled, np.clip(rgb, 0.0, 1.0))
         idx = np.clip(np.rint(rgb * 65535.0), 0, 65535).astype(np.int32)
-        out[y0:y1] = lut[idx][..., ::-1]  # RGB → BGR（OpenCV 通道序）
+        block = lut[idx][..., ::-1]  # RGB → BGR（OpenCV 通道序）
+        if tone is not None:
+            tp = _smoothstep(234.0, 248.0, l_byte) * tone_s
+            tone_bgr = np.array([tone[2], tone[1], tone[0]], dtype=np.float32)
+            block = np.clip(block.astype(np.float32) * (1.0 - tp[..., None])
+                            + tone_bgr * tp[..., None], 0.0, 255.0).astype(np.uint8)
+        out[y0:y1] = block
     return out
 
 
@@ -463,7 +555,7 @@ def colorize_single(gray) -> np.ndarray:
     return cv2.resize(rgb, (w, h), interpolation=cv2.INTER_CUBIC)
 
 
-def colorize_tiled(gray: np.ndarray, tile: int = 1024, overlap: int = 256) -> np.ndarray:
+def colorize_tiled(gray: np.ndarray, opt: dict, tile: int = 1024, overlap: int = 256) -> np.ndarray:
     """长图分块: 每块独立 SAM+generator, 重叠区线性羽化融合 a/b 色度。
 
     相比整图缩 1024 方形, 分块保持有效采样密度, 长页细节不再被下采样抹掉。
@@ -484,22 +576,22 @@ def colorize_tiled(gray: np.ndarray, tile: int = 1024, overlap: int = 256) -> np
             weight[y0:y1, x0:x1] += m
     weight = np.maximum(weight, 1e-6)
     # 融合色度保持浮点直达 _finish_bgr（比旧路径少一次 8bit a/b 量化）,
-    # 增益 CHROMA_GAIN 与色域映射都在收尾统一施加。
+    # 收尾（中和/膝点增益/色域映射）统一在收尾施加。
     ab = np.empty((h, w, 2), dtype=np.float32)
     ab[..., 0] = chroma[..., 0] / weight
     ab[..., 1] = chroma[..., 1] / weight
-    return _finish_bgr(cv2.cvtColor(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), cv2.COLOR_BGR2LAB)[..., 0], ab, gain=CHROMA_GAIN)
+    return _finish_bgr(cv2.cvtColor(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), cv2.COLOR_BGR2LAB)[..., 0], ab, opt)
 
 
-def colorize(gray: np.ndarray) -> np.ndarray:
-    """灰度 uint8 [H,W] → BGR uint8 [H,W,3]; 长边 >1024 自动分块。"""
+def colorize(gray: np.ndarray, opt: dict) -> np.ndarray:
+    """灰度 uint8 [H,W] → BGR uint8 [H,W,3]; 长边 >1024 自动分块。opt=收尾方案。"""
     if max(gray.shape) > INFER_SIZE:
-        return colorize_tiled(gray)
+        return colorize_tiled(gray, opt)
     rgb = colorize_single(gray)
     # 模型输出 RGB；OpenCV 编码要求 BGR。不能在错误的通道空间回写亮度。
     lab_c = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB)
     lab_l = cv2.cvtColor(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), cv2.COLOR_BGR2LAB)[..., 0]
-    return _finish_bgr(lab_l, lab_c[..., 1:].astype(np.float32), gain=CHROMA_GAIN)
+    return _finish_bgr(lab_l, lab_c[..., 1:].astype(np.float32), opt)
 
 
 app = FastAPI(title='Manga Colorizer · Community Preview', version='0.4.0')
@@ -558,6 +650,9 @@ def capabilities():
         'modes': ['auto', 'hints', 'reference'],
         'endpoints': {'auto': '/colorize_auto', 'hints': '/colorize_hints',
                       'reference': '/colorize_reference'},
+        'schemes': {k: v['gain'] for k, v in FINISH_SCHEMES.items()},
+        'default_scheme': DEFAULT_SCHEME,
+        'ref_methods': ['reinhard', 'histogram'],
         'max_hints': 4096,
         'license': {'id': 'CC-BY-NC-SA-4.0', 'commercial_use': False,
                     'url': 'https://creativecommons.org/licenses/by-nc-sa/4.0/',
@@ -629,7 +724,7 @@ def _gallery_insert(*, source_name: str, mode: str, device: str, elapsed_s: floa
         logging.exception('gallery insert failed')
 
 
-def _process(data: bytes, source_name: str = 'image.png') -> Response:
+def _process(data: bytes, source_name: str = 'image.png', scheme: str = DEFAULT_SCHEME) -> Response:
     if not _inference_lock.acquire(blocking=False):
         return JSONResponse({'error': '模型忙碌，请稍后重试'}, status_code=429)
     t0 = datetime.now()
@@ -639,7 +734,7 @@ def _process(data: bytes, source_name: str = 'image.png') -> Response:
         except ValueError as exc:
             _gallery_insert(source_name=source_name, mode='auto', device='-', elapsed_s=0.0, error=str(exc))
             return JSONResponse({'error': str(exc)}, status_code=400)
-        out = colorize(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY))
+        out = colorize(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), _resolve_finish(scheme))
         resp = _encode_png(out)
         device = _device_label(_state['providers'])
         elapsed = (datetime.now() - t0).total_seconds()
@@ -697,20 +792,68 @@ def _hint_colorize(bgr: np.ndarray, hints: list[dict]) -> np.ndarray:
     return _finish_bgr(lab[..., 0].astype(np.uint8), lab[..., 1:3])
 
 
-def _reference_transfer(bgr: np.ndarray, ref: np.ndarray) -> np.ndarray:
-    """参考图主色迁移: 参考图 Lab 色度统计 (均值+方差) 匹配到原稿。
+def _reference_transfer(bgr: np.ndarray, ref: np.ndarray,
+                        method: str = 'reinhard', strength: float = 1.0) -> np.ndarray:
+    """参考图色调迁移 v2（与移动端 core transfer.dart 同数学）。
 
-    保留原稿亮度结构, 色度按参考图整体色调重新分布 (Reinhard 颜色迁移)。
+    与旧版（全图 Reinhard）的关键差别——漫画页常 90% 是纸白:
+      · 原稿近白（L≥234）像素不参与统计——旧版 src_std≈3 被放大成 6 倍增益,
+        纸白反而吃满参考色, 是「整页被染色」的根源;
+      · 纸白按 smoothstep(234,248) 软边界保护, 迁移量 ×strength 收向 0;
+      · method='histogram' 走逐通道直方图规定化（CDF 匹配）, 分布对齐更彻底;
+      · strength ∈ [0,1] 线性混合（0=原样, 1=完全迁移）。
+    亮度 L 恒取原稿; 输出经平增益色域映射收尾。
     """
-    lab_s = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
-    lab_r = cv2.cvtColor(ref, cv2.COLOR_BGR2LAB).astype(np.float32)
-    for c in (1, 2):
-        src_ch = lab_s[..., c]
-        ref_mean, ref_std = lab_r[..., c].mean(), lab_r[..., c].std() + 1e-6
-        src_mean, src_std = src_ch.mean(), src_ch.std() + 1e-6
-        lab_s[..., c] = (src_ch - src_mean) * (ref_std / src_std) + ref_mean
-    # 中间输出走色域映射（增益 1）, 避免截断先把迁移色度拉偏。
-    return _finish_bgr(lab_s[..., 0].astype(np.uint8), lab_s[..., 1:3])
+    lab_s = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
+    lab_r = cv2.cvtColor(ref, cv2.COLOR_BGR2LAB)
+    h, w = lab_s.shape[:2]
+    n = h * w
+    l_u8 = lab_s[..., 0]
+    ink = (l_u8 < 234).ravel()
+    use_all = int(ink.sum()) < n * 0.01
+    src_a = (lab_s[..., 1].astype(np.float64) - 128.0).ravel()
+    src_b = (lab_s[..., 2].astype(np.float64) - 128.0).ravel()
+    ref_a = (lab_r[..., 1].astype(np.float64) - 128.0).ravel()
+    ref_b = (lab_r[..., 2].astype(np.float64) - 128.0).ravel()
+
+    if method == 'histogram':
+        new_a = _hist_match(src_a, lab_s[..., 1].ravel(), ink if not use_all else None,
+                            ref_a, lab_r[..., 1].ravel())
+        new_b = _hist_match(src_b, lab_s[..., 2].ravel(), ink if not use_all else None,
+                            ref_b, lab_r[..., 2].ravel())
+    else:  # reinhard
+        stat_a = src_a[ink] if not use_all else src_a
+        stat_b = src_b[ink] if not use_all else src_b
+        new_a = (src_a - stat_a.mean()) * (ref_a.std() / max(stat_a.std(), 1e-6)) + ref_a.mean()
+        new_b = (src_b - stat_b.mean()) * (ref_b.std() / max(stat_b.std(), 1e-6)) + ref_b.mean()
+
+    s = np.clip(strength, 0.0, 1.0)
+    if s < 1.0:
+        new_a = src_a + (new_a - src_a) * s
+        new_b = src_b + (new_b - src_b) * s
+    # 纸白软边界（与 core transfer.dart 的 protectPaper 一致）
+    edge = 1.0 - _smoothstep(234.0, 248.0, l_u8.astype(np.float32)).ravel()
+    new_a = src_a + (new_a - src_a) * edge
+    new_b = src_b + (new_b - src_b) * edge
+    lab_out = np.empty((h, w, 3), dtype=np.uint8)
+    lab_out[..., 0] = l_u8
+    lab_out[..., 1] = np.clip(np.rint(new_a + 128.0), 0, 255).astype(np.uint8).reshape(h, w)
+    lab_out[..., 2] = np.clip(np.rint(new_b + 128.0), 0, 255).astype(np.uint8).reshape(h, w)
+    # 平增益色域映射收尾（不二次增益迁移色度）
+    return _finish_bgr(l_u8, lab_out[..., 1:].astype(np.float32), _FLAT_FINISH)
+
+
+def _hist_match(src_vals: np.ndarray, src_bytes: np.ndarray,
+                ink: np.ndarray | None, ref_vals: np.ndarray,
+                ref_bytes: np.ndarray) -> np.ndarray:
+    """逐通道直方图规定化: src（掩码内）CDF → ref CDF 逆映射。"""
+    hist_s = np.bincount(src_bytes if ink is None else src_bytes[ink],
+                         minlength=256).astype(np.float64)
+    hist_r = np.bincount(ref_bytes, minlength=256).astype(np.float64)
+    cdf_s = np.cumsum(hist_s) / max(hist_s.sum(), 1.0)
+    cdf_r = np.cumsum(hist_r) / max(hist_r.sum(), 1.0)
+    lut = np.searchsorted(cdf_r, np.clip(cdf_s, 0.0, 1.0)).clip(0, 255)
+    return (lut[src_bytes] - 128.0).astype(np.float64)
 
 
 def _persist_gallery(resp: Response, bgr: np.ndarray, *, source_name: str, mode: str,
@@ -746,7 +889,7 @@ def _process_hints(data: bytes, hints_raw: str, source_name: str = 'image.png') 
         except (json.JSONDecodeError, ValueError):
             return JSONResponse({'error': 'hints 必须是 JSON 数组'}, status_code=400)
         # 语义底色 + 提示点色度叠加: 先全自动上色, 再用提示点精修局部
-        auto = colorize(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY))
+        auto = colorize(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), _resolve_finish(DEFAULT_SCHEME))
         hinted = _hint_colorize(bgr, hints)
         # 提示点作用区 (色度幅值显著高于中性) 用 hinted 的色度, 其余保留模型色
         lab_a = cv2.cvtColor(auto, cv2.COLOR_BGR2LAB).astype(np.float32)
@@ -773,7 +916,8 @@ def _process_hints(data: bytes, hints_raw: str, source_name: str = 'image.png') 
         _inference_lock.release()
 
 
-def _process_reference(data: bytes, ref_data: bytes, source_name: str = 'image.png') -> Response:
+def _process_reference(data: bytes, ref_data: bytes, source_name: str = 'image.png',
+                       method: str = 'reinhard', strength: float = 1.0) -> Response:
     if not _inference_lock.acquire(blocking=False):
         return JSONResponse({'error': '模型忙碌，请稍后重试'}, status_code=429)
     t0 = datetime.now()
@@ -784,8 +928,8 @@ def _process_reference(data: bytes, ref_data: bytes, source_name: str = 'image.p
         except ValueError as exc:
             return JSONResponse({'error': str(exc)}, status_code=400)
         # 语义结构来自模型 (auto), 色彩统计来自参考图
-        auto = colorize(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY))
-        styled = _reference_transfer(bgr, ref)
+        auto = colorize(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), _resolve_finish(DEFAULT_SCHEME))
+        styled = _reference_transfer(bgr, ref, method=method, strength=strength)
         # 融合: 模型提供语义色相, 参考图提供全局色调统计 → 在 Lab 上按 5:5 混合
         lab_a = cv2.cvtColor(auto, cv2.COLOR_BGR2LAB).astype(np.float32)
         lab_s = cv2.cvtColor(styled, cv2.COLOR_BGR2LAB).astype(np.float32)
@@ -808,13 +952,15 @@ def _process_reference(data: bytes, ref_data: bytes, source_name: str = 'image.p
 
 
 @app.post('/colorize_auto')
-async def colorize_auto(image: UploadFile = File(...)):
+async def colorize_auto(image: UploadFile = File(...), scheme: str = Form('standard')):
+    if scheme not in FINISH_SCHEMES:
+        return JSONResponse({'error': f'scheme 必须是 {"/".join(FINISH_SCHEMES)}'}, status_code=400)
     try:
         data = await image.read(MAX_BYTES + 1)
         if len(data) > MAX_BYTES:
             return JSONResponse({'error': '文件超过 20 MiB'}, status_code=413)
         name = image.filename or 'image.png'
-        return await run_in_threadpool(_process, data, name)
+        return await run_in_threadpool(_process, data, name, scheme)
     finally:
         await image.close()
 
@@ -831,13 +977,18 @@ async def colorize_hints(image: UploadFile = File(...), hints: str = Form('[]'))
 
 
 @app.post('/colorize_reference')
-async def colorize_reference(image: UploadFile = File(...), reference: UploadFile = File(...)):
+async def colorize_reference(image: UploadFile = File(...), reference: UploadFile = File(...),
+                             method: str = Form('reinhard'), strength: float = Form(1.0)):
+    if method not in ('reinhard', 'histogram'):
+        return JSONResponse({'error': 'method 必须是 reinhard/histogram'}, status_code=400)
+    strength = min(1.0, max(0.0, float(strength)))
     try:
         data = await image.read(MAX_BYTES + 1)
         ref_data = await reference.read(MAX_BYTES + 1)
         if len(data) > MAX_BYTES or len(ref_data) > MAX_BYTES:
             return JSONResponse({'error': '文件超过 20 MiB'}, status_code=413)
-        return await run_in_threadpool(_process_reference, data, ref_data, image.filename or 'image.png')
+        return await run_in_threadpool(_process_reference, data, ref_data,
+                                       image.filename or 'image.png', method, strength)
     finally:
         await image.close()
         await reference.close()
@@ -845,7 +996,9 @@ async def colorize_reference(image: UploadFile = File(...), reference: UploadFil
 
 # ---- 批量队列: 按提交顺序逐个处理, 单个失败不阻断 ----
 @app.post('/api/v1/batch')
-async def batch_colorize(files: list[UploadFile] = File(...)):
+async def batch_colorize(files: list[UploadFile] = File(...), scheme: str = Form('standard')):
+    if scheme not in FINISH_SCHEMES:
+        return JSONResponse({'error': f'scheme 必须是 {"/".join(FINISH_SCHEMES)}'}, status_code=400)
     results = []
     for uf in files[:32]:
         name = uf.filename or 'image.png'
@@ -856,7 +1009,7 @@ async def batch_colorize(files: list[UploadFile] = File(...)):
         if len(data) > MAX_BYTES:
             results.append({'name': name, 'status': 'failed', 'error': '文件超过 20 MiB'})
             continue
-        resp = await run_in_threadpool(_process, data, name)
+        resp = await run_in_threadpool(_process, data, name, scheme)
         if resp.status_code == 200:
             results.append({'name': name, 'status': 'ok', 'bytes': len(resp.body)})
         else:
@@ -919,7 +1072,7 @@ def settings_get():
 @app.post('/api/v1/settings')
 async def settings_set(request: Request):
     body = await request.json()
-    allowed = {'mode', 'device', 'disclaimer_accepted', 'theme'}
+    allowed = {'mode', 'device', 'disclaimer_accepted', 'theme', 'scheme', 'ref_method', 'ref_strength'}
     patch = {k: v for k, v in (body or {}).items() if k in allowed}
     if 'device' in patch:
         if patch['device'] not in ('cpu', 'gpu', 'auto'):
@@ -928,6 +1081,15 @@ async def settings_set(request: Request):
             return JSONResponse({'error': '本机没有可用的 GPU Provider'}, status_code=400)
     if 'mode' in patch and patch['mode'] not in ('auto', 'hints', 'reference'):
         return JSONResponse({'error': 'mode 必须是 auto/hints/reference'}, status_code=400)
+    if 'scheme' in patch and patch['scheme'] not in FINISH_SCHEMES:
+        return JSONResponse({'error': f'scheme 必须是 {"/".join(FINISH_SCHEMES)}'}, status_code=400)
+    if 'ref_method' in patch and patch['ref_method'] not in ('reinhard', 'histogram'):
+        return JSONResponse({'error': 'ref_method 必须是 reinhard/histogram'}, status_code=400)
+    if 'ref_strength' in patch:
+        try:
+            patch['ref_strength'] = min(1.0, max(0.0, float(patch['ref_strength'])))
+        except (TypeError, ValueError):
+            return JSONResponse({'error': 'ref_strength 必须是 [0,1] 数值'}, status_code=400)
     if 'disclaimer_accepted' in patch and not isinstance(patch['disclaimer_accepted'], bool):
         return JSONResponse({'error': 'disclaimer_accepted 必须是布尔值'}, status_code=400)
     if 'theme' in patch and patch['theme'] not in ('dark', 'light', None):

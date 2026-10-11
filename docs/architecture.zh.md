@@ -12,35 +12,50 @@ Tauri 2 桌面壳（src-tauri）  窗口生命周期 / 权重下载器（断点�
 Python sidecar（:8788，tool/colorizer_service）
   ├─ 全自动:   manga-light-colorizer（SAM 语义引导 + generator，ONNX Runtime）
   ├─ 提示点:   亮度相似度加权色度扩散（服务端轻量版）
-  ├─ 参考图:   Reinhard Lab 主色迁移 ⊕ 模型语义色
+  ├─ 参考图:   Reinhard/直方图 Lab 色调迁移 ⊕ 模型语义色（掩码统计 + 纸白保护）
   ├─ 长图:     tile 1024 / overlap 256 线性羽化融合
   └─ 图库台账: gallery.jsonl + settings.json 持久化
 
 packages/manga_colorizer_core    纯 Dart 上色引擎（Levin 2004 色度扩散，确定性，可离线）
 packages/manga_colorizer_cli     批量上色 / 三联对比图 / 色板工具
 packages/manga_colorizer_server  Dart HTTP 后端（shelf，实验路径）
-mobile/                          Flutter Android 壳（Dart 引擎 + 端侧 ONNX 全自动）
+mobile/                          Flutter Android 壳（Dart 引擎 + 端侧 ONNX 全自动 + 参考图调色）
 ```
 
 功能特性：全自动 ONNX 语义上色（SAM 引导 + generator）、提示点画布精修、参考图色调迁移、
-批量队列（一次最多 32 张，单张失败不阻断）、长图自动分块推理、亮度保真（所有模式只写
-Lab a/b 色度，L 通道始终回写原稿）、色彩收尾（色度增益 + 超色域等比收缩映射，见下）、
-GPU 自动加速（Windows 优先 DirectML，NVIDIA 可用 CUDA，无 GPU 自动回退 CPU）。
+色彩方案（标准/鲜明赛璐璐/柔和淡彩/厚涂浓郁/昭和复古，见下）、批量队列（一次最多 32 张，
+单张失败不阻断）、长图自动分块推理、亮度保真（所有模式只写 Lab a/b 色度，L 通道始终回写
+原稿）、色彩收尾（纸白中和 + 自适应色度 + 超色域等比收缩映射，见下）、GPU 自动加速
+（Windows 优先 DirectML，NVIDIA 可用 CUDA，无 GPU 自动回退 CPU）。
 
-### 色彩收尾（两端同数学）
+### 色彩收尾 v2 与色彩方案（两端同数学）
 
 全自动输出的最后一步统一走「色彩收尾」，桌面在 `service.py _finish_bgr`（numpy 向量化
-+ 64 行分块），移动端在 `manga_colorizer_core` 的 `labToRgbGamut`（逐像素标量，零额外
++ 64 行分块），移动端在 `manga_colorizer_core` 的 `labToRgbFinish`（逐像素标量，零额外
 缓冲），两端以跨语言金样对拍锁定一致（`packages/manga_colorizer_core/test/goldens/
-gamut_golden.json`，由 `tool/colorizer_service/gen_gamut_golden.py` 生成）：
+finish_golden.json`，由 `tool/colorizer_service/gen_finish_golden.py` 生成）。作用次序：
 
-1. **色度增益** `a' = 128 + (a−128)·G`，补偿模型输出的普遍偏灰（默认 G=1.2）；
-2. **色域映射**：大幅超出 sRGB 色域的像素不做逐通道截断（截断把色相拉向三原色，
+1. **纸白中和**：原稿 L 234→248 smoothstep 把近白像素的 a/b 收向中性——模型对纸白有
+   系统性暖偏（实测纸白 b≈+3.4，与推理分辨率无关），这是「偏黄」的主因；
+2. **自适应色度**（软膝点）：弱色度全增益、强色度趋缓（`1+(G−1)/(1+(C/C0)²)`）——
+   修复「偏灰」而不过饱和已鲜艳的色；C0=0 退化为旧平增益；
+3. **方案色温**：a/b 加 `warmth·C/(C+C0)` 加权偏移（纸白 C≈0 不吃色）；
+4. **色域映射**：大幅超出 sRGB 色域的像素不做逐通道截断（截断把色相拉向三原色，
    是输出发灰发闷的主因），改为线性 RGB 空间按「亮度不变、色度等比收缩」取最大可行
-   t；t≥0.95 的微量出域是 8bit Lab 量化噪声，维持截断恰好还原原色。
+   t（钳制 ≥0，修 L=100 处 Y>1 的负系数退化）；t≥0.95 的微量出域是 8bit Lab 量化
+   噪声，维持截断恰好还原原色；
+5. **纸色渲染**（可选）：映射后在 RGB 空间把近白像素向目标纸色混合——L=100 的纯白
+   经色域映射必然输出纯白，暖纸风格（昭和复古）只能在此施加。
 
-增益只施加一次（在模型全自动色的 a/b 上）；提示点/参考图路径的用户显式色不再放大。
-冒烟断言见 `tool/colorizer_service/quality_check.py`（不加载模型，秒级）。
+方案表 `FINISH_SCHEMES`（桌面）与 `kFinishSchemes`（core finish.dart）同表同值：
+standard（默认，修复偏黄偏灰）/ vivid-cel / soft-pastel / impasto / retro-showa，
+随 `/colorize_auto` 的 `scheme` 表单字段与移动端 job 消息下发。提示点融合与参考图
+迁移路径的用户显式色走平增益收尾（不二次增益、不中和用户色）。
+参考图迁移（`_reference_transfer` / core `transferReference`）v2：原稿纸白不参与
+统计（漫画页 90% 纸白会淹没 Reinhard 统计）、纸白软边界保护、支持 reinhard
+（氛围对齐）与 histogram（分布对齐）两种算法及 strength 强度，金样
+`transfer_golden.json`（容差 ±8，机理见测试头注释）。
+冒烟断言见 `tool/colorizer_service/quality_check.py`（不加载模型，秒级，9 项）。
 
 ## 前端（web/dist）
 
@@ -111,7 +126,7 @@ curl -F "image=@page.png" -F "reference=@character.png" \
 | `COLORIZER_LOG_FILE` | — | 追加写入的日志文件 |
 | `COLORIZER_PRELOAD` | `1` | 启动时后台预热模型（加载 + 空推理）；`0` 关闭以省内存，代价是首次上色多等 10-20s |
 | `COLORIZER_IDLE_UNLOAD` | `600` | 空闲多少秒后释放模型（内存+显存归还系统，下次上色自动唤醒）；`0` = 常驻不释放 |
-| `COLORIZER_CHROMA_GAIN` | `1.2` | 全自动输出色度增益（量化前施加，clamp 0.5-2.0）；`1.0` = 关闭增益仅剩色域映射 |
+| `COLORIZER_CHROMA_GAIN` | — | 覆写 standard 方案的色度增益（clamp 0.5-2.0）；未设置时用方案表默认 1.4 |
 
 ## Dart 引擎（packages/manga_colorizer_core）
 
@@ -134,12 +149,16 @@ Android 侧轻量工作台（Flutter），两个页签：
 - **提示点上色**：选图 → 画布点按落提示点 → 上色 → 分享/保存。推理直接调用纯 Dart
   引擎 `manga_colorizer_core`，在 isolate 中离线执行，不依赖桌面 sidecar 或任何后端
   服务，也不需要模型权重。
-- **全自动**：端侧 ONNX 全自动上色，管线语义对齐桌面 `/colorize_auto`——同款权重对
-  （v6_sam_encoder + v6_generator）、tile 1024 / overlap 256 线性羽化融合、L 通道
-  始终回写原稿灰度、色彩收尾同数学（增益常量 `kAutoChromaGain` 与桌面默认一致；
-  桌面 tiled 路径全程浮点直达收尾，端侧在 8bit a/b 量化后收尾，≤0.5 Lab 单位，
-  与 resize 插值偏差同级）。权重不随 APK 分发（CC BY-NC-SA），首次使用时在应用内
-  引导下载，支持断点续传与 SHA-256 校验，manifest 内置 hf-mirror 镜像源备选（国内网络）。
+- **全自动**：端侧 ONNX 全自动上色 + 参考图调色，管线语义对齐桌面 `/colorize_auto`——
+  同款权重对（v6_sam_encoder + v6_generator）、tile 1024 / overlap 256 线性羽化融合、
+  L 通道始终回写原稿灰度、色彩收尾同数学（`labToRgbFinish`，方案表 `kFinishSchemes`
+  与桌面 FINISH_SCHEMES 同表，经 job 消息的 `scheme` 字段随任务下发；桌面 tiled 路径
+  全程浮点直达收尾，端侧在 8bit a/b 量化后收尾，≤0.7 Lab 单位，与 resize 插值偏差
+  同级）。参考图调色（并入全自动页，免模型）：对全自动结果「叠加参考图色调」，或
+  独立选原稿+参考图直接迁移（`reference_flow.dart` → core `transferReference`，
+  isolate 内执行，reinhard 全强度）。权重不随 APK 分发（CC BY-NC-SA），首次使用时
+  在应用内引导下载，支持断点续传与 SHA-256 校验，manifest 内置 hf-mirror 镜像源
+  备选（国内网络）。
 
 ```bash
 cd mobile

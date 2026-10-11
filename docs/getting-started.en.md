@@ -52,7 +52,7 @@ CUDA is unavailable the service errors out explicitly instead of silently fallin
 > Python 3.10–3.12 for the GPU path (the CPU path works on 3.14). When GPU per-tile inference
 > fails, that tile automatically falls back to CPU, so long images never fail as a whole.
 
-## Option 4: Android app (on-device fully automatic)
+## Option 4: Android app (on-device fully automatic + reference colorization)
 
 Build from source with Flutter under `mobile/` (`flutter build apk --debug`, build
 verified), or wait for the official APK in Releases.
@@ -62,14 +62,37 @@ verified), or wait for the official APK in Releases.
    through downloading them (~300 MB, i.e. 286 MiB, one-time), with resume support and
    SHA-256 verification; the hf-mirror address in the manifest is reserved — this version
    always downloads from huggingface.co.
-3. Once ready, pick an image and start fully automatic colorization; results can be
-   shared/saved from inside the app. The "Hint colorization" tab is unaffected — it needs no
-   weights and works fully offline.
+3. Once ready, pick an image, choose a "Color scheme" (the default "Standard" already fixes
+   the yellow/gray cast), and start fully automatic colorization; results can be
+   shared/saved from inside the app, or re-toned via "Overlay reference tone" on the result.
+4. The "Reference colorization (model-free)" card needs no weights: pick any source +
+   reference pair and get the transfer result instantly (works offline). The "Hint
+   colorization" tab is also weight-free.
 
 Device requirement: an Android arm64 physical device. On-device inference runs on the ONNX
 Runtime CPU execution provider (no GPU/NNAPI path); per-1024²-tile runtime and peak memory
 are not yet measured on real devices — low-end devices may be slow, and the behavior and
 conclusions of this option will be revised after measurement.
+
+## Color schemes (both ends)
+
+The fully automatic output always goes through "color finishing v2" (paper-white
+neutralization against the yellow cast + adaptive chroma against the gray look + gamut
+mapping) and ships with five style schemes — a dropdown in the desktop workbench when the
+mode is "Fully automatic", a selector in the mobile "Fully automatic" tab, both sent with
+the job:
+
+| Scheme | Description |
+|---|---|
+| Standard | Paper neutralization + moderate adaptive gain (default; fixes yellowish paper and muted output) |
+| Vivid Cel | High-saturation, high-clarity popular cel-shading look |
+| Soft Pastel | Low-saturation pale colors, creamy white paper |
+| Impasto | Oil-painting-like richness, gains applied even to strong chroma, slightly warm |
+| Retro Showa | Warm brown shadows + creamy warm paper (keeps the model's warmth + paper-tone rendering) |
+
+The "Reference" mode additionally offers a transfer algorithm (Mood = Reinhard /
+Distribution = histogram) and a strength slider; the manga page's paper is excluded from the
+statistics and stays un-tinted by default.
 
 ## Manual weight download
 

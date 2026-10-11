@@ -232,7 +232,12 @@ class _SocketBridge implements AutoWorkerHandle {
             _socket,
             Frame(FrameType.job,
                 jobId: _jobId,
-                data: {'width': m[2] as int, 'height': m[3] as int},
+                data: {
+                  'width': m[2] as int,
+                  'height': m[3] as int,
+                  // 色彩收尾方案 id（旧主进程缺省 → 服务端回退 standard）
+                  if (m.length > 4 && m[4] is String) 'scheme': m[4] as String,
+                },
                 bytes: m[1] as Uint8List));
       case 'stop':
         if (_stopped) return;

@@ -1,14 +1,15 @@
 // 端侧全自动上色管线：对齐桌面 tool/colorizer_service/service.py 的语义 —
 //   · 单块（max(w,h)≤infer）＝ colorize()（service.py:401-410）：模型输出
-//     INTER_CUBIC 放大回原尺寸后直取 a/b，**不做羽化归一**；L 恒取原稿灰度。
+//     INTER_CUBIC 放大回原尺寸后直取 a/b，**不做羽化归一**；L 恒取原稿。
 //   · 多块 ＝ colorize_tiled（service.py:375-398）：tile=infer / overlap 重叠，
 //     每块独立 缩 infer² → SAM+generator → 只羽化融合 a/b 色度；L 恒取原稿。
-//   · 输出端色彩收尾（两端同数学）：融合色度先施加 [kAutoChromaGain] 增益
-//     （桌面为 COLORIZER_CHROMA_GAIN，默认同为 1.2），再经 labToRgbGamut 做
-//     色域映射（亮度不变、色度等比收缩，替代逐通道截断——截断把色相拉向
-//     三原色，是输出发灰发闷的主因）。已知微小偏差：桌面 tiled 路径全程
-//     浮点直达收尾，本端在 8bit a/b 量化后收尾（≤0.5 Lab 单位），与 resize
-//     插值偏差同级，记入真机验收清单。
+//   · 输出端色彩收尾 v2（两端同数学）：labToRgbFinish = 纸白中和（去模型
+//     纸白暖偏——「偏黄」主因）→ 自适应软膝增益（弱色多提强色少提——「偏灰」
+//     主因）→ 方案色温 → 色域映射（亮度不变等比收缩替代逐通道截断）。
+//     方案表 kFinishSchemes 与桌面 FINISH_SCHEMES 同表（默认 standard，
+//     桌面 COLORIZER_CHROMA_GAIN 环境变量可覆写 standard 增益）。已知微小
+//     偏差：桌面 tiled 路径全程浮点直达收尾，本端在 8bit a/b 量化后收尾
+//     （≤0.7 Lab 单位），与 resize 插值偏差同级，记入真机验收清单。
 // 推理经 OnnxBackend 抽象（真机＝OrtOnnxBackend，宿主测试＝FakeBackend），
 // 全程并发 1（逐块 await），每块前查取消、每块后按块上报进度。
 // 内存压峰（v0.5.5）：浮点张量与整页累加缓冲的生命周期都收敛在子函数栈帧里——
@@ -21,10 +22,9 @@ import '../mem_info.dart';
 import 'backend_api.dart';
 import 'tiles.dart';
 
-/// 全自动输出色度增益（与桌面 COLORIZER_CHROMA_GAIN 默认一致）：模型输出
-/// 普遍偏灰，融合后的 a/b 在 8bit 量化前统一放大；1.0 = 关闭。超色域部分
-/// 由 labToRgbGamut 的色域映射兜底，不会因增益产生截断脏色。
-const kAutoChromaGain = 1.2;
+/// 输出端色彩收尾方案（与桌面 FINISH_SCHEMES 同表，core finish.dart 注册）：
+/// 纸白中和（去偏黄）+ 自适应软膝增益（去偏灰）+ 色域映射，默认 standard。
+/// 旧的平增益常量 kAutoChromaGain=1.2 已被方案表取代（v0.6.0）。
 
 /// 输入灰度 w*h（1B/px），输出上色 RGB w*h*3；null = 被取消。
 Future<Uint8List?> autoColorize({
@@ -34,10 +34,12 @@ Future<Uint8List?> autoColorize({
   required OnnxBackend backend,
   int infer = 1024,
   int overlap = 256,
+  FinishOptions? finish,
   void Function(double progress)? onProgress,
   bool Function()? cancelled,
   void Function(String line)? onLog,
 }) async {
+  final fin = finish ?? kFinishSchemes[kDefaultFinishScheme]!;
   if (cancelled?.call() ?? false) return null;
   final n = width * height;
   // 逐块推理 + 整页 Lab 合成都在子帧里：chroma/weight（@4.2MP ≈50MB）随
@@ -54,9 +56,9 @@ Future<Uint8List?> autoColorize({
     onLog: onLog,
   );
   if (outLab == null) return null;
-  // 色彩收尾：labToRgbGamut = labToRgb 的色域映射版（色域内像素逐位一致，
-  // 超色域按亮度不变等比收缩替代逐通道截断），语义对拍桌面 _finish_bgr。
-  return labToRgbGamut(outLab, n);
+  // 色彩收尾 v2：纸白中和（去偏黄）→ 自适应软膝增益（去偏灰）→ 方案色温 →
+  // 色域映射，语义对拍桌面 _finish_bgr（金样 finish_golden.json ±1）。
+  return labToRgbFinish(outLab, n, fin);
 }
 
 /// 逐块推理并把 a/b 色度加权累加进整页 Lab（L 由原稿灰度直取，见
@@ -116,23 +118,16 @@ Future<Uint8List?> _inferTilesToLab({
   }
   // L 恒取原稿：单通道直接算 Lab 的 L（灰度退化 RGB 的 a/b 恒为偏置 128，
   // 数值与 rgbToLab(展开三通道) 逐值一致，见 lab.dart grayToLabL）；a/b 用
-  // 融合后的色度（service.py:393-397）。
+  // 融合后的原始色度（收尾的增益/中和在 labToRgbFinish 里施加——桌面 tiled
+  // 全程浮点直达收尾，本端先 8bit 量化再收尾，增益量化噪声 ≤0.7 Lab 单位，
+  // 见文件头「已知微小偏差」）。
   final refL = grayToLabL(gray);
   final outLab = Uint8List(n * 3);
   for (var p = 0; p < n; p++) {
     final ww = weight[p] < 1e-6 ? 1e-6 : weight[p];
     outLab[p * 3] = refL[p];
-    // 增益在 8bit 量化前施加（+128 偏置形式的 128+(v−128)·G，与桌面
-    // _finish_bgr 的 (a−128)·gain 同语义；桌面 tiled 全程浮点更精确，
-    // 见文件头「已知微小偏差」）。
-    outLab[p * 3 + 1] =
-        (128.0 + (chroma[p * 2] / ww - 128.0) * kAutoChromaGain)
-            .clamp(0.0, 255.0)
-            .round();
-    outLab[p * 3 + 2] =
-        (128.0 + (chroma[p * 2 + 1] / ww - 128.0) * kAutoChromaGain)
-            .clamp(0.0, 255.0)
-            .round();
+    outLab[p * 3 + 1] = (chroma[p * 2] / ww).round().clamp(0, 255);
+    outLab[p * 3 + 2] = (chroma[p * 2 + 1] / ww).round().clamp(0, 255);
   }
   return outLab;
 }

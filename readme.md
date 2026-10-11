@@ -16,8 +16,9 @@ a deterministic pure-Dart implementation.
 ### Features
 
 - **Fully automatic** — ONNX semantic colorization (SAM-guided generator) for hair / skin / eyes / background, on desktop, in the browser, and on-device in the Android app
+- **Color schemes** — Standard / Vivid Cel / Soft Pastel / Impasto / Retro Showa; the default Standard finish neutralizes the model's paper-yellow cast and adaptively re-saturates muted output
 - **Hint points** — click points on the canvas to pin region colors
-- **Reference image** — transfer the overall tone of any colored image onto the page
+- **Reference image** — transfer the overall tone of any colored image onto the page (Reinhard / histogram matching, strength control, paper-white protection; also available model-free in the Android app)
 - **Batch queue** — up to 32 pages per run; a single failure never blocks the rest
 - **Long pages** — automatic tiled inference above 1024px (256px overlap, linear feathering)
 - **Luminance fidelity** — every mode writes only Lab a/b chroma; L always comes from the original page
@@ -118,8 +119,9 @@ with the repo; downloaded by the app or the user separately
 ### 功能特性
 
 - **全自动** — ONNX 语义上色（SAM 引导 + generator），发/肤/瞳/背景自动配色，桌面、浏览器与 Android 应用端侧均可用
+- **色彩方案** — 标准 / 鲜明赛璐璐 / 柔和淡彩 / 厚涂浓郁 / 昭和复古；默认「标准」收尾修复纸白发黄与整体发灰（纸白中和 + 自适应色度）
 - **提示点** — 在画布上点击落点，指定区域颜色精修
-- **参考图** — 上传任意彩图，提取整体色调迁移到原稿
+- **参考图** — 上传任意彩图，提取整体色调迁移到原稿（Reinhard / 直方图两种算法 + 强度，纸白保护；Android 端另有免模型参考图调色）
 - **批量队列** — 一次最多 32 张，逐个处理，单张失败不阻断
 - **长图** — >1024px 自动分块推理（overlap 256 + 线性羽化融合），整页漫画无下采样损失
 - **亮度保真** — 所有模式只写 Lab a/b 色度，L 通道始终回写原稿

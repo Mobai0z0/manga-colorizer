@@ -3,6 +3,12 @@
 // onnx/auto_service.dart），本视图只做编排：权重目录经 path_provider 解析，
 // 下载进度按 ~1% 节流重绘。由 screens/auto_screen.dart 承载为「全自动」目的地。
 // 不写任何端侧性能承诺（真机耗时未测，属合并后真机验收清单，见 docs 已知限制）。
+//
+// v0.6.0 新增：
+//   · 色彩方案选择（kFinishSchemes，随设置持久化，随 job 下发推理端）；
+//   · 参考图调色并入本页（transferReference 纯 Dart，免模型秒出）——
+//     ①对全自动结果「叠加参考图色调」二次迁移；②独立路径：任选原稿+参考图
+//     直接迁移。两者结果都以 mode='reference' 入图库。
 import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
@@ -10,6 +16,8 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:manga_colorizer_core/manga_colorizer_core.dart'
+    show kDefaultFinishScheme, kFinishSchemes;
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -18,6 +26,7 @@ import 'onnx/weights.dart';
 import 'image_cap.dart';
 import 'mem_info.dart';
 import 'png_encode.dart';
+import 'reference_flow.dart';
 import 'resource_tier.dart';
 import 'app_settings.dart';
 import 'logs/log_bus.dart';
@@ -28,12 +37,23 @@ typedef DownloadOne = Future<void> Function(
     WeightFile f, void Function(int done, int total) onProgress);
 
 /// 全自动成功回调：把结果/原图交给外部（图库入库），不在此 import store。
+/// [mode] 为入库模式（'auto' 或参考图叠加后的 'reference'）。
 typedef AutoOnCompleted = void Function({
   required Uint8List resultPng,
   required Uint8List sourcePng,
   required int width,
   required int height,
+  required String mode,
 });
+
+/// 色彩方案的界面文案（id 与 kFinishSchemes/桌面 FINISH_SCHEMES 同源）。
+const Map<String, String> kSchemeLabels = {
+  'standard': '标准',
+  'vivid-cel': '鲜明赛璐璐',
+  'soft-pastel': '柔和淡彩',
+  'impasto': '厚涂浓郁',
+  'retro-showa': '昭和复古',
+};
 
 /// 下载进度节流：`WeightsStore.download` 按**网络分块**触发 onProgress，逐条
 /// setState 会拖垮 UI。只在整百分比前进时返回新值；total<=0 或百分比未前进
@@ -99,7 +119,20 @@ class _AutoTabState extends State<AutoTab> {
   int _w = 0, _h = 0;
   Uint8List? _sourcePng;
   Uint8List? _resultPng;
+
+  /// 全自动结果的原始 RGB（叠加参考图色调的迁移源，避免从 PNG 重解码）。
+  Uint8List? _resultRgb;
+  String _scheme = kDefaultFinishScheme;
   String _status = '检查权重…';
+
+  // ---- 参考图调色（免模型）状态 ----
+  Uint8List? _refSrcRgb; // 原稿 RGB
+  int _refSrcW = 0, _refSrcH = 0;
+  Uint8List? _refSrcPng; // 原稿预览/入库用 PNG
+  Uint8List? _refRgb; // 参考图 RGB
+  Uint8List? _refThumbPng; // 参考图小预览
+  Uint8List? _refOutPng; // 迁移结果 PNG
+  bool _refBusy = false;
 
   static const _license =
       '模型权重 CC BY-NC-SA 4.0，需自行下载，仅限非商业使用；详见仓库 docs/licensing。';
@@ -107,6 +140,7 @@ class _AutoTabState extends State<AutoTab> {
   @override
   void initState() {
     super.initState();
+    _scheme = widget.controller.settings.colorScheme;
     unawaited(_init());
   }
 
@@ -301,6 +335,7 @@ class _AutoTabState extends State<AutoTab> {
       _gray = null;
       _sourcePng = null;
       _resultPng = null;
+      _resultRgb = null;
     });
     try {
       // readAsBytes 而非 File(path)：相册 content:// URI 在部分设备上
@@ -356,7 +391,10 @@ class _AutoTabState extends State<AutoTab> {
           intraThreads: tier.intraThreads,
           useArena: tier.useArena,
           idleRelease: tier.idleRelease);
-      final out = await widget.engine.colorize(gray, _w, _h, onProgress: (p) {
+      widget.logs.info('auto', '色彩方案：$_scheme');
+      final out = await widget.engine.colorize(gray, _w, _h,
+          scheme: _scheme,
+          onProgress: (p) {
         if (!mounted) return;
         setState(() {
           _inferPct = p;
@@ -375,12 +413,13 @@ class _AutoTabState extends State<AutoTab> {
       if (!mounted) return;
       setState(() {
         _resultPng = png;
-        _status = '完成。可预览或分享。';
+        _resultRgb = out; // 叠加参考图色调的迁移源（免重解码）
+        _status = '完成。可预览、分享或叠加参考图色调。';
       });
       final src = _sourcePng;
       if (src != null) {
         widget.onCompleted?.call(
-            resultPng: png, sourcePng: src, width: w, height: h);
+            resultPng: png, sourcePng: src, width: w, height: h, mode: 'auto');
       }
     } on Object catch (e) {
       if (mounted) setState(() => _status = '全自动失败：$e');
@@ -397,6 +436,184 @@ class _AutoTabState extends State<AutoTab> {
   }
 
   Future<void> _cancelRun() => widget.engine.shutdown();
+
+  /// 切换色彩方案：本页即时生效并经全局控制器落盘（同 settings.json 单一真源）。
+  void _applyScheme(String id) {
+    if (!kFinishSchemes.containsKey(id)) return;
+    setState(() => _scheme = id);
+    widget.controller
+        .update(widget.controller.settings.copyWith(colorScheme: id));
+    widget.logs.info('auto', '色彩方案切换为 ${kSchemeLabels[id] ?? id}');
+  }
+
+  /// 通用选图（参考图调色路径）：相册原生缩放 + capDecodeRgba 兜底，
+  /// 返回 RGBA 与尺寸（与 _pick 的缓冲纪律一致）。
+  Future<({Uint8List rgba, int width, int height})?> _pickRgba() async {
+    final tier = await ResourceTier.detect();
+    final XFile? file = await _picker.pickImage(
+        source: ImageSource.gallery,
+        maxWidth: tier.maxPickSide.toDouble(),
+        maxHeight: tier.maxPickSide.toDouble());
+    if (file == null) return null;
+    final bytes = await file.readAsBytes();
+    final cap = await capDecodeRgba(bytes, maxSide: tier.maxPickSide);
+    return (rgba: cap.rgba, width: cap.width, height: cap.height);
+  }
+
+  /// 对全自动结果「叠加参考图色调」：迁移源用结果 RGB（L 已等于原稿），
+  /// 免模型秒出；结果替换当前预览并以 mode='reference' 入图库。
+  Future<void> _overlayRefOnAuto() async {
+    final resultRgb = _resultRgb;
+    if (resultRgb == null || _busy) return;
+    final picked = await _pickRgba();
+    if (!mounted) return;
+    if (picked == null) return;
+    setState(() {
+      _busy = true;
+      _status = '参考图调色中…';
+    });
+    try {
+      final refRgb = await Isolate.run(() => rgbaToRgbBytes(picked.rgba));
+      final outRgb = await transferInIsolate(
+          srcRgb: resultRgb, refRgb: refRgb, width: _w);
+      if (!mounted) return;
+      setState(() => _status = '编码 PNG…');
+      final png = await _encodePng(outRgb, _w, _h);
+      if (!mounted) return;
+      setState(() {
+        _resultPng = png;
+        _resultRgb = outRgb;
+        _status = '参考图色调已叠加。可继续分享或再次调整。';
+      });
+      final src = _sourcePng;
+      if (src != null) {
+        widget.onCompleted?.call(
+            resultPng: png,
+            sourcePng: src,
+            width: _w,
+            height: _h,
+            mode: 'reference');
+      }
+      widget.logs.info('auto', '参考图色调叠加完成 $_w×$_h');
+    } on Object catch (e) {
+      if (mounted) setState(() => _status = '参考图调色失败：$e');
+      widget.logs.error('auto', '参考图调色失败：$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// 独立参考图调色：选原稿（任意图，L 取其亮度）→ 迁移 → 预览/分享/入库。
+  Future<void> _pickRefSource() async {
+    if (_refBusy) return;
+    final picked = await _pickRgba();
+    if (!mounted) return;
+    if (picked == null) return;
+    setState(() {
+      _refBusy = true;
+      _status = '读取原稿…';
+      _refSrcRgb = null;
+      _refSrcPng = null;
+      _refOutPng = null;
+    });
+    try {
+      final rgb = await Isolate.run(() => rgbaToRgbBytes(picked.rgba));
+      final png = await encodePngFromRgba(picked.rgba, picked.width, picked.height);
+      if (!mounted) return;
+      setState(() {
+        _refSrcRgb = rgb;
+        _refSrcW = picked.width;
+        _refSrcH = picked.height;
+        _refSrcPng = png;
+        _status = '原稿 ${picked.width}×${picked.height} 已就绪。';
+      });
+    } on Object catch (e) {
+      if (mounted) setState(() => _status = '读取失败：$e');
+    } finally {
+      if (mounted) setState(() => _refBusy = false);
+    }
+  }
+
+  Future<void> _pickReference() async {
+    if (_refBusy) return;
+    final picked = await _pickRgba();
+    if (!mounted) return;
+    if (picked == null) return;
+    setState(() {
+      _refBusy = true;
+      _status = '读取参考图…';
+      _refRgb = null;
+      _refThumbPng = null;
+      _refOutPng = null;
+    });
+    try {
+      final rgb = await Isolate.run(() => rgbaToRgbBytes(picked.rgba));
+      final png = await encodePngFromRgba(picked.rgba, picked.width, picked.height);
+      if (!mounted) return;
+      setState(() {
+        _refRgb = rgb;
+        _refThumbPng = png;
+        _status = '参考图已就绪。';
+      });
+    } on Object catch (e) {
+      if (mounted) setState(() => _status = '读取失败：$e');
+    } finally {
+      if (mounted) setState(() => _refBusy = false);
+    }
+  }
+
+  Future<void> _runRefTransfer() async {
+    final src = _refSrcRgb;
+    final ref = _refRgb;
+    if (src == null || ref == null || _refBusy) return;
+    setState(() {
+      _refBusy = true;
+      _status = '参考图调色中…';
+      _refOutPng = null;
+    });
+    try {
+      final outRgb = await transferInIsolate(
+          srcRgb: src, refRgb: ref, width: _refSrcW);
+      if (!mounted) return;
+      setState(() => _status = '编码 PNG…');
+      final png = await _encodePng(outRgb, _refSrcW, _refSrcH);
+      widget.logs
+          .info('reference', '参考图调色完成 $_refSrcW×$_refSrcH${rssSuffix()}');
+      if (!mounted) return;
+      setState(() {
+        _refOutPng = png;
+        _status = '完成。可预览或分享。';
+      });
+      final srcPng = _refSrcPng;
+      if (srcPng != null) {
+        widget.onCompleted?.call(
+            resultPng: png,
+            sourcePng: srcPng,
+            width: _refSrcW,
+            height: _refSrcH,
+            mode: 'reference');
+      }
+    } on Object catch (e) {
+      if (mounted) setState(() => _status = '参考图调色失败：$e');
+      widget.logs.error('reference', '参考图调色失败：$e');
+    } finally {
+      if (mounted) setState(() => _refBusy = false);
+    }
+  }
+
+  Future<void> _shareRef() async {
+    final png = _refOutPng;
+    if (png == null) return;
+    try {
+      final temp = await getTemporaryDirectory();
+      final f = File(
+          '${temp.path}/ref_${DateTime.now().millisecondsSinceEpoch}.png');
+      await f.writeAsBytes(png);
+      await Share.shareXFiles([XFile(f.path)], text: 'Manga Colorizer 参考图调色结果');
+    } on Object catch (e) {
+      if (mounted) setState(() => _status = '分享失败：$e');
+    }
+  }
 
   Future<void> _share() async {
     final png = _resultPng;
@@ -432,6 +649,11 @@ class _AutoTabState extends State<AutoTab> {
         const SizedBox(height: 12),
         if (!_checking && _weightsMissing) ..._guide(context, totalMb),
         if (!_weightsMissing && !_checking) ..._ready(context),
+        // 参考图调色免模型：权重缺失也可用（下载引导与它同屏不冲突）。
+        if (!_checking) ...[
+          const SizedBox(height: 16),
+          ..._referenceCard(context),
+        ],
       ],
     );
   }
@@ -483,6 +705,29 @@ class _AutoTabState extends State<AutoTab> {
             ),
         ],
       ),
+      const SizedBox(height: 8),
+      // 色彩方案：随 job 下发推理端收尾（与桌面 FINISH_SCHEMES 同表）。
+      DropdownButtonFormField<String>(
+        initialValue: _scheme,
+        decoration: InputDecoration(
+          labelText: '色彩方案',
+          hintText: '标准＝修复偏黄偏灰的默认收尾',
+          border: const OutlineInputBorder(),
+          isDense: true,
+          suffixIcon: _scheme == kDefaultFinishScheme
+              ? null
+              : IconButton(
+                  onPressed: _busy ? null : () => _applyScheme(kDefaultFinishScheme),
+                  icon: const Icon(Icons.restart_alt),
+                  tooltip: '恢复默认',
+                ),
+        ),
+        items: [
+          for (final id in kFinishSchemes.keys)
+            DropdownMenuItem(value: id, child: Text(kSchemeLabels[id] ?? id)),
+        ],
+        onChanged: _busy ? null : (v) => v == null ? null : _applyScheme(v),
+      ),
       if (_inferring) ...[
         const SizedBox(height: 8),
         LinearProgressIndicator(value: _inferPct),
@@ -504,6 +749,11 @@ class _AutoTabState extends State<AutoTab> {
                   Text('上色结果', style: Theme.of(context).textTheme.labelSmall),
             ),
             IconButton(
+              onPressed: _busy ? null : _overlayRefOnAuto,
+              icon: const Icon(Icons.wallpaper),
+              tooltip: '叠加参考图色调',
+            ),
+            IconButton(
               onPressed: _share,
               icon: const Icon(Icons.ios_share),
               tooltip: '分享 / 保存',
@@ -513,6 +763,90 @@ class _AutoTabState extends State<AutoTab> {
         Image.memory(_resultPng!,
             fit: BoxFit.contain, cacheWidth: 1024, gaplessPlayback: true),
       ],
+    ];
+  }
+
+  /// 参考图调色卡片：免模型（transferReference 纯 Dart）秒出。
+  /// 原稿任选（黑白稿/上次结果均可），参考图给整体色调。
+  List<Widget> _referenceCard(BuildContext context) {
+    return [
+      Card(
+        margin: EdgeInsets.zero,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.wallpaper, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text('参考图调色（免模型）',
+                        style: Theme.of(context).textTheme.titleSmall),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Text('把任意图画的色调迁移到原稿：不加载模型、秒出结果。',
+                  style: Theme.of(context).textTheme.bodySmall),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: _refBusy ? null : _pickRefSource,
+                    icon: const Icon(Icons.image_outlined),
+                    label: Text(_refSrcRgb == null ? '选原稿' : '换原稿'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: _refBusy ? null : _pickReference,
+                    icon: const Icon(Icons.palette_outlined),
+                    label: Text(_refRgb == null ? '选参考图' : '换参考图'),
+                  ),
+                  FilledButton.icon(
+                    onPressed: (_refBusy || _refSrcRgb == null || _refRgb == null)
+                        ? null
+                        : _runRefTransfer,
+                    icon: const Icon(Icons.colorize),
+                    label: const Text('开始调色'),
+                  ),
+                  if (_refThumbPng != null)
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(6),
+                      child: Image.memory(_refThumbPng!,
+                          width: 44, height: 44, fit: BoxFit.cover),
+                    ),
+                ],
+              ),
+              if (_refBusy) ...[
+                const SizedBox(height: 8),
+                const LinearProgressIndicator(minHeight: 2),
+              ],
+              if (_refOutPng != null) ...[
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text('调色结果',
+                          style: Theme.of(context).textTheme.labelSmall),
+                    ),
+                    IconButton(
+                      onPressed: _shareRef,
+                      icon: const Icon(Icons.ios_share),
+                      tooltip: '分享 / 保存',
+                    ),
+                  ],
+                ),
+                Image.memory(_refOutPng!,
+                    fit: BoxFit.contain, cacheWidth: 1024, gaplessPlayback: true),
+              ],
+            ],
+          ),
+        ),
+      ),
     ];
   }
 }

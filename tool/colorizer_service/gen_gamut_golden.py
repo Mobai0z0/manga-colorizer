@@ -36,13 +36,14 @@ def sample(mode: str, n: int) -> np.ndarray:
 
 def main() -> None:
     data = {}
-    for gain in (1.0, service.CHROMA_GAIN):
+    for gain in (1.0, 1.2):
+        opt = {'gain': gain, 'knee': 0.0, 'neutral_paper': False}
         l_all, ab_all, bgr_all = [], [], []
         for mode in ('rgb', 'grid'):
             lab = sample(mode, 1024)
             bgr = service._finish_bgr(lab[:, 0].reshape(1, -1),
                                       lab[:, 1:].astype(np.float32).reshape(1, -1, 2),
-                                      gain=gain)[0]
+                                      opt)[0]
             l_all.extend(int(v) for v in lab[:, 0])
             ab_all.extend([[float(a), float(b)] for a, b in lab[:, 1:]])
             bgr_all.extend([list(map(int, row)) for row in bgr])
