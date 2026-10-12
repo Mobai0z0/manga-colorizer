@@ -23,7 +23,9 @@
 
 色彩收尾 v2: 输出端统一走 _finish_bgr —— ⓪白色前景救援（封闭近白区域:
 模型想上色的白发/白衣/画格内背景, 在原稿 L=255 处没有色度渲染空间——
-跳过纸白中和并按色度把 L 压低, 色度才可见）→ ①纸白中和（原稿 L≥234
+整体跳过纸白中和并按色度把 L 压低, 色度才可见; c0 贴纸白噪声底线、c1=c0+2
+窄门限, 浅色衣服（Lab 色度 C≈4-8）也能渲染出来, 2026-10-12 白衣样张取证）
+→ ①纸白中和（原稿 L≥234
 smoothstep 把近白像素色度收向中性, 去除模型对纸白的系统性暖偏, 是「偏黄」
 主因）→
 ②自适应色度（弱色度全增益、强色度趋缓的软膝点, 修复「偏灰」而不过饱和）→
@@ -404,7 +406,12 @@ def _smoothstep(e0: float, e1: float, x: np.ndarray) -> np.ndarray:
 # ---- 白色前景救援（封闭近白区域在 L=255 处没有色度渲染空间） ----
 # 门限参数与移动端 core white_rescue.dart 同公式（白 rescue 标记 0/1/2）。
 _RESCUE_DL = 16.0        # L 压低上限（字节）; 255→239 ≈ Lab 93.7, 淡色足够
-_RESCUE_GATE_W = 18.0    # c1 - c0: smoothstep 全程宽度
+_RESCUE_GATE_W = 2.0    # c1 - c0: smoothstep 全程宽度
+# 取证调参（2026-10-12, 白衣样张 0005.jpg）: 浅色前景（白衣/浅色衣服）的 Lab
+# 色度天然只有 C≈4-8——浅色在 Lab 里色度就小。旧门限宽 18（c1=c0+18）使 keep 在
+# C<10 时≈0: 浅色区既不吃中和豁免也不压 L, 模型色度在 L=255 处被色域映射吃掉,
+# 成品纯白（用户报「白色部分没有上色」）。窄门限紧贴纸白噪声底线: C≤c0 保持纯白,
+# C≈4 起 keep 快速到 1, 配合封闭近白整体豁免纸白中和, 浅色才看得见。
 
 
 def _white_rescue_marks(l_u8: np.ndarray) -> np.ndarray | None:
@@ -433,8 +440,10 @@ def _with_rescue(l_u8: np.ndarray, ab: np.ndarray, opt: dict) -> dict:
     """给收尾参数注入白色前景救援项（无救援候选时原样返回 opt）。
 
     门限自适应: 纸白像素的色度中位数即模型暖偏（实测 ~3.4, 增益前测量所以
-    与方案无关）, c0 = clamp(bias+1.5, 4.5, 8)。扫描黑边会把页边距切成
-    「封闭」, 误判的纸白色度停在暖偏量级、远低于门限, 不会被染色。
+    与方案无关）, c0 = clamp(bias+1.5, 2.5, 8)。扫描黑边会把页边距切成
+    「封闭」, 误判的纸白色度停在暖偏量级、远低于门限, 不会被染色; c1 = c0+2
+    的窄门限（_RESUE_GATE_W）让 C≈4 起的浅色前景 keep 快速到 1——浅色衣服的
+    Lab 色度天然就小, 宽门限下 keep≈0 等于不救援（2026-10-12 白衣样张取证）。
     色度中位数用 0.5 Lab 步进的直方图取（与移动端 whiteRescueC0 同公式）。
     """
     marks = _white_rescue_marks(l_u8)
@@ -449,7 +458,7 @@ def _with_rescue(l_u8: np.ndarray, ab: np.ndarray, opt: dict) -> dict:
         bias = min(median2, 511) / 2.0
     else:
         bias = 3.4  # 无纸白参考时的模型暖偏常数
-    c0 = min(8.0, max(4.5, bias + 1.5))
+    c0 = min(8.0, max(2.5, bias + 1.5))
     return dict(opt, rescue_mask=(marks == 2), rescue_c0=c0, rescue_c1=c0 + _RESCUE_GATE_W,
                 rescue_dl=_RESCUE_DL)
 
@@ -628,10 +637,12 @@ def _finish_bgr(l_u8: np.ndarray, ab: np.ndarray, opt: dict | None = None) -> np
 
     与 cv2.cvtColor(LAB2BGR) 的差别, 按作用次序:
       0. 白色前景救援（opt['rescue_mask']）: 封闭近白区域（_with_rescue 判定）
-         的 a/b 不吃纸白中和, 且 L 按 keep 压低（keep = smoothstep(c0,c1,C)·
+         的 a/b 整体不吃纸白中和（前景不是纸, 模型在那里的输出就是意图色——若只按
+         keep 渐退, C≈4-8 的浅色会被中和掉大半再增益, 压了 L 仍渲染不出颜色,
+         2026-10-12 白衣样张取证）, 且 L 按 keep 压低（keep = smoothstep(c0,c1,C)·
          smoothstep(244,252,L_byte), C 取增益前的模型色度——门限与方案无关;
-         dl 上限 opt['rescue_dl']）, 给色度让出渲染空间。纸白（连通边缘）不
-         在掩码内, 行为与无救援完全一致。
+         c1=c0+2 窄门限让浅色 keep 快速到 1; dl 上限 opt['rescue_dl']）, 给色度
+         让出渲染空间。纸白（连通边缘）不在掩码内, 行为与无救援完全一致。
       1. 纸白中和（opt['neutral_paper']）: 原稿 L 234→248 smoothstep, 近白像素
          的 a/b 收向中性——模型对纸白有系统性暖偏（实测 b≈+3.4, 与推理分辨率
          无关）, 是「偏黄」的主因; 用户显式色路径用 flat opt 关闭。
@@ -686,8 +697,10 @@ def _finish_bgr(l_u8: np.ndarray, ab: np.ndarray, opt: dict | None = None) -> np
                     * _smoothstep(244.0, 252.0, l_byte) * m
         if neutral:
             t_paper = _smoothstep(234.0, 248.0, l_byte)
-            if keep is not None:
-                t_paper = t_paper * (1.0 - keep)
+            if rescue is not None:
+                # 封闭近白整体豁免纸白中和（不是按 keep 渐退）: 浅色前景色度
+                # C≈4-8, 渐退会把它们中和掉大半, 之后压 L 也渲染不出颜色。
+                t_paper = t_paper * (1.0 - rescue[y0:y1])
             a *= (1.0 - t_paper)
             b *= (1.0 - t_paper)
         if knee > 0.0:

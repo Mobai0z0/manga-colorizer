@@ -102,10 +102,14 @@ double _smoothstep01(double e0, double e1, double x) {
 /// 色彩收尾 v2：8bit Lab（n*3，L 恒取原稿）→ RGB（n*3）。
 ///
 /// [lab] 的 L 字节同时充当「源稿亮度」用于纸白判定；a/b 为 +128 偏置。
-/// [rescue] 非空时为白色前景救援掩码（whiteRescueMarks 的 0/1/2，值 2 生效）：
-/// 这些像素 ①纸白中和按 keep 渐退 ②L 压低 [rescueDl]·keep——keep =
-/// smoothstep([rescueC0],[rescueC1],C)·smoothstep(244,252,L字节)，C 取增益前
-/// 的模型色度（门限与方案无关）。rescue 为 null 时与旧版逐值一致。
+/// [rescue] 非空时为白色前景救援掩码（whiteRescueMarks 的 0/1/2，**只有值 2
+/// （封闭近白）生效**，值 1 是纸白——与桌面 `_with_rescue` 的 `marks==2` 同语义;
+/// 旧版误按 `!=0` 判定会把纸白也救援, 2026-10-12 修正）：这些像素 ①整体不吃
+/// 纸白中和（前景不是纸, 模型在那里的输出就是意图色——只按 keep 渐退会把浅色
+/// 中和掉大半, 压了 L 仍渲染不出颜色, 白衣样张取证）②L 压低 [rescueDl]·keep——
+/// keep = smoothstep([rescueC0],[rescueC1],C)·smoothstep(244,252,L字节)，C 取
+/// 增益前的模型色度（门限与方案无关; c1=c0+2 窄门限让浅色 keep 快速到 1）。
+/// rescue 为 null 时与旧版逐值一致。
 /// 数学次序：⓪白色前景救援 → ①纸白中和 → ②自适应色度 → ③方案色温 →
 /// ④色域映射（t 钳 ≥0，修 L=100 处 Y>1 的负系数退化）→ ⑤纸色渲染。
 /// 与桌面 `_finish_bgr` 同数学，金样对拍容差 ±1（8bit 查表/舍入路径差异，
@@ -121,14 +125,17 @@ Uint8List labToRgbFinish(Uint8List lab, int n, FinishOptions o,
     final lByte = lab[i * 3].toDouble();
     var a = lab[i * 3 + 1] - 128.0;
     var b = lab[i * 3 + 2] - 128.0;
+    final enclosed = rescue != null && rescue[i] == 2;
     var keep = 0.0;
-    if (rescue != null && rescue[i] != 0) {
+    if (enclosed) {
       keep = _smoothstep01(rescueC0, rescueC1, math.sqrt(a * a + b * b)) *
           _smoothstep01(244.0, 252.0, lByte);
     }
     var paperT = 0.0;
     if (o.neutralPaper) {
-      paperT = _smoothstep01(234.0, 248.0, lByte) * (1.0 - keep);
+      // 封闭近白（标记 2）整体豁免纸白中和——不是按 keep 渐退: 浅色前景色度
+      // C≈4-8, 渐退会把它们中和掉大半, 之后压 L 也渲染不出颜色。
+      paperT = enclosed ? 0.0 : _smoothstep01(234.0, 248.0, lByte);
       a *= 1.0 - paperT;
       b *= 1.0 - paperT;
     }

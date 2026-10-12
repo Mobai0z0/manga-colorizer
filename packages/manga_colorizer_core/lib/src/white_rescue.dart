@@ -9,15 +9,19 @@
 // 边缘的是纸白; 被墨线包围的是白色前景。极端图（近白占比 <0.2% 或全图）
 // 不救援（全 0 标记, finish 端 keep 恒 0, 与旧版逐值一致）。
 // 门限自适应: 纸白像素的色度中位数即模型暖偏（实测 ~3.4, 增益前测量所以
-// 与方案无关）, c0 = clamp(bias+1.5, 4.5, 8)。扫描黑边会把页边距切成
-// 「封闭」, 误判的纸白色度停在暖偏量级、远低于门限, 不会被染色。
+// 与方案无关）, c0 = clamp(bias+1.5, 2.5, 8)。扫描黑边会把页边距切成
+// 「封闭」, 误判的纸白色度停在暖偏量级、远低于门限, 不会被染色; c1 = c0+2
+// 的窄门限（取证 2026-10-12 白衣样张）: 浅色衣服的 Lab 色度天然只有 C≈4-8,
+// 旧宽 18 使 C<10 时 keep≈0, 浅色全被色域映射吃掉成纯白。
 import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'lab.dart';
 
 /// 门限全程宽度: c1 = c0 + [kRescueGateWidth]（桌面 _RESCUE_GATE_W 同值）。
-const double kRescueGateWidth = 18.0;
+/// 窄门限（2.0）贴纸白噪声底线: C≤c0 保持纯白, C≈4 起 keep 快速到 1, 浅色
+/// 前景（白衣等）才看得见; 旧值 18 对 C<10 的浅色等于不救援。
+const double kRescueGateWidth = 2.0;
 
 /// 白色前景救援标记: 0=非近白 1=纸白(连通边缘) 2=封闭近白(救援候选)。
 /// [gray] 为原稿灰度 w*h（1B/px），内部经 [grayToLabL] 转 L 字节。
@@ -74,7 +78,7 @@ Uint8List whiteRescueMarks(Uint8List gray, int width, int height) {
 }
 
 /// 救援色度门限 c0：纸白像素色度中位数（0.5 Lab 步进直方图取上中位,
-/// 与桌面 `_with_rescue` 同公式, 不排序不分配大数组）+ 1.5, 钳 [4.5, 8]。
+/// 与桌面 `_with_rescue` 同公式, 不排序不分配大数组）+ 1.5, 钳 [2.5, 8]。
 /// [lab] 为 8bit Lab（n*3）; 无纸白像素时回退 5.0（模型暖偏 ~3.4 + 1.6）。
 double whiteRescueC0(Uint8List lab, Uint8List marks, int n) {
   final bins = Int32List(512); // C*2 量化; 8bit Lab 的 C ≤ ~180, 越界钳 511
@@ -98,5 +102,5 @@ double whiteRescueC0(Uint8List lab, Uint8List marks, int n) {
     }
   }
   final c0 = median2 / 2.0 + 1.5;
-  return c0 < 4.5 ? 4.5 : (c0 > 8.0 ? 8.0 : c0);
+  return c0 < 2.5 ? 2.5 : (c0 > 8.0 ? 8.0 : c0);
 }

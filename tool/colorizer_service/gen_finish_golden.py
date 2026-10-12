@@ -8,8 +8,10 @@ Dart 端 `labToRgbFinish` / `transferReference` 的期望值，锁死两端同�
 finish 样本: 每方案（FINISH_SCHEMES 全表 + flat + rescue）各 2 路 × 512 像素:
   rgb  — 随机 sRGB 原色经 cv2 RGB2LAB（色域内, 含边界量化噪声）;
   grid — L/a/b 全随机（大量真超域, 触发等比收缩与纸白中和路径）。
-rescue 用例额外带确定性掩码（每第 3 个像素）与固定门限参数（随 JSON 下发）,
-锁白色前景救援「跳过纸白中和 + 按色度压低 L」路径两端同数学。
+rescue 用例额外带确定性掩码（每第 3 个像素, 值 2 = whiteRescueMarks 的封闭
+近白标记——纸白标记 1 不救援, 与桌面 `marks==2` 同语义）与生产门限参数
+（c0=3.0/c1=5.0 窄门限, 随 JSON 下发）, 锁白色前景救援「整体跳过纸白中和 +
+按色度压低 L」路径两端同数学。
 
 transfer 样本: 确定性合成 原稿(大面积纸白+墨迹渐变) × 参考图(彩色渐变),
 reinhard/histogram × strength {1.0, 0.6}。
@@ -45,9 +47,10 @@ def gen_finish() -> None:
     data = {}
     cases = {name: service._resolve_finish(name) for name in service.FINISH_SCHEMES}
     cases['flat'] = dict(service._FLAT_FINISH)
-    # 白色前景救援用例: 固定门限参数 + 确定性掩码（标准方案基底）
+    # 白色前景救援用例: 固定门限参数（生产窄门限 c0=3.0/c1=5.0 的代表值）
+    # + 确定性掩码（每第 3 个像素, 值 2 = 封闭近白标记; 纸白标记 1 不救援）
     cases['rescue'] = dict(service._resolve_finish('standard'),
-                           rescue_c0=5.0, rescue_c1=23.0, rescue_dl=16.0)
+                           rescue_c0=3.0, rescue_c1=5.0, rescue_dl=16.0)
     for name, opt in cases.items():
         l_all, ab_all, bgr_all, mask_all = [], [], [], []
         for mode in ('rgb', 'grid'):
@@ -55,7 +58,7 @@ def gen_finish() -> None:
             mask = None
             call_opt = opt
             if name == 'rescue':
-                mask = (np.arange(512) % 3 == 0).astype(np.uint8)
+                mask = (np.arange(512) % 3 == 0).astype(np.uint8) * 2
                 call_opt = dict(opt, rescue_mask=mask.reshape(1, -1).astype(bool))
             bgr = service._finish_bgr(lab[:, 0].reshape(1, -1),
                                       lab[:, 1:].astype(np.float32).reshape(1, -1, 2),

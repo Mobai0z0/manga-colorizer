@@ -52,6 +52,14 @@ consistency.dart 的 `applyConsistency`，金样 `consistency_golden.json`，由
 缓冲），两端以跨语言金样对拍锁定一致（`packages/manga_colorizer_core/test/goldens/
 finish_golden.json`，由 `tool/colorizer_service/gen_finish_golden.py` 生成）。作用次序：
 
+0. **白色前景救援**：被墨线包围的封闭近白区域（白发/白衣/画格内背景——近白
+   L≥234 四邻接连通域里接触图像边缘的是纸白、不接触的是前景）在原稿 L=255
+   （Lab L=100）处没有色度渲染空间：这些像素**整体跳过**纸白中和（前景不是纸，
+   模型在那里的输出就是意图色），并按色度把 L 压低（`dl=16·keep`，keep =
+   smoothstep(c0,c1,C)·smoothstep(244,252,L)，C 取增益前模型色度）。门限贴纸白
+   噪声底线：c0 = clamp(纸白色度中位数+1.5, 2.5, 8)，c1 = c0+2 窄门限——浅色衣服的
+   Lab 色度天然只有 C≈4-8，宽门限下 keep≈0 等于不救援（2026-10-12 白衣样张取证：
+   围裙模型色度 C≈4 与纸白噪声同量级，旧公式成品纯白）；
 1. **纸白中和**：原稿 L 234→248 smoothstep 把近白像素的 a/b 收向中性——模型对纸白有
    系统性暖偏（实测纸白 b≈+3.4，与推理分辨率无关），这是「偏黄」的主因；
 2. **自适应色度**（软膝点）：弱色度全增益、强色度趋缓（`1+(G−1)/(1+(C/C0)²)`）——

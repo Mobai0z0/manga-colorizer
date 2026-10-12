@@ -2,7 +2,7 @@
 
 用法: ..\\.venv\\Scripts\\python.exe tool/colorizer_service/quality_check.py
 
-断言十二件事:
+断言十四件事:
   1. 色域内像素与 cv2 LAB2BGR 逐值差 ≤1（平增益收尾时是无损替代）;
   2. 超色域像素的输出色相偏移 <2.5°（旧逐通道截断可偏 30°+，是发灰发闷主因）;
   3. 亮度严格保持（色域映射前后 L 差 ≤1，8bit 量化容差）;
@@ -12,10 +12,11 @@
   7. L=100 纯白 + 任意色度输出纯白（t≥0 钳制后无负系数外推）;
   8. 参考图迁移: 亮度保真 + 纸白保护 + strength=0 恒等;
   9. 白色前景救援: 封闭近白吃到模型色度（L 压低）, 纸白保持纯白;
-  10. 同材质色相统一: 色调签名相同而色相冲突 → 小块旋到大块色相, 肤色/阴影
+  10. 浅色前景救援: 封闭近白模型色度 C≈5（白衣样张量级）也渲染出可见浅色;
+  11. 同材质色相统一: 色调签名相同而色相冲突 → 小块旋到大块色相, 肤色/阴影
       不误配, L 与色度幅值保持;
-  11. 中性区色度保底: 有色邻居包围的灰块染上主色, 孤立灰与墨线不染色;
-  12. COLORIZER_CONSISTENCY=0 时一致性 pass 恒等。
+  12. 中性区色度保底: 有色邻居包围的灰块染上主色, 孤立灰与墨线不染色;
+  13. COLORIZER_CONSISTENCY=0 时一致性 pass 恒等。
 """
 import math
 import os
@@ -215,6 +216,34 @@ def test_white_rescue():
     assert spread0.max() <= 2, '无救援参数时行为应与旧版一致（纯白）'
 
 
+def test_white_rescue_light_chroma():
+    """浅色前景救援（2026-10-12 白衣样张取证）: 封闭近白的模型色度只有
+    C≈4-8（浅色在 Lab 里色度就小, 与纸白噪声同量级）——窄门限 + 整体豁免
+    中和后应渲染出可见浅色; 旧宽门限（c1=c0+18）下 keep≈0, 成品纯白。"""
+    gray = np.full((24, 24), 255, np.uint8)
+    gray[7, 7:17] = 0
+    gray[16, 7:17] = 0
+    gray[7:17, 7] = 0
+    gray[7:17, 16] = 0
+    l_ref = cv2.cvtColor(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), cv2.COLOR_BGR2LAB)[..., 0]
+    marks = service._white_rescue_marks(l_ref)
+    # 纸白停在模型暖偏噪声量级（b≈+1.4）, 封闭近白是浅暖色（b=+5, C=5）
+    ab = np.full((24, 24, 2), 128.0, np.float32)
+    ab[..., 1] = 128.0 + np.where(marks == 2, 5.0, 1.4)
+    opt = service._with_rescue(l_ref, ab, service._resolve_finish('standard'))
+    out = service._finish_bgr(l_ref, ab, opt)
+    lab_out = cv2.cvtColor(out, cv2.COLOR_BGR2LAB).astype(np.float64)
+    inner = out[10:14, 10:14].astype(np.int32)
+    b_in = lab_out[10:14, 10:14, 2].mean() - 128.0
+    spread = inner.max(axis=-1) - inner.min(axis=-1)
+    assert b_in > 2.0, f'浅色封闭近白未被染上: b={b_in:.1f}'
+    assert spread.mean() > 3.0, f'浅色封闭近白仍读作纯白: spread={spread.mean():.1f}'
+    # 纸白（贴边, 噪声量级）保持纯白
+    paper = out[0:4, 0:4].astype(np.int32)
+    pspread = paper.max(axis=-1) - paper.min(axis=-1)
+    assert pspread.max() <= 2, f'纸白被浅色救援误染: spread={pspread.max()}'
+
+
 def test_unify_material_hues():
     """同材质色相统一: 色调签名相同而色相冲突的两块 → 小块旋到大块色相;
     肤色平涂 vs 阴影排线（ΔL 超限）不配对; L 与色度幅值严格保持。"""
@@ -325,9 +354,10 @@ if __name__ == '__main__':
              test_knee_boosts_chroma, test_gain_leaves_neutral_unchanged,
              test_black_not_tinted, test_paper_neutralization,
              test_pure_white_no_negative_extrapolation, test_colorize_wiring,
+             test_white_rescue, test_white_rescue_light_chroma,
              test_unify_material_hues, test_neutral_chroma_floor,
              test_consistency_disabled,
-             test_reference_transfer, test_white_rescue]
+             test_reference_transfer]
     for t in tests:
         t()
         print(f'PASS {t.__name__}')
