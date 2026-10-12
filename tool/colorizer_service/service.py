@@ -15,6 +15,12 @@
 长图说明: 长边超过 TILE=1024 自动分块推理 (OVERLAP=256, 线性羽化融合),
 避免整页下采样到 1024 方形造成的精度损失。
 
+跨格一致性 v1（收尾前的色度场后处理, 两端同数学）: ①同材质色相统一——
+色调签名（原稿 L 直方图）相同而色相冲突（圆距 ≥30°）的色块统一到质量
+更大的色相, 修复「同一人物/物件跨格不同色」; ②中性区色度保底——L∈[64,234)
+且色度低于随暗度增长的保底曲线的像素, 沿局部主色方向抬到保底, 修复
+「密集排线区平涂成灰块, 看起来没上色」。COLORIZER_CONSISTENCY=0 关闭。
+
 色彩收尾 v2: 输出端统一走 _finish_bgr —— ⓪白色前景救援（封闭近白区域:
 模型想上色的白发/白衣/画格内背景, 在原稿 L=255 处没有色度渲染空间——
 跳过纸白中和并按色度把 L 压低, 色度才可见）→ ①纸白中和（原稿 L≥234
@@ -448,6 +454,173 @@ def _with_rescue(l_u8: np.ndarray, ab: np.ndarray, opt: dict) -> dict:
                 rescue_dl=_RESCUE_DL)
 
 
+# ---- 跨格一致性（收尾前的两个色度场后处理, 与移动端 core consistency.dart 同数学） ----
+# 动机（2026-10-11 用户样张取证）: ①模型对同质网点/排线区域跨格任意赋色相——
+# 同一蝴蝶结上格粉(355°)、特写格蓝紫(281°), 色相差 74°, 而两者在原稿里的色调
+# 签名几乎相同(L 直方图交叠 0.73); ②密集排线区被平涂成低色度灰蓝(C≈5 @ L≈203),
+# 在有色页面上读作「没上色的灰块」。两个 pass 都只动收尾前的融合色度场 a/b,
+# L 恒取原稿; COLORIZER_CONSISTENCY=0 可整体关闭（提示点/参考图路径经 colorize()
+# 同样生效）。
+_UNIFY_C_GATE = 10.0     # 有色像素门限（Lab 色度幅值, 增益前）
+_UNIFY_MIN_PX_FRAC = 3e-4  # blob 最小像素占比（兼 256px 下限）
+_UNIFY_HUE_DIFF = 30.0   # 圆距超过此值才视为「赋色冲突」
+_UNIFY_DL = 20.0         # 允许的平均 L 差（色调签名闸门）
+_UNIFY_HIST_INT = 0.65   # 色调签名（L 8bin 直方图）最小交叠
+_UNIFY_R = 0.60          # blob 自身色相相干度下限（混色 blob 不参与）
+_UNIFY_SIZE_RATIO = 24.0  # 配对 blob 的像素数比上限（材质常被墨线分裂成小块,
+                          # 比值要放得下「半只蝴蝶结 vs 整只」; 24 仍挡百倍噪点)
+_FLOOR_MAX = 14.0        # 中性区保底色度上限（增益前 Lab 单位）
+_FLOOR_BLUR_R = 40       # 局部主色统计窗口半径（px）
+_FLOOR_VOTE_C = 4.0      # 局部主色投票的色度门槛（低于此视为无色不投票）
+
+
+def _consistency_enabled() -> bool:
+    return os.environ.get('COLORIZER_CONSISTENCY', '1').lower() not in ('0', 'false', 'no')
+
+
+def _unify_material_hues(l_u8: np.ndarray, ab: np.ndarray) -> np.ndarray:
+    """同材质色相统一: 把「色调签名相同但色相冲突」的色块统一到质量更大的一簇。
+
+    色块 = C≥10 且非墨(L≥64)非纸(L<234) 的 8 连通域（先 3×3 开运算断开 1-2px
+    的窄桥, 再把开运算丢掉的像素按近邻归回）。每个色块统计圆均值色相（相干度
+    R<0.6 的混色块不参与）、平均 L 与 L 8bin 直方图（色调签名——漫画「同一网点
+    = 同一材质」的约定）。两块签名相近（直方图交叠 ≥0.65 且平均 L 差 ≤20）而
+    色相圆距 ≥30° 时并成一组, 组内按色度质量选主, 其余块整块旋转色相（保 C 与
+    L, 只转 a/b 方向, 内部明暗纹理关系不变）。肤色大平涂与阴影排线因 ΔL 或
+    直方图交叠不达门槛天然互斥; 组内只有一个块或色相已一致时不做任何修改。
+    """
+    a = ab[..., 0] - 128.0
+    b = ab[..., 1] - 128.0
+    C = np.hypot(a, b)
+    m = (C >= _UNIFY_C_GATE) & (l_u8 >= 64) & (l_u8 < 234)
+    n_min = max(256, int(l_u8.size * _UNIFY_MIN_PX_FRAC))
+    m_u8 = m.astype(np.uint8)
+    m_u8 = cv2.morphologyEx(m_u8, cv2.MORPH_OPEN,
+                            np.ones((3, 3), np.uint8))
+    num, labels = cv2.connectedComponents(m_u8, connectivity=8)
+    for _ in range(2):  # 开运算丢掉的像素按近邻归回（2px 内）
+        unassigned = (labels == 0) & m
+        if not unassigned.any():
+            break
+        # cv2.dilate 不支持 int32; 标签数远小于 2^24, float32 精度无损
+        neigh = cv2.dilate(labels.astype(np.float32), np.ones((3, 3), np.uint8))
+        labels[unassigned] = neigh[unassigned].astype(np.int32)
+    blobs = []
+    for i in range(1, num):
+        ids = np.flatnonzero(labels == i)
+        if ids.size < n_min:
+            continue
+        aa = a.reshape(-1)[ids]
+        bb = b.reshape(-1)[ids]
+        LL = l_u8.reshape(-1)[ids].astype(np.float32)
+        ang = np.radians((np.degrees(np.arctan2(bb, aa)) + 360.0) % 360.0)
+        R = float(np.hypot(np.sin(ang).mean(), np.cos(ang).mean()))
+        if R < _UNIFY_R:
+            continue
+        lh = np.bincount(np.minimum((LL / 32).astype(np.int32), 7),
+                         minlength=8).astype(np.float64)
+        blobs.append(dict(
+            ids=ids, px=int(ids.size),
+            hue=float(np.degrees(np.arctan2(np.sin(ang).mean(),
+                                            np.cos(ang).mean())) % 360.0),
+            meanL=float(LL.mean()), lh=lh / max(float(lh.sum()), 1.0),
+            mass=float(np.hypot(aa, bb).sum())))
+    parent = list(range(len(blobs)))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for i in range(len(blobs)):
+        for j in range(i + 1, len(blobs)):
+            A, B = blobs[i], blobs[j]
+            dh = abs((A['hue'] - B['hue'] + 180.0) % 360.0 - 180.0)
+            if dh < _UNIFY_HUE_DIFF:
+                continue
+            if abs(A['meanL'] - B['meanL']) > _UNIFY_DL:
+                continue
+            if float(np.minimum(A['lh'], B['lh']).sum()) < _UNIFY_HIST_INT:
+                continue
+            if max(A['px'], B['px']) > min(A['px'], B['px']) * _UNIFY_SIZE_RATIO:
+                continue
+            ri, rj = find(i), find(j)
+            if ri != rj:
+                parent[max(ri, rj)] = min(ri, rj)
+    groups: dict[int, list[int]] = {}
+    for i in range(len(blobs)):
+        groups.setdefault(find(i), []).append(i)
+    out = ab.copy()
+    flat2 = out.reshape(-1, 2)
+    for g in groups.values():
+        if len(g) < 2:
+            continue
+        tgt = max(g, key=lambda k: blobs[k]['mass'])
+        th = blobs[tgt]['hue']
+        for k in g:
+            if k == tgt:
+                continue
+            d = ((th - blobs[k]['hue'] + 540.0) % 360.0) - 180.0
+            if abs(d) < 12.0:
+                continue
+            ids = blobs[k]['ids']
+            t = np.radians(d)
+            aa = a.reshape(-1)[ids]
+            bb = b.reshape(-1)[ids]
+            ca, sa = np.cos(t), np.sin(t)
+            flat2[ids, 0] = aa * ca - bb * sa + 128.0
+            flat2[ids, 1] = aa * sa + bb * ca + 128.0
+    return out
+
+
+def _neutral_chroma_floor(l_u8: np.ndarray, ab: np.ndarray) -> np.ndarray:
+    """中性区色度保底: 「看起来没上色的灰块」修复。
+
+    有色页面上, 明度居中而色度接近 0 的区域读作未上色灰块（模型对密集排线区
+    的平涂）。给 L∈[64,234)（非墨非纸; 墨线保持中性、纸白走救援/中和）且色度
+    低于保底曲线的像素, 沿「局部主色」方向把色度抬到保底值。保底曲线随暗度
+    增长（T = FLOOR_MAX·smoothstep(6,48,234−L)——越暗的阴影越需要色度才读作
+    「有色阴影」）, 上限为局部主色强度 V−4（C>4 的有色像素加权均值向量）:
+    周围没有可借色的孤立灰区不发明颜色。target 场本身平滑（L 逐像素、V 经
+    boxBlur）, 硬掩码 C<target 不会产生可见接缝。
+    """
+    L = l_u8.astype(np.float32)
+    a = ab[..., 0] - 128.0
+    b = ab[..., 1] - 128.0
+    C = np.hypot(a, b)
+    cw = np.maximum(C - _FLOOR_VOTE_C, 0.0)
+    ks = (_FLOOR_BLUR_R * 2 + 1, _FLOOR_BLUR_R * 2 + 1)
+    # BORDER_CONSTANT(0) 零填充: 与移动端 core consistency.dart 的滑动窗口
+    # 零窗口语义逐值一致（默认 REFLECT_101 会镜像内容, 等于给边缘像素复读投票）。
+    sw = cv2.boxFilter(cw, -1, ks, normalize=False, borderType=cv2.BORDER_CONSTANT)
+    Va = cv2.boxFilter(a * cw, -1, ks, normalize=False,
+                       borderType=cv2.BORDER_CONSTANT) / np.maximum(sw, 1e-6)
+    Vb = cv2.boxFilter(b * cw, -1, ks, normalize=False,
+                       borderType=cv2.BORDER_CONSTANT) / np.maximum(sw, 1e-6)
+    Vm = np.hypot(Va, Vb)
+    target = np.minimum(_FLOOR_MAX * _smoothstep(6.0, 48.0, 234.0 - L),
+                        np.maximum(Vm - _FLOOR_VOTE_C, 0.0))
+    # 作用域硬闸门: 墨线(L<64)永不染色, 纸白(L≥234)走救援/中和
+    target[(L < 64.0) | (L >= 234.0)] = 0.0
+    grow = (C < target).astype(np.float32)
+    if not grow.any():
+        return ab
+    inv = 1.0 / np.maximum(Vm, 1e-6)
+    out = ab.copy()
+    out[..., 0] = a + (Va * inv * target - a) * grow + 128.0
+    out[..., 1] = b + (Vb * inv * target - b) * grow + 128.0
+    return out
+
+
+def _consistency_pass(l_u8: np.ndarray, ab: np.ndarray) -> np.ndarray:
+    """跨格一致性: 先统一同材质色相（避免冲突色污染局部主色）, 再做中性区保底。"""
+    if not _consistency_enabled():
+        return ab
+    ab = _unify_material_hues(l_u8, ab)
+    return _neutral_chroma_floor(l_u8, ab)
+
+
 def _finish_bgr(l_u8: np.ndarray, ab: np.ndarray, opt: dict | None = None) -> np.ndarray:
     """色彩收尾 v2: 原稿明度 L + 浮点 a/b（cv2 8bit 约定, +128 偏置）→ BGR uint8。
 
@@ -656,6 +829,7 @@ def colorize_tiled(gray: np.ndarray, opt: dict, tile: int = 1024, overlap: int =
     ab[..., 0] = chroma[..., 0] / weight
     ab[..., 1] = chroma[..., 1] / weight
     lab_l = cv2.cvtColor(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), cv2.COLOR_BGR2LAB)[..., 0]
+    ab = _consistency_pass(lab_l, ab)
     return _finish_bgr(lab_l, ab, _with_rescue(lab_l, ab, opt))
 
 
@@ -668,6 +842,7 @@ def colorize(gray: np.ndarray, opt: dict) -> np.ndarray:
     lab_c = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB)
     lab_l = cv2.cvtColor(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), cv2.COLOR_BGR2LAB)[..., 0]
     ab = lab_c[..., 1:].astype(np.float32)
+    ab = _consistency_pass(lab_l, ab)
     return _finish_bgr(lab_l, ab, _with_rescue(lab_l, ab, opt))
 
 

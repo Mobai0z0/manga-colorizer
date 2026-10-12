@@ -76,7 +76,12 @@ conclusions of this option will be revised after measurement.
 
 ## Color schemes (both ends)
 
-The fully automatic output always goes through "color finishing v2" (paper-white
+The fully automatic output first applies "cross-panel consistency": when the model
+assigns different hues to the same character/object across panels (e.g. the same ribbon
+pink in one panel, blue in another), they are unified toward the side with the larger
+chroma mass; hatching areas flattened into gray patches are tinted with the surrounding
+dominant color instead of looking "uncolored". Then it always goes through "color
+finishing v2" (paper-white
 neutralization against the yellow cast + adaptive chroma against the gray look + gamut
 mapping) and ships with five style schemes — a dropdown in the desktop workbench when the
 mode is "Fully automatic", a selector in the mobile "Fully automatic" tab, both sent with

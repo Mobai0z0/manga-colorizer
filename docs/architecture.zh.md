@@ -25,10 +25,27 @@ mobile/                          Flutter Android 壳（Dart 引擎 + 端侧 ONNX
 功能特性：全自动 ONNX 语义上色（SAM 引导 + generator）、提示点画布精修、参考图色调迁移、
 色彩方案（标准/鲜明赛璐璐/柔和淡彩/厚涂浓郁/昭和复古，见下）、批量队列（一次最多 32 张，
 单张失败不阻断）、长图自动分块推理、亮度保真（所有模式只写 Lab a/b 色度，L 通道始终回写
-原稿）、色彩收尾（纸白中和 + 自适应色度 + 超色域等比收缩映射，见下）、GPU 自动加速
+原稿）、跨格一致性（同材质色相统一 + 中性区色度保底，见下）、色彩收尾（纸白中和 + 自适应色度 + 超色域等比收缩映射，见下）、GPU 自动加速
 （Windows 优先 DirectML，NVIDIA 可用 CUDA，无 GPU 自动回退 CPU）。
 
-### 色彩收尾 v2 与色彩方案（两端同数学）
+### 跨格一致性与色彩收尾 v2（两端同数学）
+
+全自动输出的收尾之前有「跨格一致性」两个色度场后处理（桌面 `service.py
+_unify_material_hues` + `_neutral_chroma_floor`，移动端 `manga_colorizer_core`
+consistency.dart 的 `applyConsistency`，金样 `consistency_golden.json`，由
+`gen_consistency_golden.py` 生成；`COLORIZER_CONSISTENCY=0` 可整体关闭）：
+
+1. **同材质色相统一**：模型对同质网点/排线区域跨格任意赋色相（同一蝴蝶结两格
+   粉/蓝）。按「原稿 L 8bin 直方图 = 色调签名」分组——漫画同网点即同材质——
+   签名相同（交叠 ≥0.65 且平均 L 差 ≤20）而色相圆距 ≥30° 的色块，整块旋转到
+   组内色度质量最大的一簇（保 C 与 L，内部明暗纹理不变）。色块 = C≥10 的
+   8 连通域（3×3 开运算断窄桥）；混色块（色相相干度 R<0.6）与面积比 >24× 的
+   配对不参与，防误伤。
+2. **中性区色度保底**：密集排线区被模型平涂成低色度灰蓝（C≈5 @ L≈203），在
+   有色页面上读作「没上色的灰块」。L∈[64,234)（墨线不染色、纸白走救援）且
+   色度低于随暗度增长的保底曲线（`14·smoothstep(6,48,234−L)`）的像素，沿
+   「局部主色」（C>4 像素的加权 box 均值，零填充边界）方向抬到
+   min(保底, 主色强度−4)——周围没有可借色的孤立灰区不发明颜色。
 
 全自动输出的最后一步统一走「色彩收尾」，桌面在 `service.py _finish_bgr`（numpy 向量化
 + 64 行分块），移动端在 `manga_colorizer_core` 的 `labToRgbFinish`（逐像素标量，零额外
@@ -55,7 +72,7 @@ standard（默认，修复偏黄偏灰）/ vivid-cel / soft-pastel / impasto / r
 统计（漫画页 90% 纸白会淹没 Reinhard 统计）、纸白软边界保护、支持 reinhard
 （氛围对齐）与 histogram（分布对齐）两种算法及 strength 强度，金样
 `transfer_golden.json`（容差 ±8，机理见测试头注释）。
-冒烟断言见 `tool/colorizer_service/quality_check.py`（不加载模型，秒级，9 项）。
+冒烟断言见 `tool/colorizer_service/quality_check.py`（不加载模型，秒级，13 项）。
 
 ## 前端（web/dist）
 

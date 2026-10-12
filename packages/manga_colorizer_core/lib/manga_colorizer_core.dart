@@ -13,6 +13,7 @@ export 'src/colorize.dart';
 export 'src/autolevel.dart';
 export 'src/cel.dart';
 export 'src/checker.dart';
+export 'src/consistency.dart';
 export 'src/finish.dart';
 export 'src/filters.dart';
 export 'src/geometry.dart' show ChromaSolver, ChromaSolution;

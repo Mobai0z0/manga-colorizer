@@ -2,7 +2,7 @@
 
 用法: ..\\.venv\\Scripts\\python.exe tool/colorizer_service/quality_check.py
 
-断言九件事:
+断言十二件事:
   1. 色域内像素与 cv2 LAB2BGR 逐值差 ≤1（平增益收尾时是无损替代）;
   2. 超色域像素的输出色相偏移 <2.5°（旧逐通道截断可偏 30°+，是发灰发闷主因）;
   3. 亮度严格保持（色域映射前后 L 差 ≤1，8bit 量化容差）;
@@ -11,7 +11,11 @@
   6. 纸白中和: 近白像素的暖偏被定点去除（偏黄修复）;
   7. L=100 纯白 + 任意色度输出纯白（t≥0 钳制后无负系数外推）;
   8. 参考图迁移: 亮度保真 + 纸白保护 + strength=0 恒等;
-  9. 白色前景救援: 封闭近白吃到模型色度（L 压低）, 纸白保持纯白。
+  9. 白色前景救援: 封闭近白吃到模型色度（L 压低）, 纸白保持纯白;
+  10. 同材质色相统一: 色调签名相同而色相冲突 → 小块旋到大块色相, 肤色/阴影
+      不误配, L 与色度幅值保持;
+  11. 中性区色度保底: 有色邻居包围的灰块染上主色, 孤立灰与墨线不染色;
+  12. COLORIZER_CONSISTENCY=0 时一致性 pass 恒等。
 """
 import math
 import os
@@ -211,6 +215,87 @@ def test_white_rescue():
     assert spread0.max() <= 2, '无救援参数时行为应与旧版一致（纯白）'
 
 
+def test_unify_material_hues():
+    """同材质色相统一: 色调签名相同而色相冲突的两块 → 小块旋到大块色相;
+    肤色平涂 vs 阴影排线（ΔL 超限）不配对; L 与色度幅值严格保持。"""
+    # 160×160: 左块 hue≈350°（C=16, 条纹 L 140/200 交替）, 右块 hue≈270° 同签名;
+    # 中部大平涂 hue≈30° C=12 L=225（肤色）与右块 ΔL≈64 → 不得配对。
+    h = w = 160
+    l_u8 = np.full((h, w), 245, np.uint8)
+    ab = np.full((h, w, 2), 128.0, np.float32)
+    yy, xx = np.mgrid[0:h, 0:w]
+    left = ((xx - 40) ** 2 + (yy - 40) ** 2) <= 14 ** 2        # ~616px
+    right = ((xx - 120) ** 2 + (yy - 40) ** 2) <= 26 ** 2      # ~2124px
+    skin = ((xx - 80) ** 2 + (yy - 120) ** 2) <= 40 ** 2       # ~5027px
+    stripe = ((yy % 8) < 4)
+    for m in (left, right):
+        l_u8[m] = np.where(stripe[m], 140, 200)
+    l_u8[skin] = 225
+    for m, hue in ((left, 350.0), (right, 270.0), (skin, 30.0)):
+        ang = np.radians(hue)
+        ab[..., 0][m] = 128.0 + 16.0 * np.cos(ang)
+        ab[..., 1][m] = 128.0 + 16.0 * np.sin(ang)
+    out = service._unify_material_hues(l_u8, ab.copy())
+    lab_o = out - 128.0
+    # 左块（质量小）旋到右块色相; 右块与肤色不动
+    c_l = np.hypot(lab_o[left, 0], lab_o[left, 1]).mean()
+    hue_l = float(np.degrees(np.arctan2(lab_o[left, 1].mean(), lab_o[left, 0].mean())) % 360)
+    assert abs(((hue_l - 270.0 + 180) % 360) - 180) < 15, f'左块未旋到右块色相: {hue_l:.0f}°'
+    assert abs(c_l - 16.0) < 1.0, f'旋转改变了色度幅值: {c_l:.1f}'
+    hue_r = float(np.degrees(np.arctan2(lab_o[right, 1].mean(), lab_o[right, 0].mean())) % 360)
+    assert abs(((hue_r - 270.0 + 180) % 360) - 180) < 5, '右块（质量大）不应被改'
+    hue_s = float(np.degrees(np.arctan2(lab_o[skin, 1].mean(), lab_o[skin, 0].mean())) % 360)
+    assert abs(((hue_s - 30.0 + 180) % 360) - 180) < 5, f'肤色被误旋转: {hue_s:.0f}°'
+    assert out.shape == ab.shape and out.dtype == np.float32
+
+
+def test_neutral_chroma_floor():
+    """中性区色度保底: 有色邻居包围的灰块被染上主色, 孤立灰与墨线不染色。"""
+    # 页面 320×320（统计窗口 81px 宽, 「孤立」须离有色像素 ≥81px）
+    h = w = 320
+    gray = np.full((h, w), 210, np.uint8)   # L=210 的浅灰
+    ab = np.full((h, w, 2), 128.0, np.float32)
+    yy, xx = np.mgrid[0:h, 0:w]
+    disk = ((xx - 240) ** 2 + (yy - 80) ** 2) <= 55 ** 2     # 有色盘
+    patch = ((xx - 240) ** 2 + (yy - 80) ** 2) <= 18 ** 2    # 盘心的灰块
+    ab[disk] = [128.0 + 11.0, 128.0 + 11.0]                  # 暖主色 C≈15.6
+    ab[patch] = 128.0                                        # 灰块 C=0
+    # 孤立灰块（左下角, 距有色盘 >81px）与墨线
+    iso = ((xx - 50) ** 2 + (yy - 260) ** 2) <= 12 ** 2
+    gray[iso] = 190
+    ab[iso] = 128.0
+    ink = ((yy >= 290) & (yy < 296) & (xx >= 150) & (xx < 210))
+    gray[ink] = 30
+    ab[ink] = 128.0
+    out = service._neutral_chroma_floor(gray, ab.copy())
+    d = out - 128.0
+    c_patch = np.hypot(d[patch, 0], d[patch, 1])
+    assert c_patch.mean() > 4.0, f'灰块没有被保底染色: {c_patch.mean():.1f}'
+    hue_p = float(np.degrees(np.arctan2(d[patch, 1].mean(), d[patch, 0].mean())) % 360)
+    assert abs(((hue_p - 45.0 + 180) % 360) - 180) < 25, f'保底色相偏离局部主色: {hue_p:.0f}°'
+    c_iso = np.hypot(d[iso, 0], d[iso, 1])
+    assert c_iso.max() < 1.0, f'孤立灰不应被发明颜色: {c_iso.max():.1f}'
+    c_ink = np.hypot(d[ink, 0], d[ink, 1])
+    assert c_ink.max() < 1.0, f'墨线(L<64)不应被染色: {c_ink.max():.1f}'
+
+
+def test_consistency_disabled():
+    """COLORIZER_CONSISTENCY=0 时 _consistency_pass 恒等返回。"""
+    rng = np.random.default_rng(5)
+    ab = rng.uniform(100, 156, (32, 32, 2)).astype(np.float32)
+    l_u8 = rng.integers(0, 256, (32, 32)).astype(np.uint8)
+    old = os.environ.get('COLORIZER_CONSISTENCY')
+    os.environ['COLORIZER_CONSISTENCY'] = '0'
+    try:
+        out = service._consistency_pass(l_u8, ab)
+    finally:
+        if old is None:
+            os.environ.pop('COLORIZER_CONSISTENCY', None)
+        else:
+            os.environ['COLORIZER_CONSISTENCY'] = old
+    assert np.array_equal(out, ab), '开关关闭时应恒等返回'
+
+
 def test_reference_transfer():
     """参考图迁移: 亮度保真 / 纸白保护 / strength=0 恒等 / 方法可用。"""
     rng = np.random.default_rng(11)
@@ -240,6 +325,8 @@ if __name__ == '__main__':
              test_knee_boosts_chroma, test_gain_leaves_neutral_unchanged,
              test_black_not_tinted, test_paper_neutralization,
              test_pure_white_no_negative_extrapolation, test_colorize_wiring,
+             test_unify_material_hues, test_neutral_chroma_floor,
+             test_consistency_disabled,
              test_reference_transfer, test_white_rescue]
     for t in tests:
         t()

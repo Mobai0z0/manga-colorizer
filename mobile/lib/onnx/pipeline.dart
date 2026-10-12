@@ -12,6 +12,8 @@
 //     桌面 COLORIZER_CHROMA_GAIN 环境变量可覆写 standard 增益）。已知微小
 //     偏差：桌面 tiled 路径全程浮点直达收尾，本端在 8bit a/b 量化后收尾
 //     （≤0.7 Lab 单位），与 resize 插值偏差同级，记入真机验收清单。
+//   · 收尾之前有跨格一致性两 pass（core consistency.dart，两端同数学）：
+//     同材质色相统一（修跨格异色）+ 中性区色度保底（修排线区灰块感）。
 // 推理经 OnnxBackend 抽象（真机＝OrtOnnxBackend，宿主测试＝FakeBackend），
 // 全程并发 1（逐块 await），每块前查取消、每块后按块上报进度。
 // 内存压峰（v0.5.5）：浮点张量与整页累加缓冲的生命周期都收敛在子函数栈帧里——
@@ -58,6 +60,26 @@ Future<Uint8List?> autoColorize({
     onLog: onLog,
   );
   if (outLab == null) return null;
+  // 跨格一致性 v1（两端同数学, core consistency.dart）: ①同材质色相统一——
+  // 「色调签名相同但色相冲突」的色块统一到质量更大的色相（修「同一人物/物件
+  // 跨格不同色」）; ②中性区色度保底——L∈[64,234) 且色度低于随暗度增长的保底
+  // 曲线的像素沿局部主色方向抬到保底（修「密集排线区平涂成灰块, 看起来没上
+  // 色」）。放在白色前景救援之前: 两者都只动 a/b、L 恒取原稿, 且保底的局部
+  // 主色统计不应看到救援/收尾改写后的色度场。ab 提取到 float 执行（桌面 tiled
+  // 全程浮点; 本端进出各多一次 8bit 量化, 偏差 ≤0.7 Lab, 属文件头「已知微小
+  // 偏差」同级）; lBytes 是 outLab 的 L 通道（= grayToLabL）的紧凑拷贝。
+  final abF = Float32List(n * 2);
+  final lBytes = Uint8List(n);
+  for (var i = 0; i < n; i++) {
+    lBytes[i] = outLab[i * 3];
+    abF[i * 2] = outLab[i * 3 + 1].toDouble();
+    abF[i * 2 + 1] = outLab[i * 3 + 2].toDouble();
+  }
+  applyConsistency(abF, lBytes, width, height);
+  for (var i = 0; i < n; i++) {
+    outLab[i * 3 + 1] = abF[i * 2].round().clamp(0, 255);
+    outLab[i * 3 + 2] = abF[i * 2 + 1].round().clamp(0, 255);
+  }
   // 白色前景救援: 封闭近白区域（白发/白衣/画格内背景）在 L=255 处没有色度
   // 渲染空间, 收尾对这些像素跳过纸白中和并按色度压低 L（与桌面 `_with_rescue`
   // 同公式）。放在推理返回之后计算——BFS 的临时缓冲（visited/queue ~20MB）
