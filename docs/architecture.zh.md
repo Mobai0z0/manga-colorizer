@@ -19,13 +19,14 @@ Python sidecar（:8788，tool/colorizer_service）
 packages/manga_colorizer_core    纯 Dart 上色引擎（Levin 2004 色度扩散，确定性，可离线）
 packages/manga_colorizer_cli     批量上色 / 三联对比图 / 色板工具
 packages/manga_colorizer_server  Dart HTTP 后端（shelf，实验路径）
-mobile/                          Flutter Android 壳（Dart 引擎 + 端侧 ONNX 全自动 + 参考图调色）
+mobile/                          Flutter Android 壳（Dart 引擎 + 端侧 ONNX 全自动 + 参考图上色）
 ```
 
-功能特性：全自动 ONNX 语义上色（SAM 引导 + generator）、提示点画布精修、参考图色调迁移、
-色彩方案（标准/鲜明赛璐璐/柔和淡彩/厚涂浓郁/昭和复古，见下）、批量队列（一次最多 32 张，
-单张失败不阻断）、长图自动分块推理、亮度保真（所有模式只写 Lab a/b 色度，L 通道始终回写
-原稿）、跨格一致性（同材质色相统一 + 中性区色度保底，见下）、色彩收尾（纸白中和 + 自适应色度 + 超色域等比收缩映射，见下）、GPU 自动加速
+功能特性：全自动 ONNX 语义上色（SAM 引导 + generator）、提示点画布精修、参考图色调迁移
+（⊕ 模型语义色融合）、色彩方案（标准/鲜明赛璐璐/柔和淡彩/厚涂浓郁/昭和复古，见下）、
+批量队列（一次最多 32 张，单张失败不阻断）、长图自动分块推理、亮度保真（所有模式只写
+Lab a/b 色度，L 通道始终回写原稿）、跨格一致性（同材质色相统一 + 中性区色度保底，见下）、
+色彩收尾（纸白中和 + 自适应色度 + 超色域等比收缩映射，见下）、GPU 自动加速
 （Windows 优先 DirectML，NVIDIA 可用 CUDA，无 GPU 自动回退 CPU）。
 
 ### 跨格一致性与色彩收尾 v2（两端同数学）
@@ -75,12 +76,14 @@ finish_golden.json`，由 `tool/colorizer_service/gen_finish_golden.py` 生成�
 方案表 `FINISH_SCHEMES`（桌面）与 `kFinishSchemes`（core finish.dart）同表同值：
 standard（默认，修复偏黄偏灰）/ vivid-cel / soft-pastel / impasto / retro-showa，
 随 `/colorize_auto` 的 `scheme` 表单字段与移动端 job 消息下发。提示点融合与参考图
-迁移路径的用户显式色走平增益收尾（不二次增益、不中和用户色）。
-参考图迁移（`_reference_transfer` / core `transferReference`）v2：原稿纸白不参与
-统计（漫画页 90% 纸白会淹没 Reinhard 统计）、纸白软边界保护、支持 reinhard
-（氛围对齐）与 histogram（分布对齐）两种算法及 strength 强度，金样
-`transfer_golden.json`（容差 ±8，机理见测试头注释）。
-冒烟断言见 `tool/colorizer_service/quality_check.py`（不加载模型，秒级，13 项）。
+路径的用户显式色走平增益收尾（不二次增益、不中和用户色）。
+参考图模式（`_process_reference` / 移动端 `reference_flow.dart` +
+core `transferReference` + `blendReferenceAuto`）：模型语义色 ⊕ 参考图迁移色在
+Lab a/b 上 5:5 融合（L 恒取原稿），迁移侧原稿纸白不参与统计（漫画页 90% 纸白会
+淹没 Reinhard 统计）、纸白软边界保护，支持 reinhard（氛围对齐）与 histogram
+（分布对齐）两种算法及 strength 强度。金样 `transfer_golden.json`（迁移，容差 ±8）
+与 `reference_blend_golden.json`（融合，容差 ±16），机理见测试头注释。
+冒烟断言见 `tool/colorizer_service/quality_check.py`（不加载模型，秒级，14 项）。
 
 ## 前端（web/dist）
 
@@ -174,16 +177,20 @@ Android 侧轻量工作台（Flutter），两个页签：
 - **提示点上色**：选图 → 画布点按落提示点 → 上色 → 分享/保存。推理直接调用纯 Dart
   引擎 `manga_colorizer_core`，在 isolate 中离线执行，不依赖桌面 sidecar 或任何后端
   服务，也不需要模型权重。
-- **全自动**：端侧 ONNX 全自动上色 + 参考图调色，管线语义对齐桌面 `/colorize_auto`——
+- **全自动**：端侧 ONNX 全自动上色 + 参考图上色，管线语义对齐桌面 `/colorize_auto`——
   同款权重对（v6_sam_encoder + v6_generator）、tile 1024 / overlap 256 线性羽化融合、
   L 通道始终回写原稿灰度、色彩收尾同数学（`labToRgbFinish`，方案表 `kFinishSchemes`
   与桌面 FINISH_SCHEMES 同表，经 job 消息的 `scheme` 字段随任务下发；桌面 tiled 路径
   全程浮点直达收尾，端侧在 8bit a/b 量化后收尾，≤0.7 Lab 单位，与 resize 插值偏差
-  同级）。参考图调色（并入全自动页，免模型）：对全自动结果「叠加参考图色调」，或
-  独立选原稿+参考图直接迁移（`reference_flow.dart` → core `transferReference`，
-  isolate 内执行，reinhard 全强度）。权重不随 APK 分发（CC BY-NC-SA），首次使用时
-  在应用内引导下载，支持断点续传与 SHA-256 校验，manifest 内置 hf-mirror 镜像源
-  备选（国内网络）。
+  同级）。参考图模式（v0.6.1 起与桌面 `/colorize_reference` 同算法，需权重）：选原稿
+  + 人设彩图 → 模型语义色 ⊕ 参考图迁移色 Lab a/b 5:5 融合（L 恒取原稿灰度），迁移
+  算法（氛围对齐=reinhard / 分布对齐=histogram）与强度随设置持久化（`app_settings.dart`
+  的 refMethod/refStrength，与桌面 ref_method/ref_strength 同口径）；端到口
+  `reference_flow.dart` 的 `referenceColorizeInIsolate`（core `transferReference` +
+  `blendReferenceAuto`，金样 `reference_blend_golden.json`）。v0.6.0 的「免模型纯迁移」
+  与「对自动结果叠加色调」两条旧路径已移除（桌面无对应行为）。权重不随 APK 分发
+  （CC BY-NC-SA），首次使用时在应用内引导下载，支持断点续传与 SHA-256 校验，manifest
+  内置 hf-mirror 镜像源备选（国内网络）。
 
 ```bash
 cd mobile

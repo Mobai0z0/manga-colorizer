@@ -4,11 +4,12 @@
 // 下载进度按 ~1% 节流重绘。由 screens/auto_screen.dart 承载为「全自动」目的地。
 // 不写任何端侧性能承诺（真机耗时未测，属合并后真机验收清单，见 docs 已知限制）。
 //
-// v0.6.0 新增：
-//   · 色彩方案选择（kFinishSchemes，随设置持久化，随 job 下发推理端）；
-//   · 参考图调色并入本页（transferReference 纯 Dart，免模型秒出）——
-//     ①对全自动结果「叠加参考图色调」二次迁移；②独立路径：任选原稿+参考图
-//     直接迁移。两者结果都以 mode='reference' 入图库。
+// v0.6.1 起参考图模式同步桌面（tool/colorizer_service/service.py
+// `_process_reference`）：原稿 + 人设彩图 → 模型语义色 ⊕ 参考图迁移色
+// 在 Lab a/b 上 5:5 融合（L 恒取原稿），迁移算法/强度随设置持久化，
+// 端到口在 reference_flow.dart 的 referenceColorizeInIsolate。
+// 结果以 mode='reference' 入图库。v0.6.0 的「免模型纯迁移」与「对全自动
+// 结果叠加参考图色调」两条旧路径已随全量替换移除（桌面无对应行为）。
 import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
@@ -17,7 +18,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:manga_colorizer_core/manga_colorizer_core.dart'
-    show kDefaultFinishScheme, kFinishSchemes;
+    show kDefaultFinishScheme, kFinishSchemes, ReferenceMethod;
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -119,20 +120,20 @@ class _AutoTabState extends State<AutoTab> {
   int _w = 0, _h = 0;
   Uint8List? _sourcePng;
   Uint8List? _resultPng;
-
-  /// 全自动结果的原始 RGB（叠加参考图色调的迁移源，避免从 PNG 重解码）。
-  Uint8List? _resultRgb;
   String _scheme = kDefaultFinishScheme;
   String _status = '检查权重…';
 
-  // ---- 参考图调色（免模型）状态 ----
-  Uint8List? _refSrcRgb; // 原稿 RGB
+  // ---- 参考图上色（桌面同款，需模型）状态 ----
+  Uint8List? _refSrcRgb; // 原稿 RGB（迁移源）
+  Uint8List? _refSrcGray; // 原稿灰度（模型输入 + L 来源）
   int _refSrcW = 0, _refSrcH = 0;
   Uint8List? _refSrcPng; // 原稿预览/入库用 PNG
   Uint8List? _refRgb; // 参考图 RGB
   Uint8List? _refThumbPng; // 参考图小预览
-  Uint8List? _refOutPng; // 迁移结果 PNG
+  Uint8List? _refOutPng; // 融合结果 PNG
   bool _refBusy = false;
+  ReferenceMethod _refMethod = ReferenceMethod.reinhard;
+  double _refStrength = 1.0;
 
   static const _license =
       '模型权重 CC BY-NC-SA 4.0，需自行下载，仅限非商业使用；详见仓库 docs/licensing。';
@@ -141,8 +142,14 @@ class _AutoTabState extends State<AutoTab> {
   void initState() {
     super.initState();
     _scheme = widget.controller.settings.colorScheme;
+    _refMethod = _refMethodFromId(widget.controller.settings.refMethod);
+    _refStrength = widget.controller.settings.refStrength;
     unawaited(_init());
   }
+
+  /// 设置里的迁移算法 id → 枚举（白名单外回退 reinhard）。
+  static ReferenceMethod _refMethodFromId(String id) =>
+      id == 'histogram' ? ReferenceMethod.histogram : ReferenceMethod.reinhard;
 
   Future<Directory> _appWeightsDir() async {
     final base = await getApplicationSupportDirectory();
@@ -184,8 +191,8 @@ class _AutoTabState extends State<AutoTab> {
       _source = source;
       _store = WeightsStore(dir: dir, source: source);
     });
-    widget.controller.update(
-        widget.controller.settings.copyWith(downloadSource: source));
+    widget.controller
+        .update(widget.controller.settings.copyWith(downloadSource: source));
   }
 
   Future<void> _pickSource() async {
@@ -265,7 +272,7 @@ class _AutoTabState extends State<AutoTab> {
               onFallback: (file, from, next, why) => widget.logs.warn(
                   'weights',
                   '权重 ${file.name} 主站失败，回退镜像：'
-                  '${Uri.parse(from).host}→${Uri.parse(next).host}：$why'));
+                      '${Uri.parse(from).host}→${Uri.parse(next).host}：$why'));
         }
         widget.logs.info('weights', '权重 ${f.name} 下载完成（${f.size} 字节）');
       }
@@ -335,7 +342,6 @@ class _AutoTabState extends State<AutoTab> {
       _gray = null;
       _sourcePng = null;
       _resultPng = null;
-      _resultRgb = null;
     });
     try {
       // readAsBytes 而非 File(path)：相册 content:// URI 在部分设备上
@@ -351,9 +357,10 @@ class _AutoTabState extends State<AutoTab> {
       if (!mounted) return;
       final origW = cap.origWidth;
       if (origW != null) {
-        widget.logs.info('auto',
+        widget.logs.info(
+            'auto',
             '原图 $origW×${cap.origHeight} 超过端侧长边上限 '
-            '${tier.maxPickSide}，已缩放至 ${cap.width}×${cap.height}');
+                '${tier.maxPickSide}，已缩放至 ${cap.width}×${cap.height}');
       }
       setState(() {
         _gray = gray;
@@ -392,8 +399,7 @@ class _AutoTabState extends State<AutoTab> {
           useArena: tier.useArena,
           idleRelease: tier.idleRelease);
       widget.logs.info('auto', '色彩方案：$_scheme');
-      final out = await widget.engine.colorize(gray, _w, _h,
-          scheme: _scheme,
+      final out = await widget.engine.colorize(gray, _w, _h, scheme: _scheme,
           onProgress: (p) {
         if (!mounted) return;
         setState(() {
@@ -413,8 +419,7 @@ class _AutoTabState extends State<AutoTab> {
       if (!mounted) return;
       setState(() {
         _resultPng = png;
-        _resultRgb = out; // 叠加参考图色调的迁移源（免重解码）
-        _status = '完成。可预览、分享或叠加参考图色调。';
+        _status = '完成。可预览或分享。';
       });
       final src = _sourcePng;
       if (src != null) {
@@ -446,7 +451,7 @@ class _AutoTabState extends State<AutoTab> {
     widget.logs.info('auto', '色彩方案切换为 ${kSchemeLabels[id] ?? id}');
   }
 
-  /// 通用选图（参考图调色路径）：相册原生缩放 + capDecodeRgba 兜底，
+  /// 通用选图（参考图模式路径）：相册原生缩放 + capDecodeRgba 兜底，
   /// 返回 RGBA 与尺寸（与 _pick 的缓冲纪律一致）。
   Future<({Uint8List rgba, int width, int height})?> _pickRgba() async {
     final tier = await ResourceTier.detect();
@@ -460,50 +465,8 @@ class _AutoTabState extends State<AutoTab> {
     return (rgba: cap.rgba, width: cap.width, height: cap.height);
   }
 
-  /// 对全自动结果「叠加参考图色调」：迁移源用结果 RGB（L 已等于原稿），
-  /// 免模型秒出；结果替换当前预览并以 mode='reference' 入图库。
-  Future<void> _overlayRefOnAuto() async {
-    final resultRgb = _resultRgb;
-    if (resultRgb == null || _busy) return;
-    final picked = await _pickRgba();
-    if (!mounted) return;
-    if (picked == null) return;
-    setState(() {
-      _busy = true;
-      _status = '参考图调色中…';
-    });
-    try {
-      final refRgb = await Isolate.run(() => rgbaToRgbBytes(picked.rgba));
-      final outRgb = await transferInIsolate(
-          srcRgb: resultRgb, refRgb: refRgb, width: _w);
-      if (!mounted) return;
-      setState(() => _status = '编码 PNG…');
-      final png = await _encodePng(outRgb, _w, _h);
-      if (!mounted) return;
-      setState(() {
-        _resultPng = png;
-        _resultRgb = outRgb;
-        _status = '参考图色调已叠加。可继续分享或再次调整。';
-      });
-      final src = _sourcePng;
-      if (src != null) {
-        widget.onCompleted?.call(
-            resultPng: png,
-            sourcePng: src,
-            width: _w,
-            height: _h,
-            mode: 'reference');
-      }
-      widget.logs.info('auto', '参考图色调叠加完成 $_w×$_h');
-    } on Object catch (e) {
-      if (mounted) setState(() => _status = '参考图调色失败：$e');
-      widget.logs.error('auto', '参考图调色失败：$e');
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  /// 独立参考图调色：选原稿（任意图，L 取其亮度）→ 迁移 → 预览/分享/入库。
+  /// 参考图模式选原稿：RGBA → RGB（迁移源）+ 灰度（模型输入 + L 来源）
+  /// + PNG（预览/入库），串行产出（与 _pick 同款缓冲纪律）。
   Future<void> _pickRefSource() async {
     if (_refBusy) return;
     final picked = await _pickRgba();
@@ -513,15 +476,19 @@ class _AutoTabState extends State<AutoTab> {
       _refBusy = true;
       _status = '读取原稿…';
       _refSrcRgb = null;
+      _refSrcGray = null;
       _refSrcPng = null;
       _refOutPng = null;
     });
     try {
       final rgb = await Isolate.run(() => rgbaToRgbBytes(picked.rgba));
-      final png = await encodePngFromRgba(picked.rgba, picked.width, picked.height);
+      final gray = await Isolate.run(() => rgbaToGray(picked.rgba));
+      final png =
+          await encodePngFromRgba(picked.rgba, picked.width, picked.height);
       if (!mounted) return;
       setState(() {
         _refSrcRgb = rgb;
+        _refSrcGray = gray;
         _refSrcW = picked.width;
         _refSrcH = picked.height;
         _refSrcPng = png;
@@ -548,7 +515,8 @@ class _AutoTabState extends State<AutoTab> {
     });
     try {
       final rgb = await Isolate.run(() => rgbaToRgbBytes(picked.rgba));
-      final png = await encodePngFromRgba(picked.rgba, picked.width, picked.height);
+      final png =
+          await encodePngFromRgba(picked.rgba, picked.width, picked.height);
       if (!mounted) return;
       setState(() {
         _refRgb = rgb;
@@ -562,23 +530,57 @@ class _AutoTabState extends State<AutoTab> {
     }
   }
 
-  Future<void> _runRefTransfer() async {
-    final src = _refSrcRgb;
+  /// 参考图模式（桌面同款，service.py `_process_reference` 的 Dart 镜像）：
+  /// 原稿 + 人设彩图 → 模型语义色 ⊕ 参考图迁移色 Lab a/b 5:5 融合，L 恒取
+  /// 原稿灰度。模型部分固定 standard 方案（桌面参考图路径同样写死
+  /// DEFAULT_SCHEME，不吃 auto 页的方案选择）。结果以 mode='reference' 入库。
+  Future<void> _runReference() async {
+    final srcRgb = _refSrcRgb;
+    final srcGray = _refSrcGray;
     final ref = _refRgb;
-    if (src == null || ref == null || _refBusy) return;
+    final dir = _dir;
+    if (srcRgb == null || srcGray == null || ref == null || dir == null) return;
+    if (_refBusy || _busy) return;
     setState(() {
       _refBusy = true;
-      _status = '参考图调色中…';
+      _status = '参考图上色中…';
       _refOutPng = null;
     });
+    widget.logs.info(
+        'reference',
+        '参考图任务开始 $_refSrcW×$_refSrcH method=${_refMethod.name} '
+            'strength=$_refStrength${rssSuffix()}');
     try {
-      final outRgb = await transferInIsolate(
-          srcRgb: src, refRgb: ref, width: _refSrcW);
+      // 线程数/arena 策略随设备分级下发（与全自动同源；引擎常驻复用）。
+      final tier = await ResourceTier.detect();
+      await widget.engine.ensureStarted(dir.path,
+          intraThreads: tier.intraThreads,
+          useArena: tier.useArena,
+          idleRelease: tier.idleRelease);
+      final autoRgb = await widget.engine.colorize(srcGray, _refSrcW, _refSrcH,
+          scheme: kDefaultFinishScheme, onProgress: (p) {
+        if (!mounted) return;
+        setState(() => _status = '模型上色中 ${(p * 100).round()}%');
+      });
+      if (autoRgb == null) {
+        if (mounted) setState(() => _status = '已取消。');
+        widget.logs.info('reference', '参考图任务已取消');
+        return;
+      }
+      if (!mounted) return;
+      setState(() => _status = '融合参考图色调…');
+      final outRgb = await referenceColorizeInIsolate(
+          srcRgb: srcRgb,
+          refRgb: ref,
+          autoRgb: autoRgb,
+          srcGray: srcGray,
+          method: _refMethod,
+          strength: _refStrength);
       if (!mounted) return;
       setState(() => _status = '编码 PNG…');
       final png = await _encodePng(outRgb, _refSrcW, _refSrcH);
       widget.logs
-          .info('reference', '参考图调色完成 $_refSrcW×$_refSrcH${rssSuffix()}');
+          .info('reference', '参考图上色完成 $_refSrcW×$_refSrcH${rssSuffix()}');
       if (!mounted) return;
       setState(() {
         _refOutPng = png;
@@ -594,11 +596,29 @@ class _AutoTabState extends State<AutoTab> {
             mode: 'reference');
       }
     } on Object catch (e) {
-      if (mounted) setState(() => _status = '参考图调色失败：$e');
-      widget.logs.error('reference', '参考图调色失败：$e');
+      if (mounted) setState(() => _status = '参考图上色失败：$e');
+      widget.logs.error('reference', '参考图上色失败：$e');
     } finally {
       if (mounted) setState(() => _refBusy = false);
     }
+  }
+
+  /// 切换迁移算法：本页即时生效并经全局控制器落盘（同 settings.json 单一真源）。
+  void _applyRefMethod(ReferenceMethod m) {
+    if (m == _refMethod) return;
+    setState(() => _refMethod = m);
+    widget.controller
+        .update(widget.controller.settings.copyWith(refMethod: m.name));
+    widget.logs.info('reference',
+        '迁移算法切换为 ${m == ReferenceMethod.histogram ? '分布对齐' : '氛围对齐'}');
+  }
+
+  /// 调整迁移强度：本页即时生效并经全局控制器落盘。
+  void _applyRefStrength(double v) {
+    final clamped = v.clamp(0.0, 1.0);
+    setState(() => _refStrength = clamped);
+    widget.controller
+        .update(widget.controller.settings.copyWith(refStrength: clamped));
   }
 
   Future<void> _shareRef() async {
@@ -606,10 +626,10 @@ class _AutoTabState extends State<AutoTab> {
     if (png == null) return;
     try {
       final temp = await getTemporaryDirectory();
-      final f = File(
-          '${temp.path}/ref_${DateTime.now().millisecondsSinceEpoch}.png');
+      final f =
+          File('${temp.path}/ref_${DateTime.now().millisecondsSinceEpoch}.png');
       await f.writeAsBytes(png);
-      await Share.shareXFiles([XFile(f.path)], text: 'Manga Colorizer 参考图调色结果');
+      await Share.shareXFiles([XFile(f.path)], text: 'Manga Colorizer 参考图上色结果');
     } on Object catch (e) {
       if (mounted) setState(() => _status = '分享失败：$e');
     }
@@ -649,7 +669,8 @@ class _AutoTabState extends State<AutoTab> {
         const SizedBox(height: 12),
         if (!_checking && _weightsMissing) ..._guide(context, totalMb),
         if (!_weightsMissing && !_checking) ..._ready(context),
-        // 参考图调色免模型：权重缺失也可用（下载引导与它同屏不冲突）。
+        // 参考图卡片常驻展示（含权重缺失时的下载引导提示）：
+        // 与桌面参考图模式同语义，需要模型权重才能运行。
         if (!_checking) ...[
           const SizedBox(height: 16),
           ..._referenceCard(context),
@@ -717,7 +738,8 @@ class _AutoTabState extends State<AutoTab> {
           suffixIcon: _scheme == kDefaultFinishScheme
               ? null
               : IconButton(
-                  onPressed: _busy ? null : () => _applyScheme(kDefaultFinishScheme),
+                  onPressed:
+                      _busy ? null : () => _applyScheme(kDefaultFinishScheme),
                   icon: const Icon(Icons.restart_alt),
                   tooltip: '恢复默认',
                 ),
@@ -749,11 +771,6 @@ class _AutoTabState extends State<AutoTab> {
                   Text('上色结果', style: Theme.of(context).textTheme.labelSmall),
             ),
             IconButton(
-              onPressed: _busy ? null : _overlayRefOnAuto,
-              icon: const Icon(Icons.wallpaper),
-              tooltip: '叠加参考图色调',
-            ),
-            IconButton(
               onPressed: _share,
               icon: const Icon(Icons.ios_share),
               tooltip: '分享 / 保存',
@@ -766,8 +783,9 @@ class _AutoTabState extends State<AutoTab> {
     ];
   }
 
-  /// 参考图调色卡片：免模型（transferReference 纯 Dart）秒出。
-  /// 原稿任选（黑白稿/上次结果均可），参考图给整体色调。
+  /// 参考图模式卡片（桌面同款，service.py `_process_reference`）：
+  /// 原稿（黑白线稿）+ 人设彩图 → 模型语义色 ⊕ 参考图迁移色 Lab 5:5 融合。
+  /// 需模型权重；迁移算法与强度随设置持久化（与桌面选项同语义）。
   List<Widget> _referenceCard(BuildContext context) {
     return [
       Card(
@@ -782,13 +800,15 @@ class _AutoTabState extends State<AutoTab> {
                   const Icon(Icons.wallpaper, size: 20),
                   const SizedBox(width: 8),
                   Expanded(
-                    child: Text('参考图调色（免模型）',
+                    child: Text('参考图上色',
                         style: Theme.of(context).textTheme.titleSmall),
                   ),
                 ],
               ),
               const SizedBox(height: 4),
-              Text('把任意图画的色调迁移到原稿：不加载模型、秒出结果。',
+              Text(
+                  '根据人设彩图对齐上色：模型语义色 + 参考图色调迁移融合'
+                  '（Lab 5:5），亮度保真、纸白不染色。',
                   style: Theme.of(context).textTheme.bodySmall),
               const SizedBox(height: 8),
               Wrap(
@@ -807,11 +827,15 @@ class _AutoTabState extends State<AutoTab> {
                     label: Text(_refRgb == null ? '选参考图' : '换参考图'),
                   ),
                   FilledButton.icon(
-                    onPressed: (_refBusy || _refSrcRgb == null || _refRgb == null)
+                    onPressed: (_refBusy ||
+                            _busy ||
+                            _weightsMissing ||
+                            _refSrcRgb == null ||
+                            _refRgb == null)
                         ? null
-                        : _runRefTransfer,
+                        : _runReference,
                     icon: const Icon(Icons.colorize),
-                    label: const Text('开始调色'),
+                    label: const Text('开始上色'),
                   ),
                   if (_refThumbPng != null)
                     ClipRRect(
@@ -819,6 +843,52 @@ class _AutoTabState extends State<AutoTab> {
                       child: Image.memory(_refThumbPng!,
                           width: 44, height: 44, fit: BoxFit.cover),
                     ),
+                ],
+              ),
+              if (_weightsMissing) ...[
+                const SizedBox(height: 8),
+                Text('需要先下载模型权重（见上方引导）——参考图上色由模型提供语义色。',
+                    style: Theme.of(context).textTheme.bodySmall),
+              ],
+              const SizedBox(height: 4),
+              // 迁移算法（与桌面 ref-method 同选项，随设置持久化）
+              Wrap(
+                spacing: 8,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  ChoiceChip(
+                    label: const Text('氛围对齐'),
+                    selected: _refMethod == ReferenceMethod.reinhard,
+                    onSelected: (_) =>
+                        _applyRefMethod(ReferenceMethod.reinhard),
+                  ),
+                  ChoiceChip(
+                    label: const Text('分布对齐'),
+                    selected: _refMethod == ReferenceMethod.histogram,
+                    onSelected: (_) =>
+                        _applyRefMethod(ReferenceMethod.histogram),
+                  ),
+                ],
+              ),
+              // 迁移强度（与桌面 ref-strength 同语义，5% 步进）
+              Row(
+                children: [
+                  Text('迁移强度', style: Theme.of(context).textTheme.bodySmall),
+                  Expanded(
+                    child: Slider(
+                      value: _refStrength,
+                      min: 0,
+                      max: 1,
+                      divisions: 20,
+                      label: '${(_refStrength * 100).round()}%',
+                      onChanged: _refBusy ? null : _applyRefStrength,
+                    ),
+                  ),
+                  SizedBox(
+                    width: 40,
+                    child: Text('${(_refStrength * 100).round()}%',
+                        style: Theme.of(context).textTheme.bodySmall),
+                  ),
                 ],
               ),
               if (_refBusy) ...[
@@ -830,7 +900,7 @@ class _AutoTabState extends State<AutoTab> {
                 Row(
                   children: [
                     Expanded(
-                      child: Text('调色结果',
+                      child: Text('上色结果',
                           style: Theme.of(context).textTheme.labelSmall),
                     ),
                     IconButton(
@@ -841,7 +911,9 @@ class _AutoTabState extends State<AutoTab> {
                   ],
                 ),
                 Image.memory(_refOutPng!,
-                    fit: BoxFit.contain, cacheWidth: 1024, gaplessPlayback: true),
+                    fit: BoxFit.contain,
+                    cacheWidth: 1024,
+                    gaplessPlayback: true),
               ],
             ],
           ),

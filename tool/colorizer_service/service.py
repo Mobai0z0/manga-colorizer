@@ -1186,6 +1186,23 @@ def _process_hints(data: bytes, hints_raw: str, source_name: str = 'image.png') 
         _inference_lock.release()
 
 
+def _blend_reference_auto(auto: np.ndarray, styled: np.ndarray,
+                          src: np.ndarray) -> np.ndarray:
+    """参考图模式融合: 模型语义色(auto) ⊕ 参考图迁移色(styled) 在 Lab a/b 上
+    5:5 混合, L 恒取原稿; 收尾只做色域映射(平增益, 不二次放大用户色)。
+
+    Dart 镜像: core `blendReferenceAuto`（金样对拍见 gen_finish_golden.py
+    的 gen_reference_blend 与 test/reference_blend_golden_test.dart）。
+    """
+    lab_a = cv2.cvtColor(auto, cv2.COLOR_BGR2LAB).astype(np.float32)
+    lab_s = cv2.cvtColor(styled, cv2.COLOR_BGR2LAB).astype(np.float32)
+    lab_o = cv2.cvtColor(src, cv2.COLOR_BGR2LAB).astype(np.float32)
+    lab_o[..., 1] = 0.5 * lab_a[..., 1] + 0.5 * lab_s[..., 1]
+    lab_o[..., 2] = 0.5 * lab_a[..., 2] + 0.5 * lab_s[..., 2]
+    # 收尾只做色域映射、增益保持 1: 色调统计来自用户所选参考图, 不再放大。
+    return _finish_bgr(lab_o[..., 0].astype(np.uint8), lab_o[..., 1:3])
+
+
 def _process_reference(data: bytes, ref_data: bytes, source_name: str = 'image.png',
                        method: str = 'reinhard', strength: float = 1.0) -> Response:
     if not _inference_lock.acquire(blocking=False):
@@ -1201,13 +1218,7 @@ def _process_reference(data: bytes, ref_data: bytes, source_name: str = 'image.p
         auto = colorize(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), _resolve_finish(DEFAULT_SCHEME))
         styled = _reference_transfer(bgr, ref, method=method, strength=strength)
         # 融合: 模型提供语义色相, 参考图提供全局色调统计 → 在 Lab 上按 5:5 混合
-        lab_a = cv2.cvtColor(auto, cv2.COLOR_BGR2LAB).astype(np.float32)
-        lab_s = cv2.cvtColor(styled, cv2.COLOR_BGR2LAB).astype(np.float32)
-        lab_o = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
-        lab_o[..., 1] = 0.5 * lab_a[..., 1] + 0.5 * lab_s[..., 1]
-        lab_o[..., 2] = 0.5 * lab_a[..., 2] + 0.5 * lab_s[..., 2]
-        # 收尾只做色域映射、增益保持 1: 色调统计来自用户所选参考图, 不再放大。
-        out = _finish_bgr(lab_o[..., 0].astype(np.uint8), lab_o[..., 1:3])
+        out = _blend_reference_auto(auto, styled, bgr)
         resp = _encode_png(out)
         _persist_gallery(resp, bgr, source_name=source_name, mode='reference', t0=t0, suffix='_ref.png')
         return resp

@@ -23,13 +23,14 @@ mobile/                          Flutter Android shell (Dart engine + on-device 
 ```
 
 Feature set: fully automatic ONNX semantic colorization (SAM guidance + generator), hint-point
-canvas refinement, reference-image color transfer, color schemes (Standard / Vivid Cel / Soft
-Pastel / Impasto / Retro Showa, see below), batch queue (up to 32 images at a time, a
-single failure does not block the rest), automatic tiled inference for long images, luminance
-fidelity (all modes write only the Lab a/b chroma; the L channel is always written back from the
-original), color finishing (paper-white neutralization + adaptive chroma + out-of-gamut
-equal-ratio shrink mapping, see below), and automatic GPU acceleration (DirectML preferred on
-Windows, CUDA available on NVIDIA, automatic fallback to CPU when no GPU is present).
+canvas refinement, reference-image color transfer (⊕ blended with model semantic colors), color
+schemes (Standard / Vivid Cel / Soft Pastel / Impasto / Retro Showa, see below), batch queue (up
+to 32 images at a time, a single failure does not block the rest), automatic tiled inference for
+long images, luminance fidelity (all modes write only the Lab a/b chroma; the L channel is
+always written back from the original), color finishing (paper-white neutralization + adaptive
+chroma + out-of-gamut equal-ratio shrink mapping, see below), and automatic GPU acceleration
+(DirectML preferred on Windows, CUDA available on NVIDIA, automatic fallback to CPU when no GPU
+is present).
 
 ### Cross-panel consistency and color finishing v2 (same math on both ends)
 
@@ -98,12 +99,16 @@ same values: standard (default; fixes the yellow/gray cast) / vivid-cel / soft-p
 impasto / retro-showa, selected per request via the `scheme` form field of `/colorize_auto`
 and the mobile job message. User-explicit paths (hint merge, reference transfer) use the flat
 finish (no double gain, no neutralization of user colors).
-Reference transfer (`_reference_transfer` / core `transferReference`) v2: source paper pixels
-are excluded from the statistics (a 90%-paper manga page would otherwise swamp the Reinhard
-stats), paper gets a soft-edge protection, and both reinhard (mood alignment) and histogram
-(distribution alignment) methods plus a strength factor are supported; golden
-`transfer_golden.json` (tolerance ±8, rationale documented in the test header).
-Smoke assertions: `tool/colorizer_service/quality_check.py` (no model load, seconds, 13 checks).
+Reference mode (`_process_reference` / mobile `reference_flow.dart` + core
+`transferReference` + `blendReferenceAuto`): model semantic colors ⊕ reference
+transfer colors are blended 5:5 in Lab a/b (L always from the original); on the
+transfer side, source paper pixels are excluded from the statistics (a 90%-paper
+manga page would otherwise swamp the Reinhard stats), paper gets a soft-edge
+protection, and both reinhard (mood alignment) and histogram (distribution
+alignment) methods plus a strength factor are supported. Goldens:
+`transfer_golden.json` (transfer, tolerance ±8) and `reference_blend_golden.json`
+(blend, tolerance ±16), rationale documented in the test headers.
+Smoke assertions: `tool/colorizer_service/quality_check.py` (no model load, seconds, 14 checks).
 
 ## Frontend (web/dist)
 
@@ -215,14 +220,20 @@ A lightweight Android-side workbench (Flutter) with two tabs:
   mirrors the desktop FINISH_SCHEMES and travels with the job via the `scheme`
   field; the desktop tiled path feeds float chroma straight into the finish, while
   on-device it goes through 8-bit a/b quantization first, ≤0.7 Lab units — same
-  order as the resize interpolation deviation). Reference colorization (merged
-  into the fully-automatic tab, model-free): overlay a reference tone onto the
-  fully-automatic result, or pick a source + reference pair and transfer directly
-  (`reference_flow.dart` → core `transferReference`, run in an isolate, reinhard
-  at full strength). Weights are not shipped inside the APK (CC BY-NC-SA); they
-  are downloaded on first use inside the app, with resume support and SHA-256
-  verification, and the manifest carries an hf-mirror fallback source for
-  mainland-China networks.
+  order as the resize interpolation deviation). Reference mode (since v0.6.1, the
+  same algorithm as the desktop `/colorize_reference`, weights required): pick a
+  source + a character color reference → model semantic colors ⊕ reference tone
+  transfer, blended 5:5 in Lab a/b (L always from the original gray image); the
+  transfer algorithm (Mood = reinhard / Distribution = histogram) and strength
+  persist with settings (`app_settings.dart` refMethod/refStrength, same keys as
+  the desktop ref_method/ref_strength). End-to-end seam:
+  `referenceColorizeInIsolate` in `reference_flow.dart` (core `transferReference`
+  + `blendReferenceAuto`, golden `reference_blend_golden.json`). The v0.6.0
+  model-free pure-transfer path and the "overlay tone on the auto result" path
+  were removed (the desktop has no counterpart). Weights are not shipped inside
+  the APK (CC BY-NC-SA); they are downloaded on first use inside the app, with
+  resume support and SHA-256 verification, and the manifest carries an hf-mirror
+  fallback source for mainland-China networks.
 
 ```bash
 cd mobile

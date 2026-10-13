@@ -1,9 +1,11 @@
 """生成色彩收尾 v2 与参考图迁移的跨语言金样: 桌面 service.py 的输出作为
-Dart 端 `labToRgbFinish` / `transferReference` 的期望值，锁死两端同一套数学。
+Dart 端 `labToRgbFinish` / `transferReference` / `blendReferenceAuto` 的期望值,
+锁死两端同一套数学。
 
 用法: ..\\.venv\\Scripts\\python.exe tool/colorizer_service/gen_finish_golden.py
 输出: packages/manga_colorizer_core/test/goldens/finish_golden.json
       packages/manga_colorizer_core/test/goldens/transfer_golden.json
+      packages/manga_colorizer_core/test/goldens/reference_blend_golden.json
 
 finish 样本: 每方案（FINISH_SCHEMES 全表 + flat + rescue）各 2 路 × 512 像素:
   rgb  — 随机 sRGB 原色经 cv2 RGB2LAB（色域内, 含边界量化噪声）;
@@ -15,6 +17,11 @@ rescue 用例额外带确定性掩码（每第 3 个像素, 值 2 = whiteRescueM
 
 transfer 样本: 确定性合成 原稿(大面积纸白+墨迹渐变) × 参考图(彩色渐变),
 reinhard/histogram × strength {1.0, 0.6}。
+
+reference_blend 样本: 同款原稿/参考图 + 确定性合成「模型输出」(auto)——
+肤色(vivid=False)与高饱和蓝/橙(vivid=True, 暗部强色度触发色域映射分支),
+reinhard/histogram 各一, 过桌面 `_blend_reference_auto` 真值; Dart 侧
+transferReference + blendReferenceAuto 组合对拍。
 """
 import json
 import os
@@ -110,7 +117,56 @@ def gen_transfer() -> None:
     print(f'written {out_path} ({len(data)} cases)')
 
 
+def _synth_auto(src: np.ndarray, vivid: bool) -> np.ndarray:
+    """确定性合成「模型输出」: 纸白留白, 墨迹渐变换成肤色(vivid=False)或
+    高饱和蓝/橙(vivid=True——暗部强色度, 触发融合后色域映射的收缩分支)。"""
+    auto = np.full_like(src, 255)
+    block = src[4:24, 4:28, 0].astype(np.float64)
+    if not vivid:
+        auto[4:24, 4:28, 0] = np.clip(196 + block * 0.23, 0, 255)
+        auto[4:24, 4:28, 1] = np.clip(150 + block * 0.31, 0, 255)
+        auto[4:24, 4:28, 2] = np.clip(120 + block * 0.35, 0, 255)
+    else:
+        dark = block < 128
+        auto[4:24, 4:28, 0] = np.where(dark, 20, 255)
+        auto[4:24, 4:28, 1] = np.where(dark, 40, 120)
+        auto[4:24, 4:28, 2] = np.where(dark, 180, 30)
+    return auto.astype(np.uint8)
+
+
+def gen_reference_blend() -> None:
+    # 原稿/参考图与 gen_transfer 同款（灰度原稿 → L 与 Dart grayToLabL 逐值相等）
+    src = np.full((64, 64, 3), 255, np.uint8)
+    grad = np.linspace(20, 230, 20 * 24, dtype=np.float64).astype(np.uint8)
+    src[4:24, 4:28, 0] = grad.reshape(20, 24)
+    src[4:24, 4:28, 1] = grad.reshape(20, 24)
+    src[4:24, 4:28, 2] = grad.reshape(20, 24)
+    ramp = np.arange(256, dtype=np.uint8).reshape(16, 16)
+    ref = np.stack([ramp,
+                    np.roll(ramp, 85),
+                    np.roll(ramp, 171)], axis=-1)
+
+    data = {}
+    for method in ('reinhard', 'histogram'):
+        styled = service._reference_transfer(src, ref, method=method, strength=1.0)
+        for vivid in (False, True):
+            auto = _synth_auto(src, vivid)
+            out = service._blend_reference_auto(auto, styled, src)
+            key = f'{method}_{"vivid" if vivid else "skin"}'
+            # 金样统一存 RGB（与 Dart 端字节序一致; service 内部是 BGR, 存前翻转）
+            data[key] = {
+                'src': src[..., ::-1].reshape(-1, 3).tolist(),
+                'ref': ref[..., ::-1].reshape(-1, 3).tolist(),
+                'auto': auto[..., ::-1].reshape(-1, 3).tolist(),
+                'out': out[..., ::-1].reshape(-1, 3).tolist(),
+            }
+    out_path = GOLDENS / 'reference_blend_golden.json'
+    out_path.write_text(json.dumps(data), encoding='utf-8')
+    print(f'written {out_path} ({len(data)} cases)')
+
+
 if __name__ == '__main__':
     GOLDENS.mkdir(parents=True, exist_ok=True)
     gen_finish()
     gen_transfer()
+    gen_reference_blend()

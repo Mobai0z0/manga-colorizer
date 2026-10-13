@@ -64,10 +64,13 @@ verified), or wait for the official APK in Releases.
    always downloads from huggingface.co.
 3. Once ready, pick an image, choose a "Color scheme" (the default "Standard" already fixes
    the yellow/gray cast), and start fully automatic colorization; results can be
-   shared/saved from inside the app, or re-toned via "Overlay reference tone" on the result.
-4. The "Reference colorization (model-free)" card needs no weights: pick any source +
-   reference pair and get the transfer result instantly (works offline). The "Hint
-   colorization" tab is also weight-free.
+   shared/saved from inside the app.
+4. The "Reference colorization" card uses the same algorithm as the desktop reference mode
+   (weights required): pick a source (line art) + a character color reference → model
+   semantic colors ⊕ reference tone transfer, blended 5:5 in Lab (L always from the
+   source), with a selectable transfer algorithm (Mood = Reinhard / Distribution =
+   histogram) and strength; results can be shared/saved and land in the gallery. The
+   "Hint colorization" tab is weight-free.
 
 Device requirement: an Android arm64 physical device. On-device inference runs on the ONNX
 Runtime CPU execution provider (no GPU/NNAPI path); per-1024²-tile runtime and peak memory
@@ -95,9 +98,10 @@ the job:
 | Impasto | Oil-painting-like richness, gains applied even to strong chroma, slightly warm |
 | Retro Showa | Warm brown shadows + creamy warm paper (keeps the model's warmth + paper-tone rendering) |
 
-The "Reference" mode additionally offers a transfer algorithm (Mood = Reinhard /
-Distribution = histogram) and a strength slider; the manga page's paper is excluded from the
-statistics and stays un-tinted by default.
+The "Reference" mode (same algorithm on desktop and Android) offers a transfer algorithm
+(Mood = Reinhard / Distribution = histogram) and a strength slider; the manga page's paper
+is excluded from the statistics and stays un-tinted by default. On Android this mode
+requires the model weights (reference tone and model semantic colors are blended 5:5).
 
 ## Manual weight download
 

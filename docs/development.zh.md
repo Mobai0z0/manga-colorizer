@@ -35,7 +35,8 @@ tauri build    # 产物：src-tauri/target/release/bundle/nsis/*.exe
 ## 已知限制
 
 - 服务端提示点为 64px 窗口局部扩散（轻量版）；需要全局精确求解用 Dart CLI 路径。
-- 参考图迁移是全局统计（Reinhard），不做逐区域语义对应。
+- 参考图迁移是全局统计（Reinhard/histogram），不做逐区域语义对应；参考图模式的
+  语义色相由模型提供（Lab a/b 5:5 融合），参考图只贡献全局色调统计。
 - 服务绑定 127.0.0.1，无认证；对外部署需自备反向代理、认证与 TLS。
 - Android 应用端侧全自动走 ONNX Runtime CPU 执行提供者（无 GPU/NNAPI 路径）：每
   1024² 分块耗时与 arm64 真机峰值内存尚未实测，低端设备可能较慢。v0.5.9 起推理跑在

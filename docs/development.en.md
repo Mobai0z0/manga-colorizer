@@ -41,8 +41,9 @@ accesses it cross-origin via CORS (the sidecar binds only the loopback address).
 
 - Server-side hint points use local diffusion in a 64px window (the lightweight version); for a
   globally exact solve, use the Dart CLI path.
-- Reference-image transfer is a global statistic (Reinhard); there is no per-region semantic
-  correspondence.
+- Reference-image transfer is a global statistic (Reinhard/histogram); there is no per-region
+  semantic correspondence. In reference mode the semantic hues come from the model (5:5 blend
+  in Lab a/b); the reference image only contributes global tone statistics.
 - The service binds 127.0.0.1 with no authentication; public deployment requires your own
   reverse proxy, authentication, and TLS.
 - Android on-device fully-automatic colorization runs on the ONNX Runtime CPU execution

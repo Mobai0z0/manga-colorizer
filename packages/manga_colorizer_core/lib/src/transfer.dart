@@ -84,6 +84,45 @@ Uint8List transferReference({
   return labToRgbFinish(lab, srcPixels, const FinishOptions());
 }
 
+/// 桌面参考图模式同款融合（service.py `_process_reference` 融合步 /
+/// `_blend_reference_auto` 的 Dart 镜像）：模型语义色 [autoRgb] 与参考图
+/// 迁移结果 [styledRgb]（[transferReference] 产物）在 Lab a/b 上按 [blend]
+/// 混合（桌面固定 0.5）；L 恒取 [srcLBytes]（原稿 Lab L 字节，[grayToLabL]
+/// 产物）；输出经平增益色域映射（[labToRgbGamut] gain=1，与桌面 `_finish_bgr`
+/// 缺省 opt 同一套数学：不中和纸白、不二次增益、不做纸色渲染）。
+/// 返回 RGB n*3。金样对拍见 `test/reference_blend_golden_test.dart`。
+Uint8List blendReferenceAuto({
+  required Uint8List autoRgb,
+  required Uint8List styledRgb,
+  required Uint8List srcLBytes,
+  required int pixels,
+  double blend = 0.5,
+}) {
+  if (autoRgb.length != pixels * 3) {
+    throw ArgumentError('autoRgb 长度 (${autoRgb.length}) 与 $pixels 像素不符');
+  }
+  if (styledRgb.length != pixels * 3) {
+    throw ArgumentError('styledRgb 长度 (${styledRgb.length}) 与 $pixels 像素不符');
+  }
+  if (srcLBytes.length != pixels) {
+    throw ArgumentError('srcLBytes 长度 (${srcLBytes.length}) 与 $pixels 像素不符');
+  }
+  final t = blend.clamp(0.0, 1.0);
+  final labAuto = rgbToLab(autoRgb, pixels);
+  final labStyled = rgbToLab(styledRgb, pixels);
+  final lab = Uint8List(pixels * 3);
+  for (var i = 0; i < pixels; i++) {
+    lab[i * 3] = srcLBytes[i];
+    final aa = labAuto[i * 3 + 1];
+    final as = labStyled[i * 3 + 1];
+    final ba = labAuto[i * 3 + 2];
+    final bs = labStyled[i * 3 + 2];
+    lab[i * 3 + 1] = (aa + (as - aa) * t).round().clamp(0, 255);
+    lab[i * 3 + 2] = (ba + (bs - ba) * t).round().clamp(0, 255);
+  }
+  return labToRgbGamut(lab, pixels);
+}
+
 double _smoothstep01(double e0, double e1, double x) {
   var t = (x - e0) / (e1 - e0);
   t = t.clamp(0.0, 1.0);
