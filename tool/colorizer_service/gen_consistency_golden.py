@@ -1,5 +1,5 @@
-"""生成跨格一致性两个 pass 的跨语言金样: 桌面 service.py
-`_unify_material_hues` + `_neutral_chroma_floor` 的输出作为 Dart 端
+"""生成跨格一致性三个 pass 的跨语言金样: 桌面 service.py
+`_unify_material_hues` + `_dominant_hue_fill` + `_neutral_chroma_floor` 的输出作为 Dart 端
 core consistency.dart `applyConsistency` 的期望值，锁死两端同一套数学。
 
 用法: python tool/colorizer_service/gen_consistency_golden.py
@@ -118,7 +118,8 @@ def main():
                      ('multi_blob', case_multi_blob)]:
         l, ab = fn()
         out = service._neutral_chroma_floor(
-            l, service._unify_material_hues(l, ab.copy()))
+            l, service._dominant_hue_fill(
+                l, service._unify_material_hues(l, ab.copy())))
         cases[name] = {
             'w': int(ab.shape[1]), 'h': int(ab.shape[0]),
             'l': l.reshape(-1).tolist(),

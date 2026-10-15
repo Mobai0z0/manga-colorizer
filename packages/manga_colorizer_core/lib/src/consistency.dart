@@ -29,6 +29,35 @@ const double _unifyHistInt = 0.65; // 色调签名（L 8bin 直方图）最小�
 const double _unifyR = 0.60; // blob 自身色相相干度下限（混色 blob 不参与）
 const double _unifySizeRatio = 24.0; // 配对 blob 的像素数比上限（材质常被墨线
 // 分裂成小块, 比值要放得下「半只蝴蝶结 vs 整只」; 24 仍挡百倍噪点）
+// ---- 主色相填充（consistency 第二步, 与桌面 _DH_* 同值） ----
+// 动机（2026-10-13/14/15 用户样张四轮取证 + 赛璐璐上色教程检索）: 漫画/动画
+// 上色的专业原则是「一材质一固有色（平色）」——同材质明暗只改明度/饱和度,
+// 不换色相; 教程明确指出「画面花」的病因是色相太多。模型对发丝的色度输出恰恰
+// 违反这条: 同材质内色相分区跳变（实测头发自信像素色相主簇占 60%, 另有绿黄/
+// 蓝离群簇）, 且大部分区域色度极弱（C≈2-5, 读作偏灰）。弱色度区在局部窗口里
+// 找不到同材质自信色, 而均值/投票类算法会把多个色相混成第三种颜色（用户实证
+// 「颜色错误」）。故用「截尾均值收敛到主色相簇」:
+//   ① 窗口（半径 kDhR）内同 L 带（kDhBands——漫画同一材质的明暗画在同一
+//      明度带, 是材质分界的廉价代理）的自信像素（C≥kDhConf）求向量均值定向;
+//   ② 只用与均值圆距 ≤kDhSpread 的像素重算——离群色相被剔除, 收敛到主色相簇;
+//   ③ 主色相簇占窗口自信像素 ≥kDhShare 且幅值 ≥kDhMinMag 才生效（无明确主色
+//      不猜——材质交界/混合区不动）;
+//   ④ 带内弱色度像素（C<kDhWeakC, L∈[64,kDhLMax)）整块采用主色相簇平均色;
+// 张力描绘（原稿明暗）不动: 只动色度, L 恒取原稿; 高光/纸白（L≥kDhLMax）与
+// 墨线（L<64）不在处理范围。
+const double kDhConf = 10.0; // 自信像素门限（Lab 幅度）
+const int kDhR = 140; // 投票窗口半径（px, box 方形窗）
+const double kDhSpread = 45.0; // 截尾窗口（与均值圆距 ±度）
+const double kDhShare = 0.50; // 主色相簇占比门限（窗内自信像素计数占比）
+const double kDhMinMag = 4.0; // 票色幅值门限（无颜色能量不填）
+const double kDhMinConf = 0.03; // 窗口内自信像素 ≥3% 才统计（防纯噪声区）
+const double kDhWeakC = 10.0; // 待填像素门限（C 低于此视为灰区）
+const double kDhLMax = 210.0; // 只填 L∈[64,210)（比这亮的是高光/纸白, 不填）
+// L 带（与桌面 _DH_BANDS 同值）
+const int kDhBand0Lo = 64, kDhBand0Hi = 110;
+const int kDhBand1Lo = 110, kDhBand1Hi = 150;
+const int kDhBand2Lo = 150, kDhBand2Hi = 190;
+const int kDhBand3Lo = 190, kDhBand3Hi = 234;
 const double kFloorMax = 14.0; // 中性区保底色度上限（增益前 Lab 单位）
 const int kFloorBlurR = 40; // 局部主色统计窗口半径（px）
 const double kFloorVoteC = 4.0; // 局部主色投票的色度门槛
@@ -38,10 +67,96 @@ double _smoothstep(double e0, double e1, double x) {
   return t * t * (3.0 - 2.0 * t);
 }
 
+/// ① 主色相填充（就地修改 [ab]）: 截尾均值收敛到主色相簇——弱色度灰区获得
+/// 同带主色相簇平均色（只填不转, 自信像素不动）。门控与统计量详见文件头与
+/// 桌面 _DH_* 常量块; 无命中时恒等。
+void dominantHueFill(Float32List ab, Uint8List lBytes, int width, int height) {
+  final n = width * height;
+  final a = Float32List(n);
+  final b = Float32List(n);
+  final c = Float32List(n);
+  for (var i = 0; i < n; i++) {
+    final aa = ab[i * 2] - 128.0;
+    final bb = ab[i * 2 + 1] - 128.0;
+    a[i] = aa;
+    b[i] = bb;
+    c[i] = math.sqrt(aa * aa + bb * bb);
+  }
+  final ones = Float32List(n);
+  for (var i = 0; i < n; i++) {
+    ones[i] = 1.0;
+  }
+  final cnt = _boxSumR(ones, width, height, kDhR);
+  final pixH = Float64List(n);
+  for (var i = 0; i < n; i++) {
+    pixH[i] = math.atan2(b[i], a[i]) * 180.0 / math.pi % 360.0;
+  }
+  final mask = Float32List(n);
+  final am = Float32List(n);
+  final bm = Float32List(n);
+  final near = Float32List(n);
+  final an = Float32List(n);
+  final bn = Float32List(n);
+  final bands = [
+    [kDhBand0Lo, kDhBand0Hi],
+    [kDhBand1Lo, kDhBand1Hi],
+    [kDhBand2Lo, kDhBand2Hi],
+    [kDhBand3Lo, kDhBand3Hi],
+  ];
+  for (final band in bands) {
+    final lo = band[0], hi = band[1];
+    for (var i = 0; i < n; i++) {
+      final inBand = c[i] >= kDhConf && lBytes[i] >= lo && lBytes[i] < hi;
+      mask[i] = inBand ? 1.0 : 0.0;
+      am[i] = inBand ? a[i] : 0.0;
+      bm[i] = inBand ? b[i] : 0.0;
+    }
+    // ① 全带自信像素的向量均值（定向）
+    final n1 = _boxSumR(mask, width, height, kDhR);
+    final sa1 = _boxSumR(am, width, height, kDhR);
+    final sb1 = _boxSumR(bm, width, height, kDhR);
+    for (var i = 0; i < n; i++) {
+      final meanH = math.atan2(sb1[i], sa1[i]) * 180.0 / math.pi % 360.0;
+      // ② 截尾: 只用与均值圆距 ≤kDhSpread 的自信像素
+      final dev1 = ((pixH[i] - meanH + 180.0) % 360.0).abs() - 180.0;
+      final isNear = mask[i] == 1.0 && dev1.abs() <= kDhSpread;
+      near[i] = isNear ? 1.0 : 0.0;
+      an[i] = isNear ? a[i] : 0.0;
+      bn[i] = isNear ? b[i] : 0.0;
+    }
+    final n2 = _boxSumR(near, width, height, kDhR);
+    final sa2 = _boxSumR(an, width, height, kDhR);
+    final sb2 = _boxSumR(bn, width, height, kDhR);
+    for (var i = 0; i < n; i++) {
+      final l = lBytes[i];
+      if (l < lo || l >= hi) continue;
+      final denom1 = n1[i] > 1e-6 ? n1[i] : 1e-6;
+      final share = n2[i] / denom1;
+      final denom2 = n2[i] > 1e-6 ? n2[i] : 1e-6;
+      final va = sa2[i] / denom2;
+      final vb = sb2[i] / denom2;
+      final voteMag = math.sqrt(va * va + vb * vb);
+      if (share < kDhShare || voteMag < kDhMinMag) continue;
+      if (n1[i] < kDhMinConf * cnt[i]) continue;
+      final inRange = l >= 64 && l < kDhLMax;
+      // ④ 弱色度像素整块采用主色相簇平均色
+      // 注意: 不旋转自信像素——窗口主色相会被邻带物质稀释, 旋转自信块会把
+      // 脸部/背景带黄绿（2026-10-15 用户实证「颜色偏绿/四边颜色不对」后移除）;
+      // 且头发内的绿黄 confident 块在自身窗口里就是主簇, 旋转也修不动。自信块
+      // 的色相冲突交由既有 unifyMaterialHues 按色调签名处理。
+      if (inRange && c[i] < kDhWeakC) {
+        ab[i * 2] = va + 128.0;
+        ab[i * 2 + 1] = vb + 128.0;
+      }
+    }
+  }
+}
+
 /// 跨格一致性入口：在融合色度场 [ab]（2n, a0,b0,a1,b1… +128 偏置）上按序
-/// 执行 ①同材质色相统一 ②中性区色度保底，就地修改。[lBytes] 为原稿 L 字节。
-void applyConsistency(
-    Float32List ab, Uint8List lBytes, int width, int height) {
+/// 执行 ①同材质色相统一 ②主色相填充 ③中性区色度保底，就地修改。
+/// [lBytes] 为原稿 L 字节。
+void applyConsistency(Float32List ab, Uint8List lBytes, int width, int height) {
+  dominantHueFill(ab, lBytes, width, height);
   unifyMaterialHues(ab, lBytes, width, height);
   neutralChromaFloor(ab, lBytes, width, height);
 }
@@ -150,7 +265,8 @@ void unifyMaterialHues(
         if (labels[i] != 0 || mask[i] == 0) continue;
         remaining = true;
         var mx = 0;
-        final yy0 = y > 0 ? y - 1 : 0, yy1 = y + 1 < height ? y + 1 : height - 1;
+        final yy0 = y > 0 ? y - 1 : 0,
+            yy1 = y + 1 < height ? y + 1 : height - 1;
         final xx0 = x > 0 ? x - 1 : 0, xx1 = x + 1 < width ? x + 1 : width - 1;
         for (var yy = yy0; yy <= yy1; yy++) {
           for (var xx = xx0; xx <= xx1; xx++) {
@@ -332,7 +448,11 @@ Float32List _mul(Float32List x, Float32List y) {
 /// box 求和（窗口 (2r+1)², 零填充 = 桌面 cv2.BORDER_CONSTANT）:
 /// 行、列两次滑动窗口, O(n)；越界贡献 0。
 Float32List _boxSum(Float32List src, int width, int height) {
-  final r = kFloorBlurR;
+  return _boxSumR(src, width, height, kFloorBlurR);
+}
+
+/// [_boxSum] 的半径参数化版本（主色相填充用 kDhR, 保底用 kFloorBlurR）。
+Float32List _boxSumR(Float32List src, int width, int height, int r) {
   final tmp = Float32List(src.length);
   for (var y = 0; y < height; y++) {
     final row = y * width;

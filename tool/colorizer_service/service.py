@@ -19,7 +19,12 @@
 色调签名（原稿 L 直方图）相同而色相冲突（圆距 ≥30°）的色块统一到质量
 更大的色相, 修复「同一人物/物件跨格不同色」; ②中性区色度保底——L∈[64,234)
 且色度低于随暗度增长的保底曲线的像素, 沿局部主色方向抬到保底, 修复
-「密集排线区平涂成灰块, 看起来没上色」。COLORIZER_CONSISTENCY=0 关闭。
+「密集排线区平涂成灰块, 看起来没上色」→ ②主色相填充——模型对发丝的色度输出
+「分区」（同材质内色相跳变）且大部分区域极弱（偏灰）; 按赛璐璐上色的专业原则
+（一材质一固有色, 明暗只改明度/饱和度不改色相）, 用截尾均值收敛到同明度带的
+主色相簇, 带内弱色度像素整块获得该簇平均色（只填不转——旋转会把脸部/背景带
+黄绿）, 修复「头发颜色分区且偏灰」; 张力描绘不动, L 恒取原稿。unify 必须先于
+填充跑（填充改变 blob 结构会害 unify 误配对）。COLORIZER_CONSISTENCY=0 关闭。
 
 色彩收尾 v2: 输出端统一走 _finish_bgr —— ⓪白色前景救援（封闭近白区域:
 模型想上色的白发/白衣/画格内背景, 在原稿 L=255 处没有色度渲染空间——
@@ -478,6 +483,34 @@ _UNIFY_HIST_INT = 0.65   # 色调签名（L 8bin 直方图）最小交叠
 _UNIFY_R = 0.60          # blob 自身色相相干度下限（混色 blob 不参与）
 _UNIFY_SIZE_RATIO = 24.0  # 配对 blob 的像素数比上限（材质常被墨线分裂成小块,
                           # 比值要放得下「半只蝴蝶结 vs 整只」; 24 仍挡百倍噪点)
+# ---- 主色相填充（consistency 第 ⓪ 步, 与移动端 core consistency.dart 同数学） ----
+# 动机（2026-10-13/14/15 用户样张四轮取证 + 赛璐璐上色教程检索）:
+# 漫画/动画上色的专业做法是「一材质一固有色（平色）」——同一材质的明暗只改明度
+# 与饱和度, 不换色相; 教程明确指出「画面花」的病因是色相太多。模型对发丝的色度
+# 输出恰恰违反这条: 同材质内色相分区跳变（实测头发自信像素色相 60-90° 主簇占
+# 60%, 另有绿黄/蓝离群簇）, 且大部分区域色度极弱（C≈2-5, 读作偏灰）。
+# 弱色度区在局部窗口里找不到同材质的自信色可借, 而均值/投票类算法会把多个
+# 色相混成第三种颜色（用户实证「颜色错误」）。故用「截尾均值收敛到主色相簇」:
+#   ① 窗口（半径 _DH_R）内同 L 带（_DH_BANDS——漫画同一材质的明暗画在同一
+#      明度带, 是材质分界的廉价代理）的自信像素（C≥_DH_CONF）求向量均值, 定向;
+#   ② 只用与均值圆距 ≤_DH_SPREAD 的像素重算——离群色相被剔除, 收敛到主色相簇
+#      （而非混色）;
+#   ③ 主色相簇占窗口自信像素 ≥_DH_SHARE 且幅值 ≥_DH_MIN_MAG 才生效（无明确
+#      主色不猜——材质交界/混合区不动）;
+#   ④ 带内弱色度像素（C<_DH_WEAK_C, L∈[64,_DH_L_MAX)）整块采用主色相簇的
+#      平均色（方向+幅值）。
+# 张力描绘（原稿明暗）不动: 只填色度, L 恒取原稿; 高光/纸白（L≥_DH_L_MAX）与
+# 墨线（L<64）不在填充范围; 自信像素自身不被改（模型的清晰意图保留, 由既有
+# unify pass 按色调签名处理冲突色块）。
+_DH_CONF = 10.0          # 自信像素门限（Lab 幅值）
+_DH_R = 140              # 投票窗口半径（px, box 方形窗）
+_DH_SPREAD = 45.0        # 截尾窗口（与均值圆距 ±度）
+_DH_SHARE = 0.50         # 主色相簇占比门限（窗内自信像素计数占比）
+_DH_MIN_MAG = 4.0        # 票色幅值门限（无颜色能量不填）
+_DH_MIN_CONF = 0.03      # 窗口内自信像素 ≥3% 才统计（防纯噪声区）
+_DH_WEAK_C = 10.0        # 待填像素门限（C 低于此视为灰区）
+_DH_L_MAX = 210.0        # 只填 L∈[64,210)（比这亮的是高光/纸白, 不填）
+_DH_BANDS = ((64, 110), (110, 150), (150, 190), (190, 234))  # L 带
 _FLOOR_MAX = 14.0        # 中性区保底色度上限（增益前 Lab 单位）
 _FLOOR_BLUR_R = 40       # 局部主色统计窗口半径（px）
 _FLOOR_VOTE_C = 4.0      # 局部主色投票的色度门槛（低于此视为无色不投票）
@@ -622,11 +655,74 @@ def _neutral_chroma_floor(l_u8: np.ndarray, ab: np.ndarray) -> np.ndarray:
     return out
 
 
+def _dominant_hue_fill(l_u8: np.ndarray, ab: np.ndarray) -> np.ndarray:
+    """主色相填充（详见 _DH_* 常量块注释）。
+
+    每 L 带: 窗口内自信像素的向量均值定向 → 只用 ±_DH_SPREAD 内的像素重算
+    （截尾均值, 剔除离群色相）→ 主色相簇平均色填给带内弱色度像素。
+    """
+    a = ab[..., 0] - 128.0
+    b = ab[..., 1] - 128.0
+    C = np.hypot(a, b)
+    pix_h = np.degrees(np.arctan2(b, a)) % 360.0
+    lf = l_u8.astype(np.float32)
+    ks = (_DH_R * 2 + 1, _DH_R * 2 + 1)
+
+    def box(x):
+        return cv2.boxFilter(x, -1, ks, normalize=False, borderType=cv2.BORDER_CONSTANT)
+
+    cnt = np.maximum(box(ones := np.ones_like(C, np.float32)), 1.0)
+    out = ab.copy()
+    any_fill = False
+    for lo, hi in _DH_BANDS:
+        mf = ((C >= _DH_CONF) & (lf >= lo) & (lf < hi)).astype(np.float32)
+        if not mf.any():
+            continue
+        # ① 全带自信像素的向量均值（定向）
+        n1 = box(mf)
+        sa1 = box(a * mf)
+        sb1 = box(b * mf)
+        mean_h = np.degrees(np.arctan2(sb1, sa1)) % 360.0
+        # ② 截尾: 只用与均值圆距 ≤_DH_SPREAD 的自信像素重算（收敛到主色相簇）
+        dev1 = np.abs((pix_h - mean_h + 180.0) % 360.0 - 180.0)
+        near = mf * (dev1 <= _DH_SPREAD)
+        n2 = box(near)
+        sa2 = box(a * near)
+        sb2 = box(b * near)
+        share = n2 / np.maximum(n1, 1.0)
+        denom = np.maximum(n2, 1.0)
+        va = sa2 / denom
+        vb = sb2 / denom
+        vote_mag = np.hypot(va, vb)
+        ok = (share >= _DH_SHARE) & (vote_mag >= _DH_MIN_MAG) \
+            & (n1 >= _DH_MIN_CONF * cnt)
+        if not ok.any():
+            continue
+        # ④ 带内弱色度像素整块采用主色相簇平均色
+        sel = ok & (lf >= lo) & (lf < hi) & (C < _DH_WEAK_C) \
+            & (l_u8 >= 64) & (l_u8 < _DH_L_MAX)
+        if sel.any():
+            out[..., 0][sel] = va[sel] + 128.0
+            out[..., 1][sel] = vb[sel] + 128.0
+            any_fill = True
+        # 注意: 不旋转自信像素。曾加过「冲突自信块转向主色相」步, 实测把脸部
+        # （46°→76°）和背景蓝紫线（48°→78°）带黄绿——窗口主色相被邻带物质
+        # （发丝浅部/键盘）稀释, 旋转即渗色; 且头发内的绿黄 confident 块在自身
+        # 窗口里就是主簇, 旋转也修不动（2026-10-15 用户实证「颜色偏绿/四边颜色
+        # 不对」后移除）。自信块的色相冲突交由既有 unify pass 按色调签名处理。
+    if not any_fill:
+        return ab
+    return out
+
+
 def _consistency_pass(l_u8: np.ndarray, ab: np.ndarray) -> np.ndarray:
-    """跨格一致性: 先统一同材质色相（避免冲突色污染局部主色）, 再做中性区保底。"""
+    """跨格一致性: 先统一同材质色相（blob 级, 看到的是模型原始场——填充会把
+    弱像素提成 C≥10 改变 blob 结构, 导致 unify 误配对把脸部/背景转黄,
+    2026-10-15 实测）, 再做主色相填充（修发丝分区+偏灰）, 最后中性区保底。"""
     if not _consistency_enabled():
         return ab
     ab = _unify_material_hues(l_u8, ab)
+    ab = _dominant_hue_fill(l_u8, ab)
     return _neutral_chroma_floor(l_u8, ab)
 
 

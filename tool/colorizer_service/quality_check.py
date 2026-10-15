@@ -2,7 +2,7 @@
 
 用法: ..\\.venv\\Scripts\\python.exe tool/colorizer_service/quality_check.py
 
-断言十四件事:
+断言十五件事:
   1. 色域内像素与 cv2 LAB2BGR 逐值差 ≤1（平增益收尾时是无损替代）;
   2. 超色域像素的输出色相偏移 <2.5°（旧逐通道截断可偏 30°+，是发灰发闷主因）;
   3. 亮度严格保持（色域映射前后 L 差 ≤1，8bit 量化容差）;
@@ -12,6 +12,8 @@
   7. L=100 纯白 + 任意色度输出纯白（t≥0 钳制后无负系数外推）;
   8. 参考图迁移: 亮度保真 + 纸白保护 + strength=0 恒等;
   9. 白色前景救援: 封闭近白吃到模型色度（L 压低）, 纸白保持纯白;
+  9b. 主色相填充: 弱色度灰区获得同带主色相簇平均色, 自信像素不动, 孤立无
+      主色不发明, 高光/纸白/墨线不动;
   10. 浅色前景救援: 封闭近白模型色度 C≈5（白衣样张量级）也渲染出可见浅色;
   11. 同材质色相统一: 色调签名相同而色相冲突 → 小块旋到大块色相, 肤色/阴影
       不误配, L 与色度幅值保持;
@@ -308,6 +310,70 @@ def test_neutral_chroma_floor():
     assert c_ink.max() < 1.0, f'墨线(L<64)不应被染色: {c_ink.max():.1f}'
 
 
+def test_dominant_hue_fill():
+    """主色相填充: 弱色度灰区获得同带主色相簇平均色; 自信像素一律不动
+    （旋转会渗色）; 孤立无主色不发明; 高光/纸白/墨线不动。"""
+    h, w = 280, 200
+    l = np.full((h, w), 210, np.uint8)
+    ab = np.full((h, w, 2), 128.0, np.float32)
+    yy, xx = np.mgrid[0:h, 0:w]
+
+    def disk(cx, cy, r, hue, chroma, l_fill):
+        m = ((xx - cx) ** 2 + (yy - cy) ** 2) <= r ** 2
+        l[m] = l_fill
+        ang = np.radians(hue)
+        ab[..., 0][m] = 128.0 + chroma * np.cos(ang)
+        ab[..., 1][m] = 128.0 + chroma * np.sin(ang)
+        return m
+
+    # 带 [150,190): 自信暖盘（C=15, hue=60）占绝对质量
+    b_warm = disk(60, 60, 40, 60.0, 15.0, 170)
+    # 内嵌灰盘（C=2, 色相噪声 200°）→ 填为主色相 hue≈60 C≈15
+    gray_warm = disk(60, 60, 15, 200.0, 2.0, 170)
+    # 同带小号离群自信块（C=12, hue=130）→ 不转不填, 原样保留
+    green = disk(130, 60, 12, 130.0, 12.0, 170)
+    # 孤立灰盘（方窗 r=140 内无可信同带像素）→ 不发明颜色
+    lone = disk(175, 255, 15, 80.0, 2.0, 170)
+    # 高光（L=225 > _DH_L_MAX）/纸白 → 不填; 墨线 → 不填
+    hl = disk(160, 20, 12, 60.0, 2.0, 225)
+    paper = np.zeros((h, w), bool)
+    paper[0:12, 180:200] = True
+    l[paper] = 250
+    ab[..., 1][paper] = 128.0 + 6.0
+    ink = disk(20, 240, 8, 30.0, 40.0, 30)
+
+    out = service._dominant_hue_fill(l, ab.copy())
+    d = out - 128.0
+    c = lambda m: float(np.hypot(d[m, 0], d[m, 1]).mean())
+    hue_of = lambda m: float(np.degrees(np.arctan2(d[m, 1].mean(), d[m, 0].mean())) % 360.0)
+    chg = lambda m: float((np.abs(out - ab).sum(axis=2)[m] > 0.5).mean())
+
+    # ⓪ 灰盘获得主色相簇平均色（hue≈60, C≈15）
+    assert 48.0 < hue_of(gray_warm) < 75.0, f'灰盘未获得主色相: hue={hue_of(gray_warm):.1f}'
+    assert abs(c(gray_warm) - 15.0) < 2.5, f'灰盘幅值不对: C={c(gray_warm):.2f}'
+    # ① 离群自信块原样保留（不转不填——旋转会渗色到脸部/背景）
+    assert abs(((hue_of(green) - 130.0 + 180) % 360) - 180) < 3.0, \
+        f'离群自信块被误转: hue={hue_of(green):.1f}'
+    assert abs(c(green) - 12.0) < 0.6, f'离群自信块幅值被改: C={c(green):.2f}'
+    assert chg(green) < 0.01, f'离群自信块被改动: {chg(green)*100:.1f}%'
+    # ② 孤立灰盘（无主色可借）不发明颜色
+    assert chg(lone) < 0.01, f'孤立灰盘被发明颜色: {chg(lone)*100:.1f}%'
+    assert abs(c(lone) - 2.0) < 0.6, f'孤立灰盘幅值被改: C={c(lone):.2f}'
+    # ③ 高光/纸白/墨线不动
+    assert chg(hl) < 0.01, f'高光被填: {chg(hl)*100:.1f}%'
+    assert abs(d[paper, 1].mean() - 6.0) < 0.5, f'纸白被填: b={d[paper,1].mean():.2f}'
+    assert abs(c(ink) - 40.0) < 1.0, f'墨线被填: C={c(ink):.2f}'
+    assert abs(((hue_of(ink) - 30.0 + 180) % 360) - 180) < 3.0, \
+        f'墨线色相被改: hue={hue_of(ink):.1f}'
+    # ④ 自信暖盘本体不动
+    ring = b_warm & ~gray_warm
+    assert chg(ring) < 0.01, f'自信暖盘被改动: {chg(ring)*100:.1f}%'
+    # ⑤ 全中性图恒等
+    l_neu = np.full((h, w), 150, np.uint8)
+    ab_neu = np.full((h, w, 2), 128.0, np.float32)
+    assert np.array_equal(service._dominant_hue_fill(l_neu, ab_neu), ab_neu), '中性图被改'
+
+
 def test_consistency_disabled():
     """COLORIZER_CONSISTENCY=0 时 _consistency_pass 恒等返回。"""
     rng = np.random.default_rng(5)
@@ -355,6 +421,7 @@ if __name__ == '__main__':
              test_black_not_tinted, test_paper_neutralization,
              test_pure_white_no_negative_extrapolation, test_colorize_wiring,
              test_white_rescue, test_white_rescue_light_chroma,
+             test_dominant_hue_fill,
              test_unify_material_hues, test_neutral_chroma_floor,
              test_consistency_disabled,
              test_reference_transfer]
