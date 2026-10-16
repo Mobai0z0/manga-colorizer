@@ -8,6 +8,7 @@ import '../screens/colorize_screen.dart';
 import '../screens/gallery_screen.dart';
 import '../screens/home_screen.dart';
 import '../screens/logs_screen.dart';
+import '../theme/glass.dart';
 import 'destinations.dart';
 
 class AppShell extends StatefulWidget {
@@ -51,14 +52,18 @@ class _AppShellState extends State<AppShell> {
           LogsScreen(controller: widget.controller, logs: widget.logs),
         ],
       ),
-      bottomNavigationBar: NavigationBar(
-        backgroundColor: Theme.of(context).colorScheme.surfaceContainer,
-        selectedIndex: _index,
-        onDestinationSelected: (i) => setState(() => _index = i),
-        destinations: [
-          for (final d in AppDestination.values)
-            NavigationDestination(icon: Icon(d.icon), label: d.label),
-        ],
+      // 底部导航：玻璃外衣 + 透明 NavigationBar（底色/高光由 GlassBottomBar 画）。
+      bottomNavigationBar: GlassBottomBar(
+        child: NavigationBar(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          selectedIndex: _index,
+          onDestinationSelected: (i) => setState(() => _index = i),
+          destinations: [
+            for (final d in AppDestination.values)
+              NavigationDestination(icon: Icon(d.icon), label: d.label),
+          ],
+        ),
       ),
     );
   }

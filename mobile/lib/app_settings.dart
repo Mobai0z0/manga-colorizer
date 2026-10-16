@@ -16,7 +16,7 @@ class AppSettings {
   const AppSettings({
     this.downloadSource = DownloadSource.auto,
     this.themeMode = AppThemeMode.system,
-    this.themePreset = ThemePreset.dynamic,
+    this.themePreset = ThemePreset.terracotta,
     this.colorScheme = kDefaultFinishScheme,
     this.refMethod = 'reinhard',
     this.refStrength = 1.0,
@@ -28,7 +28,7 @@ class AppSettings {
   /// 明暗模式，默认跟随系统。
   final AppThemeMode themeMode;
 
-  /// 配色预设，默认墨绿。
+  /// 配色预设，默认赤陶（暖纸设计系统）。
   final ThemePreset themePreset;
 
   /// 全自动色彩收尾方案 id（kFinishSchemes 的 key），默认 standard。

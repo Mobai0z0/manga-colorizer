@@ -28,6 +28,7 @@ import 'image_cap.dart';
 import 'mem_info.dart';
 import 'png_encode.dart';
 import 'reference_flow.dart';
+import 'theme/glass.dart';
 import 'resource_tier.dart';
 import 'app_settings.dart';
 import 'logs/log_bus.dart';
@@ -828,11 +829,9 @@ class _AutoTabState extends State<AutoTab> {
   /// 需模型权重；迁移算法与强度随设置持久化（与桌面选项同语义）。
   List<Widget> _referenceCard(BuildContext context) {
     return [
-      Card(
-        margin: EdgeInsets.zero,
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Column(
+      GlassCard(
+        padding: const EdgeInsets.all(12),
+        child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(
@@ -957,7 +956,6 @@ class _AutoTabState extends State<AutoTab> {
               ],
             ],
           ),
-        ),
       ),
     ];
   }

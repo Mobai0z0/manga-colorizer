@@ -24,6 +24,7 @@ import '../logs/log_bus.dart';
 import '../png_encode.dart';
 import '../resource_tier.dart';
 import '../shell/screen_chrome.dart';
+import '../theme/glass.dart';
 
 /// Color 通道（0..1 double）→ 8bit 整数。替代已弃用的 `.red/.green/.blue`
 /// 访问器（其弃用说明给出的等价式即 `(*.c * 255.0).round().clamp(0, 255)`；
@@ -93,8 +94,8 @@ class _ColorizeScreenState extends State<ColorizeScreen> {
   /// 50MP 原图的兜底解码瞬时可达 ~300MB。源稿 PNG 不在这里编码：改走引擎
   /// 线程原生编码（png_encode.dart）。
   static Future<({DecodedImage decoded, int? origWidth, int? origHeight})>
-      _loadImageIsolate(
-      Uint8List rgba, int width, int height, int? origWidth, int? origHeight) {
+      _loadImageIsolate(Uint8List rgba, int width, int height, int? origWidth,
+          int? origHeight) {
     return Isolate.run(() {
       final planes = rgbaToGrayPlanes(rgba);
       return (
@@ -147,9 +148,10 @@ class _ColorizeScreenState extends State<ColorizeScreen> {
       final png = await pngFuture;
       final origW = loaded.origWidth;
       if (origW != null) {
-        widget.logs.info('hints',
+        widget.logs.info(
+            'hints',
             '原图 $origW×${loaded.origHeight} 超过端侧长边上限 '
-            '${tier.maxPickSide}，已缩放至 ${loaded.decoded.width}×${loaded.decoded.height}');
+                '${tier.maxPickSide}，已缩放至 ${loaded.decoded.width}×${loaded.decoded.height}');
       }
       setState(() {
         _source = loaded.decoded;
@@ -355,9 +357,7 @@ class _ColorizeScreenState extends State<ColorizeScreen> {
                     cacheWidth: 1024,
                     gaplessPlayback: true)
                 : Image.memory(_sourcePng!,
-                    fit: BoxFit.fill,
-                    cacheWidth: 1024,
-                    gaplessPlayback: true),
+                    fit: BoxFit.fill, cacheWidth: 1024, gaplessPlayback: true),
           ),
           ..._hints.map((h) => Positioned(
                 left: rect.left + h.pos.dx * rect.width - 9,
@@ -397,15 +397,11 @@ class _ColorizeScreenState extends State<ColorizeScreen> {
 
   Widget _buildToolbar() {
     return SafeArea(
-      child: Container(
-        padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
-        decoration: BoxDecoration(
-          // 与底部 NavigationBar 同一 surfaceContainer，消除拼接处的色差。
-          color: Theme.of(context).colorScheme.surfaceContainer,
-          border:
-              Border(top: BorderSide(color: Theme.of(context).dividerColor)),
-        ),
-        child: Column(
+      // 液态玻璃底栏：与底部 NavigationBar 同一玻璃外观，消除拼接色差。
+      child: GlassBottomBar(
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+          child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -476,7 +472,9 @@ class _ColorizeScreenState extends State<ColorizeScreen> {
               ]),
               const SizedBox(height: 6),
               Text(_status, style: Theme.of(context).textTheme.bodySmall),
-            ]),
+            ],
+          ),
+        ),
       ),
     );
   }

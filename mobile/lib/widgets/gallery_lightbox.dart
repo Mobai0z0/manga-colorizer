@@ -8,6 +8,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../gallery/gallery_entry.dart';
 import '../gallery/gallery_store.dart';
+import '../theme/glass.dart';
 
 enum _View { result, source, split }
 
@@ -49,16 +50,17 @@ class _GalleryLightboxPageState extends State<GalleryLightboxPage> {
       cacheWidth: cacheWidth,
       cacheHeight: cacheHeight,
       gaplessPlayback: true,
-      errorBuilder: (_, __, ___) => const Center(
-          child: Icon(Icons.broken_image_outlined, size: 48)),
+      errorBuilder: (_, __, ___) =>
+          const Center(child: Icon(Icons.broken_image_outlined, size: 48)),
     );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: Text('${widget.entry.mode == 'auto' ? '全自动' : '上色'} · ${widget.entry.timeLabel}'),
+      appBar: GlassAppBar(
+        title:
+            '${widget.entry.mode == 'auto' ? '全自动' : '上色'} · ${widget.entry.timeLabel}',
         actions: [
           IconButton(
             tooltip: '分享',
@@ -96,10 +98,12 @@ class _GalleryLightboxPageState extends State<GalleryLightboxPage> {
     switch (_view) {
       case _View.result:
         return InteractiveViewer(
-            child: Center(child: _file(widget.entry.resultFile, BoxFit.contain)));
+            child:
+                Center(child: _file(widget.entry.resultFile, BoxFit.contain)));
       case _View.source:
         return InteractiveViewer(
-            child: Center(child: _file(widget.entry.sourceFile, BoxFit.contain)));
+            child:
+                Center(child: _file(widget.entry.sourceFile, BoxFit.contain)));
       case _View.split:
         return _compare();
     }

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../app_settings.dart';
 import '../app_theme.dart';
 import '../onnx/weights.dart';
+import '../theme/glass.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key, required this.controller});
@@ -28,7 +29,7 @@ class SettingsPage extends StatelessWidget {
       builder: (context, _) {
         final s = controller.settings;
         return Scaffold(
-          appBar: AppBar(title: const Text('设置')),
+          appBar: const GlassAppBar(title: '设置'),
           body: ListView(
             padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
             children: [
@@ -36,12 +37,18 @@ class SettingsPage extends StatelessWidget {
               const SizedBox(height: 8),
               SegmentedButton<AppThemeMode>(
                 segments: const [
-                  ButtonSegment(value: AppThemeMode.system,
-                      icon: Icon(Icons.brightness_auto_outlined), label: Text('跟随系统')),
-                  ButtonSegment(value: AppThemeMode.light,
-                      icon: Icon(Icons.light_mode_outlined), label: Text('浅色')),
-                  ButtonSegment(value: AppThemeMode.dark,
-                      icon: Icon(Icons.dark_mode_outlined), label: Text('深色')),
+                  ButtonSegment(
+                      value: AppThemeMode.system,
+                      icon: Icon(Icons.brightness_auto_outlined),
+                      label: Text('跟随系统')),
+                  ButtonSegment(
+                      value: AppThemeMode.light,
+                      icon: Icon(Icons.light_mode_outlined),
+                      label: Text('浅色')),
+                  ButtonSegment(
+                      value: AppThemeMode.dark,
+                      icon: Icon(Icons.dark_mode_outlined),
+                      label: Text('深色')),
                 ],
                 selected: {s.themeMode},
                 onSelectionChanged: (sel) =>
@@ -58,7 +65,8 @@ class SettingsPage extends StatelessWidget {
                     _PresetChip(
                       preset: p,
                       selected: s.themePreset == p,
-                      onTap: () => controller.update(s.copyWith(themePreset: p)),
+                      onTap: () =>
+                          controller.update(s.copyWith(themePreset: p)),
                     ),
                 ],
               ),
@@ -107,7 +115,7 @@ class _PresetChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final isDynamic = preset == ThemePreset.dynamic;
-    final seed = kPresetSeeds[preset]!;
+    final preview = kPresetPreview[preset];
     return Tooltip(
       message: themePresetLabel(preset),
       child: InkWell(
@@ -118,7 +126,7 @@ class _PresetChip extends StatelessWidget {
           height: 44,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            color: isDynamic ? scheme.surfaceContainerHighest : seed,
+            color: isDynamic ? scheme.surfaceContainerHighest : preview,
             border: Border.all(
               color: selected ? scheme.primary : Colors.transparent,
               width: 3,
@@ -126,7 +134,9 @@ class _PresetChip extends StatelessWidget {
           ),
           child: isDynamic
               ? Icon(Icons.auto_awesome, color: scheme.primary, size: 22)
-              : (selected ? const Icon(Icons.check, color: Colors.white, size: 22) : null),
+              : (selected
+                  ? const Icon(Icons.check, color: Colors.white, size: 22)
+                  : null),
         ),
       ),
     );

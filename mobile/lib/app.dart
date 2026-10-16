@@ -13,12 +13,14 @@ import 'app_theme.dart';
 import 'gallery/gallery_store.dart';
 import 'logs/log_bus.dart';
 import 'shell/app_shell.dart';
+import 'theme/monet_background.dart';
 
 /// 设置目录：应用私有存储下的 manga-light-colorizer（与权重目录同名同址，
 /// settings.json 与权重落同一处）。
 Future<Directory> appSettingsDir() async {
   final base = await getApplicationSupportDirectory();
-  return Directory('${base.path}${Platform.pathSeparator}manga-light-colorizer');
+  return Directory(
+      '${base.path}${Platform.pathSeparator}manga-light-colorizer');
 }
 
 class MangaColorizerApp extends StatefulWidget {
@@ -30,7 +32,8 @@ class MangaColorizerApp extends StatefulWidget {
 
 class _MangaColorizerAppState extends State<MangaColorizerApp>
     with WidgetsBindingObserver {
-  final SettingsController _controller = SettingsController(AppSettings.defaults());
+  final SettingsController _controller =
+      SettingsController(AppSettings.defaults());
 
   /// 端侧图库唯一真源：解析到设置目录后 attachDir + load，透传给各屏。
   final GalleryStore _gallery = GalleryStore();
@@ -67,8 +70,8 @@ class _MangaColorizerAppState extends State<MangaColorizerApp>
   void didHaveMemoryPressure() {
     final before = PaintingBinding.instance.imageCache.currentSizeBytes;
     PaintingBinding.instance.imageCache.clear();
-    _logs.info('startup',
-        '系统内存压力：已清理图片缓存（释放 ${(before / (1 << 20)).round()}MB 纹理）');
+    _logs.info(
+        'startup', '系统内存压力：已清理图片缓存（释放 ${(before / (1 << 20)).round()}MB 纹理）');
   }
 
   /// 启动读取磁盘设置；path_provider 不可用（如宿主测试）时静默保留默认值。
@@ -101,11 +104,18 @@ class _MangaColorizerAppState extends State<MangaColorizerApp>
               title: 'Manga Colorizer',
               themeMode: s.themeMode.themeMode,
               theme: dyn && lightDynamic != null
-                  ? ThemeData(useMaterial3: true, colorScheme: lightDynamic)
+                  ? buildDynamicTheme(lightDynamic, Brightness.light)
                   : buildAppTheme(s.themePreset, Brightness.light),
               darkTheme: dyn && darkDynamic != null
-                  ? ThemeData(useMaterial3: true, colorScheme: darkDynamic)
+                  ? buildDynamicTheme(darkDynamic, Brightness.dark)
                   : buildAppTheme(s.themePreset, Brightness.dark),
+              // 莫奈流动背景垫在最底层，其上透出各屏（Scaffold 背景已置透明）。
+              builder: (context, child) => Stack(
+                children: [
+                  const Positioned.fill(child: MonetBackground()),
+                  if (child != null) child,
+                ],
+              ),
               home: AppShell(
                   controller: _controller, gallery: _gallery, logs: _logs),
             );

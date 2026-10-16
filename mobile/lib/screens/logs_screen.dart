@@ -7,6 +7,7 @@ import '../app_settings.dart';
 import '../logs/log_bus.dart';
 import '../logs/log_entry.dart';
 import '../shell/screen_chrome.dart';
+import '../theme/warm_tokens.dart';
 
 class LogsScreen extends StatefulWidget {
   const LogsScreen({
@@ -35,8 +36,7 @@ class _LogsScreenState extends State<LogsScreen> {
   // 阈值 40px 与桌面端 web 控制台滚动跟随策略保持一致。
   bool get _pinnedToBottom =>
       !_scroll.hasClients ||
-      _scroll.position.pixels >=
-          _scroll.position.maxScrollExtent - 40;
+      _scroll.position.pixels >= _scroll.position.maxScrollExtent - 40;
 
   void _followIfNeeded(bool wasAtBottom) {
     if (!wasAtBottom) return;
@@ -90,11 +90,14 @@ class _LogsScreenState extends State<LogsScreen> {
     );
   }
 
+  /// 级别着色（与桌面端 web 控制台同语义）：信息=赤陶深档 / 警告=琥珀 /
+  /// 错误=暖红；正文一律用 onSurface，只有级别标签带色。
   Color _levelColor(LogLevel l) {
     final s = Theme.of(context).colorScheme;
+    final warm = WarmPalette.of(context);
     return switch (l) {
-      LogLevel.info => s.tertiary,
-      LogLevel.warning => Colors.orange.shade800,
+      LogLevel.info => warm.primaryStrong,
+      LogLevel.warning => s.tertiary,
       LogLevel.error => s.error,
     };
   }
@@ -136,7 +139,8 @@ class _LogsScreenState extends State<LogsScreen> {
                   style: TextStyle(
                       color: scheme.onSurfaceVariant,
                       fontWeight: FontWeight.w600)),
-              TextSpan(text: e.message, style: TextStyle(color: color)),
+              TextSpan(
+                  text: e.message, style: TextStyle(color: scheme.onSurface)),
             ]),
           ),
         ),

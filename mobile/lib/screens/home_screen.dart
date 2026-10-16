@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../app_settings.dart';
 import '../shell/destinations.dart';
 import '../shell/screen_chrome.dart';
+import '../theme/glass.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen(
@@ -23,7 +24,7 @@ class HomeScreen extends StatelessWidget {
         children: [
           Text('Manga Colorizer',
               style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                  fontWeight: FontWeight.w700, color: scheme.primary)),
+                  fontWeight: FontWeight.w500, color: scheme.primary)),
           const SizedBox(height: 4),
           const Text('漫画上色 · 端侧提示点 & 全自动'),
           const SizedBox(height: 20),
@@ -51,25 +52,19 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
-  Widget _card(BuildContext context, AppDestination dest, String title, String sub) {
-    return Card(
-      clipBehavior: Clip.antiAlias,
-      margin: EdgeInsets.zero,
-      child: InkWell(
-        onTap: () => onNavigate(dest),
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Icon(dest.icon, color: Theme.of(context).colorScheme.primary),
-              const SizedBox(height: 10),
-              Text(title, style: Theme.of(context).textTheme.titleSmall),
-              const SizedBox(height: 4),
-              Text(sub, style: Theme.of(context).textTheme.bodySmall),
-            ],
-          ),
-        ),
+  Widget _card(
+      BuildContext context, AppDestination dest, String title, String sub) {
+    return GlassCard(
+      onTap: () => onNavigate(dest),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(dest.icon, color: Theme.of(context).colorScheme.primary),
+          const SizedBox(height: 10),
+          Text(title, style: Theme.of(context).textTheme.titleSmall),
+          const SizedBox(height: 4),
+          Text(sub, style: Theme.of(context).textTheme.bodySmall),
+        ],
       ),
     );
   }
