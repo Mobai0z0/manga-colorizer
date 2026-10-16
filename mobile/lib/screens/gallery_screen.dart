@@ -26,7 +26,30 @@ class GalleryScreen extends StatefulWidget {
   State<GalleryScreen> createState() => _GalleryScreenState();
 }
 
+/// 图库排序方式。
+enum _GallerySort { newest, oldest, type }
+
 class _GalleryScreenState extends State<GalleryScreen> {
+  _GallerySort _sort = _GallerySort.newest;
+
+  /// 按当前排序产出展示列表（默认 newest 与旧行为一致：时间新→旧）。
+  List<GalleryEntry> get _sorted {
+    final list = List<GalleryEntry>.from(widget.gallery.entries);
+    switch (_sort) {
+      case _GallerySort.newest:
+        list.sort((a, b) => b.timeIso.compareTo(a.timeIso));
+      case _GallerySort.oldest:
+        list.sort((a, b) => a.timeIso.compareTo(b.timeIso));
+      case _GallerySort.type:
+        list.sort((a, b) {
+          final c = a.mode.compareTo(b.mode);
+          if (c != 0) return c;
+          return b.timeIso.compareTo(a.timeIso);
+        });
+    }
+    return list;
+  }
+
   void _openLightbox(GalleryEntry e) {
     Navigator.of(context).push(MaterialPageRoute<void>(
       builder: (_) => GalleryLightboxPage(entry: e, gallery: widget.gallery),
@@ -55,11 +78,31 @@ class _GalleryScreenState extends State<GalleryScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: screenAppBar(context, title: '图库', controller: widget.controller),
+      appBar: screenAppBar(
+        context,
+        title: '图库',
+        controller: widget.controller,
+        actions: [
+          PopupMenuButton<_GallerySort>(
+            icon: const Icon(Icons.sort),
+            tooltip: '排序方式',
+            initialValue: _sort,
+            onSelected: (v) => setState(() => _sort = v),
+            itemBuilder: (ctx) => const [
+              PopupMenuItem(
+                  value: _GallerySort.newest, child: Text('时间（新→旧）')),
+              PopupMenuItem(
+                  value: _GallerySort.oldest, child: Text('时间（旧→新）')),
+              PopupMenuItem(
+                  value: _GallerySort.type, child: Text('按类型（全自动/提示点）')),
+            ],
+          ),
+        ],
+      ),
       body: ListenableBuilder(
         listenable: widget.gallery,
         builder: (context, _) {
-          final entries = widget.gallery.entries;
+          final entries = _sorted;
           if (entries.isEmpty) return _empty(context);
           return Column(
             children: [

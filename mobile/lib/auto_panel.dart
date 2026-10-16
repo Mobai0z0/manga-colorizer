@@ -108,7 +108,11 @@ class _AutoTabState extends State<AutoTab> {
   bool _weightsMissing = true;
   Directory? _dir;
   WeightsStore? _store;
-  DownloadSource _source = DownloadSource.auto;
+  // 下载源单一真源＝controller.settings.downloadSource；本类不再缓存独立副本，
+  // 避免与「设置页」的模型下载源选择互相漂移（IndexedStack 下各屏常驻、不重走
+  // initState，旧本地副本不会自动跟随 settings 同步）。
+  DownloadSource get _source => widget.controller.settings.downloadSource;
+  DownloadSource _appliedSource = DownloadSource.auto;
 
   bool _busy = false;
   bool _downloading = false;
@@ -144,7 +148,15 @@ class _AutoTabState extends State<AutoTab> {
     _scheme = widget.controller.settings.colorScheme;
     _refMethod = _refMethodFromId(widget.controller.settings.refMethod);
     _refStrength = widget.controller.settings.refStrength;
+    // 监听全局设置：设置页改下载源时同步本页 store（见 _onSettingsSourceChanged）。
+    widget.controller.addListener(_onSettingsSourceChanged);
     unawaited(_init());
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_onSettingsSourceChanged);
+    super.dispose();
   }
 
   /// 设置里的迁移算法 id → 枚举（白名单外回退 reinhard）。
@@ -166,7 +178,7 @@ class _AutoTabState extends State<AutoTab> {
       setState(() {
         _checking = false;
         _dir = dir;
-        _source = source;
+        _appliedSource = source;
         _store = store;
         _weightsMissing = !ok;
         _status = ok ? '权重就绪。' : '权重未下载，请先看下方说明。';
@@ -182,17 +194,30 @@ class _AutoTabState extends State<AutoTab> {
     }
   }
 
-  /// 切换下载源：本地立即以新 [source] 重建 store 并重绘（选择即时生效），
-  /// 并经全局控制器落盘（与主题共享同一 settings.json，写失败由控制器降级）。
+  /// 切换下载源：单一真源＝controller.settings.downloadSource。先标记本地
+  /// [_appliedSource]（防 _onSettingsSourceChanged 重复建 store），再重建 store
+  /// 并落盘。设置页改动同一字段时由监听器同步本页 store，两端永不漂移。
   void _applySource(DownloadSource source) {
     final dir = _dir;
     if (dir == null || !mounted) return;
+    _appliedSource = source;
     setState(() {
-      _source = source;
       _store = WeightsStore(dir: dir, source: source);
     });
     widget.controller
         .update(widget.controller.settings.copyWith(downloadSource: source));
+  }
+
+  /// 监听全局设置：任何来源（含设置页）改了下载源，都重建本页 store 与之对齐。
+  void _onSettingsSourceChanged() {
+    final dir = _dir;
+    if (dir == null || !mounted) return;
+    final s = widget.controller.settings.downloadSource;
+    if (s == _appliedSource) return;
+    _appliedSource = s;
+    setState(() {
+      _store = WeightsStore(dir: dir, source: s);
+    });
   }
 
   Future<void> _pickSource() async {
@@ -733,8 +758,23 @@ class _AutoTabState extends State<AutoTab> {
         decoration: InputDecoration(
           labelText: '色彩方案',
           hintText: '标准＝修复偏黄偏灰的默认收尾',
-          border: const OutlineInputBorder(),
+          // 圆角填充、无描边无阴影：扁平卡片观感。
+          filled: true,
+          fillColor: Theme.of(context).colorScheme.surfaceContainerHighest,
           isDense: true,
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide.none,
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide.none,
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(
+                color: Theme.of(context).colorScheme.primary, width: 1.5),
+          ),
           suffixIcon: _scheme == kDefaultFinishScheme
               ? null
               : IconButton(

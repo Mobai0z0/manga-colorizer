@@ -400,7 +400,8 @@ class _ColorizeScreenState extends State<ColorizeScreen> {
       child: Container(
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
         decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surface,
+          // 与底部 NavigationBar 同一 surfaceContainer，消除拼接处的色差。
+          color: Theme.of(context).colorScheme.surfaceContainer,
           border:
               Border(top: BorderSide(color: Theme.of(context).dividerColor)),
         ),

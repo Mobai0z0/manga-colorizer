@@ -27,9 +27,14 @@ class HomeScreen extends StatelessWidget {
           const SizedBox(height: 4),
           const Text('漫画上色 · 端侧提示点 & 全自动'),
           const SizedBox(height: 20),
-          Wrap(
-            spacing: 12,
-            runSpacing: 12,
+          // 2×2 网格：同列同宽、childAspectRatio 固定故同高，四卡尺寸完全一致。
+          GridView.count(
+            crossAxisCount: 2,
+            mainAxisSpacing: 12,
+            crossAxisSpacing: 12,
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            childAspectRatio: 1.0,
             children: [
               _card(context, AppDestination.colorize, '上色（提示点）', '点几下即可上色'),
               _card(context, AppDestination.auto, '全自动', '端侧 ONNX 一键上色'),
@@ -47,25 +52,22 @@ class HomeScreen extends StatelessWidget {
   }
 
   Widget _card(BuildContext context, AppDestination dest, String title, String sub) {
-    return SizedBox(
-      width: 150,
-      child: Card(
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          onTap: () => onNavigate(dest),
-          child: Padding(
-            padding: const EdgeInsets.all(14),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Icon(dest.icon, color: Theme.of(context).colorScheme.primary),
-                const SizedBox(height: 10),
-                Text(title,
-                    style: Theme.of(context).textTheme.titleSmall),
-                const SizedBox(height: 4),
-                Text(sub, style: Theme.of(context).textTheme.bodySmall),
-              ],
-            ),
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      margin: EdgeInsets.zero,
+      child: InkWell(
+        onTap: () => onNavigate(dest),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(dest.icon, color: Theme.of(context).colorScheme.primary),
+              const SizedBox(height: 10),
+              Text(title, style: Theme.of(context).textTheme.titleSmall),
+              const SizedBox(height: 4),
+              Text(sub, style: Theme.of(context).textTheme.bodySmall),
+            ],
           ),
         ),
       ),
