@@ -1,19 +1,20 @@
 /* ============================================================
-   Manga Colorizer APP 壳层 — M3 导航组件（index.html 使用）
-   组件名对齐 M3 规范：navigation-rail / navigation-bar / list / hero，
-   令牌与基础组件复用 app.css
+   Manga Colorizer APP 壳层 — 导航 / 列表 / hero（暖纸美学 × 液态玻璃）
+   设计令牌、字体栈、莫奈背景与玻璃质感见 app.css。
    ============================================================ */
 
-/* ---------- App shell ---------- */
-.app-shell { display: grid; grid-template-columns: auto 1fr; min-height: 100dvh; }
+/* ---------- App shell（内容层位于莫奈画布之上） ---------- */
+.app-shell { display: grid; grid-template-columns: auto 1fr; min-height: 100dvh; position: relative; z-index: 1; }
 .app-shell__content { display: flex; flex-direction: column; min-width: 0; min-height: 100dvh; }
 
-/* ---------- Navigation rail（桌面端，M3 Expressive 目的地） ---------- */
+/* ---------- Navigation rail（桌面端，液态玻璃侧栏） ---------- */
 .navigation-rail {
   display: flex; flex-direction: column; align-items: center;
   width: 96px; padding: 18px 0 22px; gap: 6px;
-  background: var(--md-sys-color-surface);
-  border-right: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 50%, transparent);
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: blur(16px);
+  border-right: 1px solid var(--glass-border);
   position: sticky; top: 0; height: 100dvh; box-sizing: border-box;
 }
 
@@ -36,14 +37,15 @@
 .navigation-rail__destination:focus-visible { outline: 3px solid var(--md-sys-color-primary); outline-offset: 2px; border-radius: 14px; }
 .navigation-rail__spacer { flex: 1; }
 
-/* ---------- Navigation bar（手机端底部） ---------- */
+/* ---------- Navigation bar（手机端底部，液态玻璃） ---------- */
 .navigation-bar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
   display: flex; justify-content: space-around; align-items: stretch;
   padding: 10px 8px calc(12px + env(safe-area-inset-bottom));
-  background: color-mix(in srgb, var(--md-sys-color-surface-container) 92%, transparent);
-  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
-  border-top: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 55%, transparent);
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: blur(16px);
+  border-top: 1px solid var(--glass-border);
 }
 .navigation-bar__item {
   flex: 1; max-width: 110px;
@@ -72,29 +74,32 @@
 }
 
 .screen-head { margin: 0 0 18px; }
-.screen-head h2 { margin: 0; font-size: 1.5rem; font-weight: 700; letter-spacing: -.02em; }
-.screen-head p { margin: 4px 0 0; font-size: .86rem; color: var(--md-sys-color-on-surface-variant); }
+.screen-head h2 { margin: 0; font-size: 1.5rem; font-weight: 500; letter-spacing: 0; font-family: var(--font-serif); }
+.screen-head p { margin: 4px 0 0; font-size: .86rem; color: var(--md-sys-color-on-surface-variant); line-height: 1.6; }
 
-/* ---------- List（设置 / 功能项） ---------- */
+/* ---------- List（设置 / 功能项，液态玻璃） ---------- */
 .list {
   margin: 0; padding: 0; list-style: none;
-  background: var(--md-sys-color-surface-container);
-  border: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 45%, transparent);
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--glass-border);
   border-radius: var(--md-sys-shape-corner-lg); overflow: hidden;
+  box-shadow: var(--glass-bevel), var(--md-sys-elevation-1);
 }
 .list-item {
   display: flex; align-items: center; gap: 16px; padding: 15px 20px;
-  border-bottom: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 35%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 60%, transparent);
 }
 .list-item:last-child { border-bottom: 0; }
 .list-item__icon {
   width: 40px; height: 40px; border-radius: 50%; flex: none;
-  background: var(--md-sys-color-secondary-container); color: var(--md-sys-color-on-secondary-container);
+  background: var(--md-sys-color-primary-container); color: var(--md-sys-color-on-primary-container);
   display: grid; place-items: center;
 }
 .list-item__text { flex: 1; min-width: 0; }
 .list-item__headline { font-size: .92rem; font-weight: 600; }
-.list-item__supporting { margin: 2px 0 0; font-size: .78rem; color: var(--md-sys-color-on-surface-variant); line-height: 1.5; }
+.list-item__supporting { margin: 2px 0 0; font-size: .78rem; color: var(--md-sys-color-on-surface-variant); line-height: 1.6; }
 
 /* ---------- 图库网格 ---------- */
 .media-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 14px; }
@@ -102,18 +107,24 @@
 .media-card:focus-visible { outline: 3px solid var(--md-sys-color-primary); outline-offset: 2px; }
 .media-card__thumb { aspect-ratio: 4 / 3; width: 100%; display: block; object-fit: cover; }
 
-/* ---------- 首页 hero ---------- */
+/* ---------- 首页 hero（暖色印象派渐变 + 液态玻璃） ---------- */
 .hero {
   background:
-    radial-gradient(30rem 16rem at 85% -30%, color-mix(in srgb, var(--md-sys-color-tertiary-container) 45%, transparent), transparent 70%),
-    linear-gradient(135deg, var(--md-sys-color-primary-container), var(--md-sys-color-secondary-container));
-  color: var(--md-sys-color-on-primary-container);
+    radial-gradient(30rem 16rem at 85% -30%,
+      color-mix(in srgb, var(--monet-terracotta) 42%, transparent), transparent 70%),
+    radial-gradient(26rem 14rem at 6% 125%,
+      color-mix(in srgb, var(--monet-sand) 36%, transparent), transparent 70%),
+    var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: blur(16px);
+  color: var(--md-sys-color-on-surface);
+  border: 1px solid var(--glass-border);
   border-radius: var(--md-sys-shape-corner-xl);
   padding: clamp(24px, 4vw, 40px);
-  box-shadow: var(--md-sys-elevation-1);
+  box-shadow: var(--glass-bevel), var(--md-sys-elevation-1);
 }
-.hero h2 { margin: 0 0 8px; font-size: clamp(1.4rem, 3vw, 1.9rem); font-weight: 700; letter-spacing: -.02em; }
-.hero p { margin: 0 0 20px; font-size: .92rem; max-width: 46ch; opacity: .85; line-height: 1.6; }
+.hero h2 { margin: 0 0 8px; font-size: clamp(1.4rem, 3vw, 1.9rem); font-weight: 500; letter-spacing: 0; font-family: var(--font-serif); }
+.hero p { margin: 0 0 20px; font-size: .92rem; max-width: 46ch; opacity: .85; line-height: 1.7; }
 .hero .actions { margin: 0; }
 
 /* ---------- 响应式：桌面隐藏底栏 / 手机隐藏侧栏 ---------- */

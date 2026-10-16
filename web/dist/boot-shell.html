@@ -5,42 +5,69 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Manga Colorizer</title>
 <style>
+  /* 设计系统：Anthropic 暖纸美学 × 苹果液态玻璃 × 莫奈流动背景（与 app.css 同令牌） */
   :root {
-    --bg: #f7f8f8; --surface: #ffffff; --ink: #10201d; --ink-2: #5a6b66; --ink-3: #94a29d;
-    --line: #e3e7e5; --accent: #2f6d5e; --accent-soft: #e5f0ec; --danger: #b4432f;
-    --danger-soft: #f9e9e5; --radius: 14px;
-    --mono: "Cascadia Mono", Consolas, monospace;
-    --sans: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+    --bg: #f4f2ec; --surface: rgba(255, 255, 255, .72); --ink: #2b2822; --ink-2: #6d685b; --ink-3: #a39d8b;
+    --line: rgba(255, 255, 255, .5); --accent: #d97757; --accent-ink: #221d17;
+    --accent-soft: #f7e7dd; --danger: #b53333; --danger-soft: #f6e2de;
+    --bevel: inset 0 1px 0 rgba(255, 255, 255, .65), inset 0 -1px 0 rgba(150, 128, 92, .12);
+    --shadow: 0 10px 30px rgb(84 66 44 / .14), 0 2px 6px rgb(84 66 44 / .08);
+    --radius: 14px;
+    --monet-terracotta: #d2a493; --monet-sage: #a3b099; --monet-sand: #d2c5a8; --monet-opacity: .24;
+    --mono: "Anthropic Mono", "Cascadia Mono", Consolas, Menlo, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", "Noto Sans SC", "PingFang SC", "Microsoft YaHei UI", sans-serif;
+    --serif: "Anthropic Serif", Georgia, "Songti SC", "STSong", "SimSun", "Noto Serif SC", serif;
   }
   @media (prefers-color-scheme: dark) {
-    :root { --bg:#101614; --surface:#182220; --ink:#e6ebe9; --ink-2:#9fb0aa; --ink-3:#6c7a75;
-            --line:#243230; --accent:#63b39d; --accent-soft:#1d2f2a; --danger:#e08a77; --danger-soft:#33211d; }
+    :root { --bg:#141413; --surface: rgba(37, 37, 35, .72); --ink:#f0eee6; --ink-2:#a8a397; --ink-3:#7c7a6e;
+            --line: rgba(255, 255, 255, .09); --accent:#d97757; --accent-ink:#1d1a16;
+            --accent-soft: #4a2b1e; --danger:#e5826d; --danger-soft: #47201a;
+            --bevel: inset 0 1px 0 rgba(255, 255, 255, .08), inset 0 -1px 0 rgba(0, 0, 0, .30);
+            --shadow: 0 10px 32px rgb(0 0 0 / .55), 0 2px 8px rgb(0 0 0 / .40);
+            --monet-opacity: .34; }
   }
   * { box-sizing: border-box; margin: 0; }
-  body { font-family: var(--sans); background: var(--bg); color: var(--ink); height: 100vh;
-         display: flex; align-items: center; justify-content: center; padding: 24px; }
-  .card { width: min(560px, 100%); background: var(--surface); border: 1px solid var(--line);
-          border-radius: var(--radius); padding: 36px 40px; }
+  /* 莫奈流动背景：固定全屏，三个低饱和柔和色球呼吸漫游 */
+  .monet-canvas { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; background: var(--bg); }
+  .monet-blob { position: absolute; border-radius: 50%; filter: blur(var(--mb-blur)); opacity: var(--monet-opacity); will-change: transform; }
+  .monet-blob--terracotta { width: 46vmax; height: 46vmax; left: -10vmax; top: -12vmax; background: var(--monet-terracotta); --mb-blur: 120px; animation: monet-a 38s ease-in-out infinite alternate; }
+  .monet-blob--sage { width: 40vmax; height: 40vmax; right: -8vmax; bottom: -10vmax; background: var(--monet-sage); --mb-blur: 140px; animation: monet-b 44s ease-in-out infinite alternate; }
+  .monet-blob--sand { width: 34vmax; height: 34vmax; left: 32vw; top: 28vh; background: var(--monet-sand); --mb-blur: 90px; animation: monet-c 30s ease-in-out infinite alternate; }
+  @keyframes monet-a { from { transform: translate3d(0, 0, 0) scale(1); } to { transform: translate3d(5vw, 4vh, 0) scale(1.12); } }
+  @keyframes monet-b { from { transform: translate3d(0, 0, 0) scale(1.08); } to { transform: translate3d(-6vw, -3vh, 0) scale(.94); } }
+  @keyframes monet-c { from { transform: translate3d(0, 0, 0) scale(.96); } to { transform: translate3d(-4vw, 6vh, 0) scale(1.1); } }
+  @media (prefers-reduced-motion: reduce) {
+    .monet-blob { animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
+  }
+  body { font-family: var(--sans); background: var(--bg); color: var(--ink); line-height: 1.65;
+         height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px;
+         -webkit-font-smoothing: antialiased; }
+  .card { position: relative; z-index: 1; width: min(560px, 100%); background: var(--surface);
+          backdrop-filter: blur(16px) saturate(1.12); -webkit-backdrop-filter: blur(16px);
+          border: 1px solid var(--line); border-radius: var(--radius); padding: 36px 40px;
+          box-shadow: var(--bevel), var(--shadow); }
   .brand { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
-  .brand h1 { font-size: 19px; font-weight: 650; letter-spacing: -0.01em; }
+  .brand h1 { font-size: 19px; font-weight: 500; letter-spacing: 0; font-family: var(--serif); }
   .brand .ver { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
   .sub { color: var(--ink-2); font-size: 13px; margin-bottom: 26px; }
   .metric-row { display: flex; gap: 24px; margin-bottom: 20px; }
   .metric .k { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-3); }
-  .metric .v { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .metric .v { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; font-family: var(--mono); }
   .track { height: 8px; border-radius: 99px; background: var(--accent-soft); overflow: hidden; margin: 6px 0 8px; }
   .fill { height: 100%; width: 0%; background: var(--accent); border-radius: 99px;
           transition: width .18s ease; }
   .fill.indeterminate { width: 35% !important; animation: slide 1.1s ease-in-out infinite alternate; }
   @keyframes slide { from { margin-left: 0; } to { margin-left: 65%; } }
-  .status { font-size: 13px; color: var(--ink-2); min-height: 38px; line-height: 1.5; }
+  .status { font-size: 13px; color: var(--ink-2); min-height: 38px; line-height: 1.6; }
   .status.err { color: var(--danger); }
   .file { font-family: var(--mono); font-size: 11px; color: var(--ink-3); margin-top: 6px;
           white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .actions { display: flex; gap: 10px; margin-top: 22px; flex-wrap: wrap; }
   button { font: inherit; font-size: 13px; font-weight: 600; border-radius: 10px; padding: 9px 18px;
-           border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+           border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer;
+           backdrop-filter: blur(16px) saturate(1.12); -webkit-backdrop-filter: blur(16px); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink);
+                   box-shadow: 0 1px 2px rgb(84 66 44 / .14); }
   button:disabled { opacity: .45; cursor: default; }
   button.ghost { border-color: transparent; color: var(--ink-2); }
   .ledger { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 14px; }
@@ -57,7 +84,12 @@
 </style>
 </head>
 <body>
-  <div class="card">
+<div class="monet-canvas" aria-hidden="true">
+  <span class="monet-blob monet-blob--terracotta"></span>
+  <span class="monet-blob monet-blob--sage"></span>
+  <span class="monet-blob monet-blob--sand"></span>
+</div>
+<div class="card">
     <div class="brand"><h1>Manga Colorizer</h1><span class="ver" id="ver">—</span></div>
     <div class="sub" id="subtitle">首次启动：需要下载上色模型权重（约 287 MB，一次性）</div>
 

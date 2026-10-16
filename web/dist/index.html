@@ -1,8 +1,8 @@
 <!doctype html>
 <!-- Manga Colorizer — 唯一前端页面（桌面壳与浏览器工作台共用）。
-     Material Design 3 (Expressive) 组件命名：top-app-bar / navigation-rail /
-     navigation-bar / card / list / filled-button / tonal-button / chip /
-     swatch / snackbar。零构建、零运行时依赖，纯 HTML+CSS+JS。
+     设计系统：Anthropic 暖纸美学 × 苹果液态玻璃 × 莫奈流动背景
+     （色彩 / 字体 / 玻璃质感 / 莫奈画布令牌见 app.css）。
+     零构建、零运行时依赖，纯 HTML+CSS+JS。
      后端：tool/colorizer_service/service.py（浏览器直接访问时同源挂载本目录；
      Tauri 打包窗口经 http://127.0.0.1:8788 跨源调用，见 app.js 的 API 基准）。
      许可：代码 Apache-2.0；模型权重 CC BY-NC-SA 4.0（不随仓库分发）。 -->
@@ -11,8 +11,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
-<meta name="theme-color" content="#00696d" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#101414" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f1efe8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#141413" media="(prefers-color-scheme: dark)">
 <title>Manga Colorizer · 漫画上色工作台</title>
 <link rel="stylesheet" href="app.css">
 <link rel="stylesheet" href="app-shell.css">
@@ -20,6 +20,12 @@
 <link rel="icon" href="app-icon.png" type="image/png">
 </head>
 <body>
+<!-- 莫奈流动背景：页面最底层固定全屏画布，三个低饱和柔和色球呼吸漫游 -->
+<div class="monet-canvas" aria-hidden="true">
+  <span class="monet-blob monet-blob--terracotta"></span>
+  <span class="monet-blob monet-blob--sage"></span>
+  <span class="monet-blob monet-blob--sand"></span>
+</div>
 <div class="app-shell">
 
   <!-- 桌面端：Navigation rail -->

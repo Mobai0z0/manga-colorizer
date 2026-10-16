@@ -1,7 +1,7 @@
 /* ============================================================
    Manga Colorizer APP 功能组件 — 批量队列 / 提示点编辑 / 图库元数据 /
-   控制台日志 / lightbox / 设置面板
-   令牌与基础组件复用 app.css，导航壳层复用 app-shell.css
+   控制台日志 / lightbox / 设置面板（暖纸美学 × 液态玻璃）
+   设计令牌、字体栈、莫奈背景与玻璃质感见 app.css，导航壳层见 app-shell.css。
    ============================================================ */
 
 /* ---------- M3 chip（顶栏状态） ---------- */
@@ -18,7 +18,7 @@
 
 .linklike {
   border: 0; background: none; cursor: pointer; font: inherit;
-  color: var(--md-sys-color-primary); padding: 0; text-decoration: underline;
+  color: var(--md-sys-color-primary-strong); padding: 0; text-decoration: underline;
   text-underline-offset: 3px;
 }
 
@@ -46,9 +46,10 @@ input[type="file"][hidden] { display: none !important; }
 
 .queue-card__head {
   display: flex; align-items: baseline; justify-content: space-between;
-  font-weight: 700; font-size: .9rem; margin-bottom: 10px;
+  font-weight: 500; font-size: .98rem; margin-bottom: 10px;
+  font-family: var(--font-serif); letter-spacing: 0;
 }
-.queue-card__count { font-size: .74rem; font-weight: 400; color: var(--md-sys-color-on-surface-variant); }
+.queue-card__count { font-size: .72rem; font-weight: 400; color: var(--md-sys-color-on-surface-variant); font-family: var(--font-mono); }
 
 .q-list { display: flex; flex-direction: column; gap: 8px; max-height: 46vh; overflow: auto; padding-right: 2px; }
 .q-item {
@@ -104,16 +105,19 @@ input[type="file"][hidden] { display: none !important; }
 /* ---------- 图库卡片 ---------- */
 .g-meta { padding: 10px 14px 12px; font-size: .78rem; }
 .g-meta .g-nm { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.g-meta .g-row { display: flex; gap: 8px; margin-top: 3px; font-size: .68rem; color: var(--md-sys-color-on-surface-variant); font-variant-numeric: tabular-nums; }
-.g-meta .g-dev { color: var(--md-sys-color-primary); font-weight: 600; }
+.g-meta .g-row { display: flex; gap: 8px; margin-top: 3px; font-size: .68rem; color: var(--md-sys-color-on-surface-variant); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.g-meta .g-dev { color: var(--md-sys-color-primary-strong); font-weight: 600; }
 
-/* ---------- 控制台日志 ---------- */
+/* ---------- 控制台日志（等宽数据 + 液态玻璃） ---------- */
 .console {
-  font-family: "Cascadia Mono", Consolas, monospace; font-size: .72rem; line-height: 1.55;
-  background: var(--md-sys-color-surface-container);
+  font-family: var(--font-mono); font-size: .72rem; line-height: 1.6;
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: blur(16px);
   color: var(--md-sys-color-on-surface);
-  border: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 60%, transparent);
+  border: 1px solid var(--glass-border);
   border-radius: var(--md-sys-shape-corner-md); padding: 14px 16px;
+  box-shadow: var(--glass-bevel), var(--md-sys-elevation-1);
   height: calc(100dvh - 250px); min-height: 260px; overflow: auto;
   scrollbar-color: var(--md-sys-color-outline-variant) transparent;
   scrollbar-width: thin;
@@ -121,21 +125,24 @@ input[type="file"][hidden] { display: none !important; }
 .log-line { display: flex; gap: 10px; padding: 1.5px 0; }
 .log-line .ts { color: var(--md-sys-color-on-surface-variant); opacity: .8; flex: none; }
 .log-line .lv { flex: none; width: 52px; font-weight: 600; }
-.log-line .lv.INFO { color: var(--md-sys-color-primary); }
+.log-line .lv.INFO { color: var(--md-sys-color-primary-strong); }
 .log-line .lv.WARNING { color: var(--md-sys-color-tertiary); }
 .log-line .lv.ERROR { color: var(--md-sys-color-error); }
 .log-line .msg { word-break: break-all; color: var(--md-sys-color-on-surface); opacity: .92; }
 
-/* ---------- lightbox（M3 对话框样式：容器底色 + corner-xl + 海拔 3） ---------- */
+/* ---------- lightbox（液态玻璃对话框） ---------- */
 .lightbox { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; }
 .lightbox[hidden] { display: none; }
-.lightbox__backdrop { position: absolute; inset: 0; background: rgb(var(--md-sys-color-scrim) / .6); }
+.lightbox__backdrop { position: absolute; inset: 0; background: rgb(var(--md-sys-color-scrim) / .55); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
 .lightbox__figure {
   position: relative; z-index: 1; display: flex; flex-direction: column; gap: 12px; align-items: center;
   max-width: min(92vw, 1200px);
-  background: var(--md-sys-color-surface-container-high);
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--glass-border);
   border-radius: var(--md-sys-shape-corner-xl);
-  padding: 20px; box-shadow: var(--md-sys-elevation-3);
+  padding: 20px; box-shadow: var(--glass-bevel), var(--md-sys-elevation-3);
 }
 .lightbox__figure img {
   max-width: 88vw; max-height: 68vh; border-radius: var(--md-sys-shape-corner-md);
@@ -149,7 +156,7 @@ input[type="file"][hidden] { display: none !important; }
 .set-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 .set-label { font-size: .8rem; font-weight: 600; color: var(--md-sys-color-on-surface-variant); min-width: 58px; }
 .set-note { font-size: .72rem; color: var(--md-sys-color-error); }
-.set-hint { margin: 0; font-size: .76rem; color: var(--md-sys-color-primary); }
+.set-hint { margin: 0; font-size: .76rem; color: var(--md-sys-color-primary-strong); }
 
 .seg-group { display: flex; gap: 8px; flex-wrap: wrap; }
 .seg { position: relative; cursor: pointer; }
@@ -177,7 +184,7 @@ input[type="file"][hidden] { display: none !important; }
               padding: 10px 14px; border-radius: var(--md-sys-shape-corner-sm);
               background: var(--md-sys-color-surface-container); }
 .disclaimer input { margin-top: 3px; width: 16px; height: 16px; accent-color: var(--md-sys-color-primary); cursor: pointer; }
-.disclaimer span { font-size: .74rem; color: var(--md-sys-color-on-surface-variant); line-height: 1.5; }
+.disclaimer span { font-size: .74rem; color: var(--md-sys-color-on-surface-variant); line-height: 1.6; }
 
 /* ---------- 导航栏底部主题切换 ---------- */
 .rail-theme {

@@ -1,37 +1,54 @@
 /* ============================================================
-   Manga Colorizer — Material Design 3 (Expressive) 设计令牌与基础组件
-   原生 CSS 变量实现（未使用 @material/web），零构建零运行时依赖。
-   组件命名对齐 M3 规范：top-app-bar / card / filled-button / tonal-button /
-   swatch / snackbar。APP 专用组件见 app-shell.css 与 app-ui.css。
+   Manga Colorizer — 设计系统：Anthropic 暖纸美学 × 苹果液态玻璃 × 莫奈流动背景
+   原生 CSS 变量实现，零构建零运行时依赖。
+   色彩（全域暖调中性，杜绝冷调科技蓝灰）：
+     浅色 — 画布 羊皮纸 #f1efe8 / 浮层 象牙白 #faf9f5 / 主色 赤陶红 #d97757 /
+            口诀 琥珀黄 #d97706 / 避坑·错误 暖红 #b53333 / 边框 暖奶油
+     深色 — 画布 #141413 / 浮层 #252523 / 边框 #30302e
+   字体：衬线标题（Anthropic Serif / Georgia / 标宋，字重 500，书扉页感）；
+         无衬线正文（-apple-system / Inter，行高 1.65）；等宽数据（Anthropic Mono / Consolas）。
+   质感：液态玻璃 = backdrop blur(16px) + 半透明内衬 + 高光边框 + 内发光倒角。
+   氛围：莫奈流动背景 .monet-canvas（index.html / boot-shell.html 同款挂载）。
+   组件类名沿用既有命名（top-app-bar / card / filled-button / tonal-button /
+   swatch / snackbar / navigation-rail / navigation-bar / list / hero）。
    ============================================================ */
 
-/* ---------- M3 色彩令牌（青色种子色） ---------- */
+/* ---------- 字体栈 ---------- */
 :root {
-  --md-sys-color-primary: #00696d;
-  --md-sys-color-on-primary: #ffffff;
-  --md-sys-color-primary-container: #6ff6fb;
-  --md-sys-color-on-primary-container: #002022;
-  --md-sys-color-secondary-container: #cce8e8;
-  --md-sys-color-on-secondary-container: #051f1f;
-  --md-sys-color-tertiary: #b35c00;
-  --md-sys-color-tertiary-container: #ffb78c;
-  --md-sys-color-on-tertiary-container: #321300;
-  --md-sys-color-surface: #f7fafa;
-  --md-sys-color-surface-dim: #d6e0e0;
-  --md-sys-color-surface-container: #eff3f2;
-  --md-sys-color-surface-container-high: #e9edec;
-  --md-sys-color-surface-container-highest: #e3e8e7;
-  --md-sys-color-on-surface: #191c1c;
-  --md-sys-color-on-surface-variant: #3f4948;
-  --md-sys-color-outline: #6f7979;
-  --md-sys-color-outline-variant: #bfd0ce;
-  --md-sys-color-error: #ba1a1a;
-  --md-sys-color-on-error-container: #ffdad6;
-  --md-sys-color-inverse-surface: #2d3232;
-  --md-sys-color-inverse-on-surface: #edf1f0;
-  --md-sys-color-scrim: 0 0 0;
+  --font-serif: "Anthropic Serif", Georgia, "Songti SC", "STSong", "SimSun", "Noto Serif SC", serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", "Noto Sans SC",
+    "PingFang SC", "Microsoft YaHei UI", sans-serif;
+  --font-mono: "Anthropic Mono", "Cascadia Mono", Consolas, Menlo, "Courier New", monospace;
+}
 
-  /* M3 形状 */
+/* ---------- 设计令牌（暖纸 · 浅色） ---------- */
+:root {
+  --md-sys-color-primary: #d97757;            /* 赤陶红 */
+  --md-sys-color-on-primary: #221d17;
+  --md-sys-color-primary-strong: #b0573a;     /* 赤陶深色档：小字号文本强调用 */
+  --md-sys-color-primary-container: #f7e7dd;
+  --md-sys-color-on-primary-container: #7e3a24;
+  --md-sys-color-secondary-container: #eae6d9;
+  --md-sys-color-on-secondary-container: #3a372d;
+  --md-sys-color-tertiary: #d97706;           /* 琥珀黄（速记口诀） */
+  --md-sys-color-tertiary-container: #f7ead2;
+  --md-sys-color-on-tertiary-container: #6b3d04;
+  --md-sys-color-surface: #f4f2ec;            /* 羊皮纸画布（近白暖调，杜绝黄感） */
+  --md-sys-color-surface-dim: #eae7dc;
+  --md-sys-color-surface-container: #faf9f5;  /* 象牙白浮层 */
+  --md-sys-color-surface-container-high: #f4f1e8;
+  --md-sys-color-surface-container-highest: #eee9dc;
+  --md-sys-color-on-surface: #2b2822;
+  --md-sys-color-on-surface-variant: #6d685b;
+  --md-sys-color-outline: #a39d8b;
+  --md-sys-color-outline-variant: #e2ded0;    /* 极细暖奶油边框 */
+  --md-sys-color-error: #b53333;              /* 避坑暖红 */
+  --md-sys-color-on-error-container: #571313;
+  --md-sys-color-inverse-surface: #2b2822;
+  --md-sys-color-inverse-on-surface: #f5f2e8;
+  --md-sys-color-scrim: 28 24 18;
+
+  /* 形状 */
   --md-sys-shape-corner-xs: 8px;
   --md-sys-shape-corner-sm: 12px;
   --md-sys-shape-corner-md: 16px;
@@ -39,46 +56,102 @@
   --md-sys-shape-corner-xl: 28px;
   --md-sys-shape-corner-full: 999px;
 
-  /* M3 海拔 */
-  --md-sys-elevation-1: 0 1px 2px rgb(0 0 0 / .10), 0 1px 3px 1px rgb(0 0 0 / .06);
-  --md-sys-elevation-2: 0 1px 2px rgb(0 0 0 / .12), 0 2px 6px 2px rgb(0 0 0 / .08);
-  --md-sys-elevation-3: 0 4px 8px 3px rgb(0 0 0 / .10), 0 1px 3px rgb(0 0 0 / .14);
+  /* 海拔（暖褐投影，替代冷灰黑影） */
+  --md-sys-elevation-1: 0 1px 2px rgb(84 66 44 / .08), 0 1px 3px 1px rgb(84 66 44 / .05);
+  --md-sys-elevation-2: 0 2px 6px rgb(84 66 44 / .10), 0 1px 2px rgb(84 66 44 / .08);
+  --md-sys-elevation-3: 0 10px 30px rgb(84 66 44 / .14), 0 2px 6px rgb(84 66 44 / .08);
 
-  /* M3 Expressive 弹性动效曲线 */
+  /* 液态玻璃 */
+  --glass-bg: rgba(255, 255, 255, .72);
+  --glass-border: rgba(255, 255, 255, .5);
+  --glass-bevel: inset 0 1px 0 rgba(255, 255, 255, .65), inset 0 -1px 0 rgba(150, 128, 92, .12);
+  --glass-blur: blur(16px) saturate(1.12);
+
+  /* 动效 */
   --md-sys-motion-ease-spring: cubic-bezier(.34, 1.36, .54, 1);
   --md-sys-motion-ease-emphasized: cubic-bezier(.2, .9, .2, 1);
   --md-sys-motion-duration: 320ms;
+
+  /* 莫奈流动背景：低饱和三色球与浓度（浅色低浓度，三色改浅防“屎黄”） */
+  --monet-terracotta: #d2a493;
+  --monet-sage: #a3b099;
+  --monet-sand: #d2c5a8;
+  --monet-opacity: .24;
 }
 
 /* 深色令牌：系统偏好与手动切换（html[data-theme]）共用同一份 */
 @media (prefers-color-scheme: dark) {
   :root {
-    --md-sys-color-primary: #4cdade;
-    --md-sys-color-on-primary: #003739;
-    --md-sys-color-primary-container: #004f52;
-    --md-sys-color-on-primary-container: #6ff6fb;
-    --md-sys-color-secondary-container: #344f4f;
-    --md-sys-color-on-secondary-container: #cde8e8;
-    --md-sys-color-tertiary: #ffb78c;
-    --md-sys-color-tertiary-container: #7a4200;
-    --md-sys-color-on-tertiary-container: #ffb78c;
-    --md-sys-color-surface: #101414;
-    --md-sys-color-surface-dim: #0d1111;
-    --md-sys-color-surface-container: #1c2020;
-    --md-sys-color-surface-container-high: #262b2b;
-    --md-sys-color-surface-container-highest: #313636;
-    --md-sys-color-on-surface: #e0e3e2;
-    --md-sys-color-on-surface-variant: #bcc7c6;
-    --md-sys-color-outline: #879392;
-    --md-sys-color-outline-variant: #3f4948;
-    --md-sys-color-error: #ffb4ab;
-    --md-sys-color-on-error-container: #93000a;
-    --md-sys-color-inverse-surface: #e0e3e2;
-    --md-sys-color-inverse-on-surface: #2d3232;
-    --md-sys-elevation-1: 0 1px 2px rgb(0 0 0 / .45), 0 1px 3px 1px rgb(0 0 0 / .25);
-    --md-sys-elevation-2: 0 1px 2px rgb(0 0 0 / .50), 0 2px 6px 2px rgb(0 0 0 / .30);
-    --md-sys-elevation-3: 0 4px 8px 3px rgb(0 0 0 / .35), 0 1px 3px rgb(0 0 0 / .50);
+    --md-sys-color-primary: #d97757;
+    --md-sys-color-on-primary: #1d1a16;
+    --md-sys-color-primary-strong: #e89a7e;
+    --md-sys-color-primary-container: #4a2b1e;
+    --md-sys-color-on-primary-container: #f4c3ac;
+    --md-sys-color-secondary-container: #34322a;
+    --md-sys-color-on-secondary-container: #e5e1d2;
+    --md-sys-color-tertiary: #e0912f;
+    --md-sys-color-tertiary-container: #43310f;
+    --md-sys-color-on-tertiary-container: #f3cd93;
+    --md-sys-color-surface: #141413;
+    --md-sys-color-surface-dim: #100f0e;
+    --md-sys-color-surface-container: #252523;
+    --md-sys-color-surface-container-high: #2e2e2b;
+    --md-sys-color-surface-container-highest: #383834;
+    --md-sys-color-on-surface: #f0eee6;
+    --md-sys-color-on-surface-variant: #a8a397;
+    --md-sys-color-outline: #7c7a6e;
+    --md-sys-color-outline-variant: #30302e;
+    --md-sys-color-error: #e5826d;
+    --md-sys-color-on-error-container: #f3b8a9;
+    --md-sys-color-inverse-surface: #f0eee6;
+    --md-sys-color-inverse-on-surface: #232220;
+    --md-sys-elevation-1: 0 1px 2px rgb(0 0 0 / .40), 0 1px 3px 1px rgb(0 0 0 / .24);
+    --md-sys-elevation-2: 0 2px 8px rgb(0 0 0 / .46), 0 1px 2px rgb(0 0 0 / .36);
+    --md-sys-elevation-3: 0 10px 32px rgb(0 0 0 / .55), 0 2px 8px rgb(0 0 0 / .40);
+    --glass-bg: rgba(37, 37, 35, .72);
+    --glass-border: rgba(255, 255, 255, .09);
+    --glass-bevel: inset 0 1px 0 rgba(255, 255, 255, .08), inset 0 -1px 0 rgba(0, 0, 0, .30);
+    --monet-opacity: .34;
   }
+}
+
+/* ---------- 莫奈流动背景（页面最底层，固定全屏；标记位于 index.html / boot-shell.html） ---------- */
+.monet-canvas {
+  position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none;
+  background: var(--md-sys-color-surface);
+}
+.monet-blob {
+  position: absolute; border-radius: 50%;
+  filter: blur(var(--mb-blur));
+  opacity: var(--monet-opacity);
+  will-change: transform;
+}
+.monet-blob--terracotta {
+  width: 46vmax; height: 46vmax; left: -10vmax; top: -12vmax;
+  background: var(--monet-terracotta); --mb-blur: 120px;
+  animation: monet-a 38s ease-in-out infinite alternate;
+}
+.monet-blob--sage {
+  width: 40vmax; height: 40vmax; right: -8vmax; bottom: -10vmax;
+  background: var(--monet-sage); --mb-blur: 140px;
+  animation: monet-b 44s ease-in-out infinite alternate;
+}
+.monet-blob--sand {
+  width: 34vmax; height: 34vmax; left: 32vw; top: 28vh;
+  background: var(--monet-sand); --mb-blur: 90px;
+  animation: monet-c 30s ease-in-out infinite alternate;
+}
+@keyframes monet-a {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to   { transform: translate3d(5vw, 4vh, 0) scale(1.12); }
+}
+@keyframes monet-b {
+  from { transform: translate3d(0, 0, 0) scale(1.08); }
+  to   { transform: translate3d(-6vw, -3vh, 0) scale(.94); }
+}
+@keyframes monet-c {
+  from { transform: translate3d(0, 0, 0) scale(.96); }
+  to   { transform: translate3d(-4vw, 6vh, 0) scale(1.1); }
 }
 
 /* ---------- 基础 ---------- */
@@ -87,38 +160,33 @@
 html { color-scheme: light dark; }
 body {
   margin: 0;
-  font-family: "Segoe UI Variable Display", "Segoe UI", system-ui, -apple-system,
-    Roboto, "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
+  font-family: var(--font-sans);
   background: var(--md-sys-color-surface);
   color: var(--md-sys-color-on-surface);
   min-height: 100dvh;
   display: flex;
   flex-direction: column;
-  line-height: 1.5;
+  line-height: 1.65;
   -webkit-font-smoothing: antialiased;
-  /* 氛围底色：顶部青色辉光，随主题自适应 */
-  background-image:
-    radial-gradient(52rem 22rem at 18% -8%,
-      color-mix(in srgb, var(--md-sys-color-primary-container) 32%, transparent), transparent 66%),
-    radial-gradient(44rem 20rem at 92% -4%,
-      color-mix(in srgb, var(--md-sys-color-tertiary-container) 22%, transparent), transparent 62%);
-  background-attachment: fixed;
 }
-::selection { background: color-mix(in srgb, var(--md-sys-color-primary) 28%, transparent); }
+/* 衬线标题：大标题与卡片标题（书扉页感，字重 500） */
+h1, h2, h3 { font-family: var(--font-serif); font-weight: 500; letter-spacing: 0; }
+::selection { background: color-mix(in srgb, var(--md-sys-color-primary) 30%, transparent); }
 
-/* ---------- Top app bar ---------- */
+/* ---------- Top app bar（液态玻璃） ---------- */
 .top-app-bar {
   position: sticky; top: 0; z-index: 20;
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
   padding: 12px clamp(16px, 4vw, 40px);
-  background: color-mix(in srgb, var(--md-sys-color-surface) 78%, transparent);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  border-bottom: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 55%, transparent);
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: blur(16px);
+  border-bottom: 1px solid var(--glass-border);
 }
 .top-app-bar__brand { display: flex; align-items: center; gap: 14px; min-width: 0; }
 .top-app-bar__brand h1 {
-  margin: 0; font-size: 1.22rem; font-weight: 700; letter-spacing: -.015em; line-height: 1.2;
+  margin: 0; font-size: 1.22rem; font-weight: 500; letter-spacing: 0; line-height: 1.25;
+  font-family: var(--font-serif);
 }
 .top-app-bar__sub {
   margin: 1px 0 0; font-size: .76rem; color: var(--md-sys-color-on-surface-variant);
@@ -128,7 +196,7 @@ body {
 .brand-mark {
   width: 42px; height: 42px; border-radius: 14px; flex: none; overflow: hidden;
   display: grid; place-items: center;
-  filter: drop-shadow(0 1px 2px rgb(0 0 0 / .18));
+  filter: drop-shadow(0 1px 2px rgb(84 66 44 / .22));
 }
 .brand-mark img, .brand-mark svg { display: block; width: 100%; height: 100%; }
 
@@ -138,20 +206,23 @@ body {
   to { opacity: 1; transform: none; }
 }
 
-/* ---------- Card ---------- */
+/* ---------- Card（液态玻璃浮层） ---------- */
 .card {
-  background: var(--md-sys-color-surface-container);
-  border: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 45%, transparent);
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--glass-border);
   border-radius: var(--md-sys-shape-corner-xl);
-  box-shadow: var(--md-sys-elevation-1);
+  box-shadow: var(--glass-bevel), var(--md-sys-elevation-1);
   padding: clamp(18px, 2.4vw, 26px);
-  transition: box-shadow var(--md-sys-motion-duration) var(--md-sys-motion-ease-emphasized);
+  transition: box-shadow var(--md-sys-motion-duration) var(--md-sys-motion-ease-emphasized),
+    transform var(--md-sys-motion-duration) var(--md-sys-motion-ease-emphasized);
 }
-.card:hover { box-shadow: var(--md-sys-elevation-2); }
+.card:hover { box-shadow: var(--glass-bevel), var(--md-sys-elevation-2); transform: translateY(-2px); }
 
 /* ---------- 说明文字 ---------- */
 .subpanel-hint {
-  margin: 0 0 12px; font-size: .8rem; line-height: 1.55;
+  margin: 0 0 12px; font-size: .8rem; line-height: 1.6;
   color: var(--md-sys-color-on-surface-variant);
 }
 
@@ -160,7 +231,7 @@ body {
 .swatch {
   width: 36px; height: 36px; border-radius: 50%;
   background: var(--sw); border: 3px solid transparent; cursor: pointer; padding: 0;
-  box-shadow: inset 0 0 0 2px rgb(255 255 255 / .55), 0 1px 3px rgb(0 0 0 / .25);
+  box-shadow: inset 0 0 0 2px rgb(255 255 255 / .55), 0 1px 3px rgb(84 66 44 / .28);
   transition: transform 180ms var(--md-sys-motion-ease-spring), border-color .15s;
 }
 .swatch:hover { transform: scale(1.14); }
@@ -177,7 +248,7 @@ body {
       color-mix(in srgb, var(--md-sys-color-outline) 13%, transparent) 0 25%, transparent 0 50%)
     0 0 / 22px 22px,
     var(--md-sys-color-surface-container);
-  border: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 45%, transparent);
+  border: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 70%, transparent);
   border-radius: var(--md-sys-shape-corner-lg);
   overflow: hidden; padding: 12px;
 }
@@ -191,7 +262,7 @@ body {
 .hint-dot {
   position: absolute; width: 20px; height: 20px; border-radius: 50%;
   transform: translate(-50%, -50%); border: 3px solid #fff;
-  box-shadow: 0 1px 5px rgb(0 0 0 / .5); cursor: pointer; padding: 0;
+  box-shadow: 0 1px 5px rgb(84 66 44 / .5); cursor: pointer; padding: 0;
   animation: dot-in 220ms var(--md-sys-motion-ease-spring);
 }
 .hint-dot:hover { transform: translate(-50%, -50%) scale(1.3); }
@@ -201,7 +272,7 @@ body {
 }
 .placeholder {
   color: var(--md-sys-color-on-surface-variant); font-size: .9rem; opacity: .85;
-  text-align: center; padding: 24px; max-width: 40ch;
+  text-align: center; padding: 24px; max-width: 40ch; line-height: 1.6;
 }
 
 /* ---------- 按钮（Filled / Tonal） ---------- */
@@ -211,13 +282,13 @@ body {
   padding: 13px 28px; border-radius: var(--md-sys-shape-corner-full);
   min-height: 48px; letter-spacing: .01em; font-family: inherit;
   transition: box-shadow .2s, transform 200ms var(--md-sys-motion-ease-spring),
-    border-radius 200ms var(--md-sys-motion-ease-emphasized), opacity .15s;
+    border-radius 200ms var(--md-sys-motion-ease-emphasized), opacity .15s, filter .15s;
 }
 .filled-button {
   background: var(--md-sys-color-primary); color: var(--md-sys-color-on-primary);
   box-shadow: var(--md-sys-elevation-1);
 }
-.filled-button:hover:not(:disabled) { box-shadow: var(--md-sys-elevation-2); }
+.filled-button:hover:not(:disabled) { box-shadow: var(--md-sys-elevation-2); filter: brightness(1.05); }
 .filled-button:active:not(:disabled) {
   border-radius: var(--md-sys-shape-corner-md); transform: scale(.98);
 }
@@ -231,20 +302,23 @@ body {
   outline: 3px solid var(--md-sys-color-primary); outline-offset: 2px;
 }
 
-/* ---------- Snackbar ---------- */
+/* ---------- Snackbar（玻璃浮条） ---------- */
 .snackbar {
   position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
-  background: var(--md-sys-color-inverse-surface); color: var(--md-sys-color-inverse-on-surface);
+  background: color-mix(in srgb, var(--md-sys-color-inverse-surface) 92%, transparent);
+  color: var(--md-sys-color-inverse-on-surface);
   padding: 13px 24px; border-radius: var(--md-sys-shape-corner-sm);
   font-size: .88rem; box-shadow: var(--md-sys-elevation-3); z-index: 50;
   max-width: min(92vw, 560px);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
   animation: snackbar-in 300ms var(--md-sys-motion-ease-spring);
 }
 @keyframes snackbar-in {
   from { opacity: 0; transform: translate(-50%, 14px); }
   to { opacity: 1; transform: translate(-50%, 0); }
 }
-.snackbar.err { background: #7a1414; color: #ffdad6; }
+.snackbar.err { background: #5c1a1a; color: #f6e2de; border-color: rgba(255, 255, 255, .14); }
 
 /* ---------- 响应式 ---------- */
 @media (max-width: 900px) {
@@ -269,60 +343,69 @@ body {
   * { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
 
-
 /* ---------- 手动主题覆盖（导航栏底部按钮；未设置时仍跟随系统偏好） ---------- */
 html[data-theme='dark'] {
-  --md-sys-color-primary: #4cdade;
-  --md-sys-color-on-primary: #003739;
-  --md-sys-color-primary-container: #004f52;
-  --md-sys-color-on-primary-container: #6ff6fb;
-  --md-sys-color-secondary-container: #344f4f;
-  --md-sys-color-on-secondary-container: #cde8e8;
-  --md-sys-color-tertiary: #ffb78c;
-  --md-sys-color-tertiary-container: #7a4200;
-  --md-sys-color-on-tertiary-container: #ffb78c;
-  --md-sys-color-surface: #101414;
-  --md-sys-color-surface-dim: #0d1111;
-  --md-sys-color-surface-container: #1c2020;
-  --md-sys-color-surface-container-high: #262b2b;
-  --md-sys-color-surface-container-highest: #313636;
-  --md-sys-color-on-surface: #e0e3e2;
-  --md-sys-color-on-surface-variant: #bcc7c6;
-  --md-sys-color-outline: #879392;
-  --md-sys-color-outline-variant: #3f4948;
-  --md-sys-color-error: #ffb4ab;
-  --md-sys-color-on-error-container: #93000a;
-  --md-sys-color-inverse-surface: #e0e3e2;
-  --md-sys-color-inverse-on-surface: #2d3232;
-  --md-sys-elevation-1: 0 1px 2px rgb(0 0 0 / .45), 0 1px 3px 1px rgb(0 0 0 / .25);
-  --md-sys-elevation-2: 0 1px 2px rgb(0 0 0 / .50), 0 2px 6px 2px rgb(0 0 0 / .30);
-  --md-sys-elevation-3: 0 4px 8px 3px rgb(0 0 0 / .35), 0 1px 3px rgb(0 0 0 / .50);
+  --md-sys-color-primary: #d97757;
+  --md-sys-color-on-primary: #1d1a16;
+  --md-sys-color-primary-strong: #e89a7e;
+  --md-sys-color-primary-container: #4a2b1e;
+  --md-sys-color-on-primary-container: #f4c3ac;
+  --md-sys-color-secondary-container: #34322a;
+  --md-sys-color-on-secondary-container: #e5e1d2;
+  --md-sys-color-tertiary: #e0912f;
+  --md-sys-color-tertiary-container: #43310f;
+  --md-sys-color-on-tertiary-container: #f3cd93;
+  --md-sys-color-surface: #141413;
+  --md-sys-color-surface-dim: #100f0e;
+  --md-sys-color-surface-container: #252523;
+  --md-sys-color-surface-container-high: #2e2e2b;
+  --md-sys-color-surface-container-highest: #383834;
+  --md-sys-color-on-surface: #f0eee6;
+  --md-sys-color-on-surface-variant: #a8a397;
+  --md-sys-color-outline: #7c7a6e;
+  --md-sys-color-outline-variant: #30302e;
+  --md-sys-color-error: #e5826d;
+  --md-sys-color-on-error-container: #f3b8a9;
+  --md-sys-color-inverse-surface: #f0eee6;
+  --md-sys-color-inverse-on-surface: #232220;
+  --md-sys-elevation-1: 0 1px 2px rgb(0 0 0 / .40), 0 1px 3px 1px rgb(0 0 0 / .24);
+  --md-sys-elevation-2: 0 2px 8px rgb(0 0 0 / .46), 0 1px 2px rgb(0 0 0 / .36);
+  --md-sys-elevation-3: 0 10px 32px rgb(0 0 0 / .55), 0 2px 8px rgb(0 0 0 / .40);
+  --glass-bg: rgba(37, 37, 35, .72);
+  --glass-border: rgba(255, 255, 255, .09);
+  --glass-bevel: inset 0 1px 0 rgba(255, 255, 255, .08), inset 0 -1px 0 rgba(0, 0, 0, .30);
+  --monet-opacity: .34;
 }
 
 html[data-theme='light'] {
-  --md-sys-color-primary: #00696d;
-  --md-sys-color-on-primary: #ffffff;
-  --md-sys-color-primary-container: #6ff6fb;
-  --md-sys-color-on-primary-container: #002022;
-  --md-sys-color-secondary-container: #cce8e8;
-  --md-sys-color-on-secondary-container: #051f1f;
-  --md-sys-color-tertiary: #b35c00;
-  --md-sys-color-tertiary-container: #ffb78c;
-  --md-sys-color-on-tertiary-container: #321300;
-  --md-sys-color-surface: #f7fafa;
-  --md-sys-color-surface-dim: #d6e0e0;
-  --md-sys-color-surface-container: #eff3f2;
-  --md-sys-color-surface-container-high: #e9edec;
-  --md-sys-color-surface-container-highest: #e3e8e7;
-  --md-sys-color-on-surface: #191c1c;
-  --md-sys-color-on-surface-variant: #3f4948;
-  --md-sys-color-outline: #6f7979;
-  --md-sys-color-outline-variant: #bfd0ce;
-  --md-sys-color-error: #ba1a1a;
-  --md-sys-color-on-error-container: #ffdad6;
-  --md-sys-color-inverse-surface: #2d3232;
-  --md-sys-color-inverse-on-surface: #edf1f0;
-  --md-sys-elevation-1: 0 1px 2px rgb(0 0 0 / .10), 0 1px 3px 1px rgb(0 0 0 / .06);
-  --md-sys-elevation-2: 0 1px 2px rgb(0 0 0 / .12), 0 2px 6px 2px rgb(0 0 0 / .08);
-  --md-sys-elevation-3: 0 4px 8px 3px rgb(0 0 0 / .10), 0 1px 3px rgb(0 0 0 / .14);
+  --md-sys-color-primary: #d97757;
+  --md-sys-color-on-primary: #221d17;
+  --md-sys-color-primary-strong: #b0573a;
+  --md-sys-color-primary-container: #f7e7dd;
+  --md-sys-color-on-primary-container: #7e3a24;
+  --md-sys-color-secondary-container: #eae6d9;
+  --md-sys-color-on-secondary-container: #3a372d;
+  --md-sys-color-tertiary: #d97706;
+  --md-sys-color-tertiary-container: #f7ead2;
+  --md-sys-color-on-tertiary-container: #6b3d04;
+  --md-sys-color-surface: #f4f2ec;
+  --md-sys-color-surface-dim: #eae7dc;
+  --md-sys-color-surface-container: #faf9f5;
+  --md-sys-color-surface-container-high: #f4f1e8;
+  --md-sys-color-surface-container-highest: #eee9dc;
+  --md-sys-color-on-surface: #2b2822;
+  --md-sys-color-on-surface-variant: #6d685b;
+  --md-sys-color-outline: #a39d8b;
+  --md-sys-color-outline-variant: #e2ded0;
+  --md-sys-color-error: #b53333;
+  --md-sys-color-on-error-container: #571313;
+  --md-sys-color-inverse-surface: #2b2822;
+  --md-sys-color-inverse-on-surface: #f5f2e8;
+  --md-sys-elevation-1: 0 1px 2px rgb(84 66 44 / .08), 0 1px 3px 1px rgb(84 66 44 / .05);
+  --md-sys-elevation-2: 0 2px 6px rgb(84 66 44 / .10), 0 1px 2px rgb(84 66 44 / .08);
+  --md-sys-elevation-3: 0 10px 30px rgb(84 66 44 / .14), 0 2px 6px rgb(84 66 44 / .08);
+  --glass-bg: rgba(255, 255, 255, .72);
+  --glass-border: rgba(255, 255, 255, .5);
+  --glass-bevel: inset 0 1px 0 rgba(255, 255, 255, .65), inset 0 -1px 0 rgba(150, 128, 92, .12);
+  --monet-opacity: .5;
 }
