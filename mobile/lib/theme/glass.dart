@@ -7,6 +7,7 @@
 // - [GlassBottomBar]：底部悬浮条外衣（NavigationBar / 工具栏内衬其中）。
 // - [GlassCard]：悬浮卡片（首页四卡 / 参考图卡等）。
 import 'package:flutter/material.dart';
+import 'dart:ui';
 
 import 'warm_tokens.dart';
 

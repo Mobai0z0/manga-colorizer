@@ -17,6 +17,7 @@ const Color kTerracotta = Color(0xFFD97757); // 品牌主色（赤陶红）
 const Color kTerracottaStrong = Color(0xFFB0573A); // 小字号文本强调
 const Color kAmber = Color(0xFFD97706); // 速记口诀（琥珀黄）
 const Color kBrick = Color(0xFFB53333); // 避坑 / 错误（暖红）
+const Color kBrickDark = Color(0xFFFF8A80); // 避坑/错误（深色模式，提亮保证暗底对比）
 
 /// 深色暖纸令牌。
 const Color kCanvasDark = Color(0xFF141413);
@@ -148,9 +149,9 @@ class WarmPalette extends ThemeExtension<WarmPalette> {
       : this(
           brightness: Brightness.light,
           primaryStrong: kTerracottaStrong,
-          glassTint: Color(0xB8FFFFFF),
-          glassBorder: Color(0x80FFFFFF),
-          glassBevel: Color(0xA6FFFFFF),
+          glassTint: const Color(0xB8FFFFFF),
+          glassBorder: const Color(0x80FFFFFF),
+          glassBevel: const Color(0xA6FFFFFF),
           monetTerracotta: kMonetTerracotta,
           monetSage: kMonetSage,
           monetSand: kMonetSand,
@@ -162,9 +163,9 @@ class WarmPalette extends ThemeExtension<WarmPalette> {
       : this(
           brightness: Brightness.dark,
           primaryStrong: kTerracottaStrongDark,
-          glassTint: Color(0xB8252525),
-          glassBorder: Color(0x17FFFFFF),
-          glassBevel: Color(0x14FFFFFF),
+          glassTint: const Color(0xB8252525),
+          glassBorder: const Color(0x17FFFFFF),
+          glassBevel: const Color(0x14FFFFFF),
           monetTerracotta: kMonetTerracotta,
           monetSage: kMonetSage,
           monetSand: kMonetSand,

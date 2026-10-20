@@ -152,7 +152,7 @@ ColorScheme applyWarmNeutrals(ColorScheme scheme, Brightness b) =>
           ? const Color(0xFF1C1812)
           : const Color(0xFF000000),
       inverseSurface: b == Brightness.light ? kInk : kInkDark,
-      inverseOnSurface: b == Brightness.light
+      onInverseSurface: b == Brightness.light
           ? const Color(0xFFF5F2E8)
           : const Color(0xFF232220),
     );
@@ -210,7 +210,7 @@ ThemeData _finalize(ColorScheme scheme, Brightness b) {
       elevation: 0,
       indicatorColor: scheme.secondaryContainer,
     ),
-    cardTheme: CardTheme(
+    cardTheme: CardThemeData(
       color: scheme.surfaceContainer,
       surfaceTintColor: Colors.transparent,
       elevation: 0,
@@ -219,7 +219,7 @@ ThemeData _finalize(ColorScheme scheme, Brightness b) {
         borderRadius: BorderRadius.circular(12),
       ),
     ),
-    dialogTheme: DialogTheme(
+    dialogTheme: DialogThemeData(
       backgroundColor: scheme.surfaceContainerHigh,
       surfaceTintColor: Colors.transparent,
       shape: RoundedRectangleBorder(
@@ -234,7 +234,7 @@ ThemeData _finalize(ColorScheme scheme, Brightness b) {
       behavior: SnackBarBehavior.floating,
       backgroundColor: scheme.inverseSurface,
       contentTextStyle: base.textTheme.bodyMedium?.copyWith(
-        color: scheme.inverseOnSurface,
+        color: scheme.onInverseSurface,
       ),
     ),
     dividerTheme: DividerThemeData(
