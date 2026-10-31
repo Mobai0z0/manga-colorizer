@@ -11,6 +11,12 @@
 // 用法：挂在 MaterialApp.builder 的 Stack 最底层（见 app.dart），
 // Scaffold 背景保持透明即可透出。系统「移除动画」开启时静止在各关键帧
 // 的 to 态（与网页 prefers-reduced-motion 行为一致）。
+//
+// 生命周期（2026-10-31）：切后台即停帧——Android 退场动画期间（inactive 起
+// Flutter 仍在渲染）三层近全屏径向渐变每帧重画、其上玻璃层的 BackdropFilter
+// 随之逐帧重算，与系统动画抢 GPU 是「切后台动画卡顿」的直接来源；收到
+// inactive 即停（含拉通知栏/弹窗覆盖，环境慢速动效冻结不可感），resumed
+// 从当前进度续播（AnimationController.repeat 不回卷，无跳变）。
 import 'dart:math' show max;
 
 import 'package:flutter/material.dart';
@@ -25,7 +31,7 @@ class MonetBackground extends StatefulWidget {
 }
 
 class _MonetBackgroundState extends State<MonetBackground>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   /// 驱动时基：取三球最长周期（鼠尾草 44s），其余球按周期比例换算相位。
   static const _cycle = Duration(seconds: 44);
 
@@ -34,6 +40,7 @@ class _MonetBackgroundState extends State<MonetBackground>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _controller = AnimationController(vsync: this, duration: _cycle);
   }
 
@@ -53,8 +60,19 @@ class _MonetBackgroundState extends State<MonetBackground>
     }
   }
 
+  /// 切后台/被覆盖即停帧（见类注释）；回前台从冻结进度续播。
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _syncMotion();
+    } else {
+      _controller.stop();
+    }
+  }
+
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _controller.dispose();
     super.dispose();
   }

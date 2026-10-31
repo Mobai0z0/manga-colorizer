@@ -25,6 +25,7 @@ import '../png_encode.dart';
 import '../resource_tier.dart';
 import '../shell/screen_chrome.dart';
 import '../theme/glass.dart';
+import '../widgets/custom_color_picker.dart';
 
 /// Color 通道（0..1 double）→ 8bit 整数。替代已弃用的 `.red/.green/.blue`
 /// 访问器（其弃用说明给出的等价式即 `(*.c * 255.0).round().clamp(0, 255)`；
@@ -83,6 +84,34 @@ class _ColorizeScreenState extends State<ColorizeScreen> {
     Color(0xFF6D4C41),
     Color(0xFF212121),
   ];
+
+  /// 最近自定义颜色（settings.json 持久化，最近在前）：工具栏在预设后展示
+  /// 最近一个，完整列表在取色器对话框里复选。
+  List<Color> get _customColors => [
+        for (final v in widget.controller.settings.customHintColors)
+          colorFromArgb(v),
+      ];
+
+  /// 打开自定义取色器；选定即设为画笔并落盘最近列表（同 settings.json
+  /// 单一真源，与 _applyScheme 一致）。
+  Future<void> _pickCustomColor() async {
+    final picked = await showCustomColorPicker(
+      context,
+      initial: _brush,
+      recents: _customColors,
+    );
+    if (picked == null || !mounted) return;
+    final argb = argbOfColor(picked);
+    final next = [
+      argb,
+      ...widget.controller.settings.customHintColors.where((v) => v != argb),
+    ].take(8).toList();
+    setState(() => _brush = picked);
+    widget.controller
+        .update(widget.controller.settings.copyWith(customHintColors: next));
+    widget.logs.info(
+        'hints', '自定义画笔颜色 #${argb.toRadixString(16).padLeft(8, '0')}');
+  }
 
   // isolate 计算入口**必须 static**：闭包若在实例方法作用域创建，会被同方法内
   // 捕获 this 的 setState 闭包经共享 context 污染——SendPort 序列化闭包时沿
@@ -395,6 +424,25 @@ class _ColorizeScreenState extends State<ColorizeScreen> {
     });
   }
 
+  /// 色盘小圆点：预设与最近自定义色共用同一外观（选中 = 主色描边）。
+  Widget _swatchDot(Color c, {bool selected = false, VoidCallback? onTap}) {
+    return GestureDetector(
+      onTap: onTap ?? () => setState(() => _brush = c),
+      child: Container(
+          width: 26,
+          height: 26,
+          margin: const EdgeInsets.symmetric(horizontal: 3),
+          decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: c,
+              border: Border.all(
+                  color: selected
+                      ? Theme.of(context).colorScheme.primary
+                      : Colors.transparent,
+                  width: 2.5))),
+    );
+  }
+
   Widget _buildToolbar() {
     return SafeArea(
       // 液态玻璃底栏：与底部 NavigationBar 同一玻璃外观，消除拼接色差。
@@ -406,25 +454,40 @@ class _ColorizeScreenState extends State<ColorizeScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(children: [
-                for (final c in _palette)
-                  GestureDetector(
-                    onTap: () => setState(() => _brush = c),
+                for (final c in _palette) _swatchDot(c, selected: _brush == c),
+                // 最近自定义色（有则展示，选中态同预设；完整列表在取色器内）。
+                if (_customColors.isNotEmpty)
+                  _swatchDot(_customColors.first,
+                      selected: _brush == _customColors.first,
+                      onTap: () =>
+                          setState(() => _brush = _customColors.first)),
+                // 「+」打开自定义取色器（HSV 面板 + hex + 最近色复选）。
+                GestureDetector(
+                  onTap: _busy ? null : _pickCustomColor,
+                  child: Tooltip(
+                    message: '自定义颜色',
                     child: Container(
                         width: 26,
                         height: 26,
                         margin: const EdgeInsets.symmetric(horizontal: 3),
                         decoration: BoxDecoration(
                             shape: BoxShape.circle,
-                            color: c,
                             border: Border.all(
-                                color: _brush == c
-                                    ? Theme.of(context).colorScheme.primary
-                                    : Colors.transparent,
-                                width: 2.5))),
+                                color:
+                                    Theme.of(context).colorScheme.outlineVariant,
+                                width: 1.2)),
+                        child: Icon(Icons.add,
+                            size: 15,
+                            color: Theme.of(context).colorScheme.onSurfaceVariant)),
                   ),
+                ),
                 const Spacer(),
-                Text(_elapsed ?? '',
-                    style: Theme.of(context).textTheme.labelSmall),
+                Flexible(
+                  child: Text(_elapsed ?? '',
+                      softWrap: false,
+                      overflow: TextOverflow.fade,
+                      style: Theme.of(context).textTheme.labelSmall),
+                ),
               ]),
               const SizedBox(height: 8),
               Row(children: [

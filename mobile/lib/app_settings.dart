@@ -20,6 +20,7 @@ class AppSettings {
     this.colorScheme = kDefaultFinishScheme,
     this.refMethod = 'reinhard',
     this.refStrength = 1.0,
+    this.customHintColors = const [],
   });
 
   /// 权重下载源，见 [DownloadSource]。默认自动（主站优先、失败回退镜像）。
@@ -42,6 +43,10 @@ class AppSettings {
   /// ref_strength 默认一致）。
   final double refStrength;
 
+  /// 上色页最近的自定义提示点颜色（不透明 ARGB int，最近在前、去重、上限
+  /// 8）：工具栏「+」取色后落这里，跨会话复用。空 = 尚未用过自定义色。
+  final List<int> customHintColors;
+
   static const _fileName = 'settings.json';
 
   static AppSettings defaults() => const AppSettings();
@@ -54,11 +59,12 @@ class AppSettings {
       other.themePreset == themePreset &&
       other.colorScheme == colorScheme &&
       other.refMethod == refMethod &&
-      other.refStrength == refStrength;
+      other.refStrength == refStrength &&
+      listEquals(other.customHintColors, customHintColors);
 
   @override
   int get hashCode => Object.hash(downloadSource, themeMode, themePreset,
-      colorScheme, refMethod, refStrength);
+      colorScheme, refMethod, refStrength, Object.hashAll(customHintColors));
 
   AppSettings copyWith({
     DownloadSource? downloadSource,
@@ -67,6 +73,7 @@ class AppSettings {
     String? colorScheme,
     String? refMethod,
     double? refStrength,
+    List<int>? customHintColors,
   }) =>
       AppSettings(
         downloadSource: downloadSource ?? this.downloadSource,
@@ -75,6 +82,7 @@ class AppSettings {
         colorScheme: colorScheme ?? this.colorScheme,
         refMethod: refMethod ?? this.refMethod,
         refStrength: refStrength ?? this.refStrength,
+        customHintColors: customHintColors ?? this.customHintColors,
       );
 
   Map<String, Object?> toJson() => {
@@ -84,6 +92,7 @@ class AppSettings {
         'colorScheme': colorScheme,
         'refMethod': refMethod,
         'refStrength': refStrength,
+        'customHintColors': customHintColors,
       };
 
   factory AppSettings.fromJson(Map<String, Object?> json) => AppSettings(
@@ -96,6 +105,7 @@ class AppSettings {
         colorScheme: _schemeFrom(json['colorScheme']),
         refMethod: _refMethodFrom(json['refMethod']),
         refStrength: _refStrengthFrom(json['refStrength']),
+        customHintColors: _hintColorsFrom(json['customHintColors']),
       );
 
   /// 方案 id 白名单校验：未知值（旧版本/损坏）回退默认。
@@ -111,6 +121,20 @@ class AppSettings {
   /// 迁移强度钳制到 [0,1]：非数值/越界（旧版本/损坏）回退默认 1.0。
   static double _refStrengthFrom(Object? raw) =>
       raw is num ? raw.toDouble().clamp(0.0, 1.0) : 1.0;
+
+  /// 自定义提示点颜色白名单化：仅收 32bit 整数并强制不透明（取色器只产
+  /// 不透明色，脏数据带 alpha 会刷成半透明块），去重保持最近在前，上限 8。
+  static List<int> _hintColorsFrom(Object? raw) {
+    if (raw is! List) return const [];
+    final out = <int>[];
+    for (final v in raw) {
+      if (v is! int || v < 0 || v > 0xFFFFFFFF) continue;
+      final argb = 0xFF000000 | (v & 0xFFFFFF);
+      if (!out.contains(argb)) out.add(argb);
+      if (out.length >= 8) break;
+    }
+    return out;
+  }
 
   static T _enumFrom<T extends Enum>(Object? raw, List<T> values, T fallback) {
     if (raw is String) {

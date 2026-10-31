@@ -255,8 +255,20 @@
   $('swatches').addEventListener('click', (e) => {
     const btn = e.target.closest('.swatch');
     if (!btn) return;
+    if (!btn.dataset.color) return; // 自定义色圆点（无 data-color）：交给 input 事件
     $('swatches').querySelectorAll('.swatch').forEach((b) => b.classList.toggle('is-active', b === btn));
     activeColor = btn.dataset.color;
+  });
+
+  // 自定义颜色：原生 input[type=color]，input 事件随拖动实时生效；
+  // 选中后圆点填充所选色并转实线描边（标记 is-custom-picked）。
+  const customColorInput = $('custom-color');
+  const customSwatch = customColorInput.closest('.swatch');
+  customColorInput.addEventListener('input', () => {
+    customSwatch.style.setProperty('--sw', customColorInput.value);
+    customSwatch.classList.add('is-custom-picked');
+    $('swatches').querySelectorAll('.swatch').forEach((b) => b.classList.toggle('is-active', b === customSwatch));
+    activeColor = customColorInput.value;
   });
 
   function selectItem(it) {

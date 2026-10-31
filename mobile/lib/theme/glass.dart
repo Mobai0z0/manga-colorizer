@@ -133,24 +133,31 @@ class GlassCard extends StatelessWidget {
         filter:
             ImageFilter.blur(sigmaX: kGlassBlurSigma, sigmaY: kGlassBlurSigma),
         child: Container(
+          // 非均匀 Border（顶缘高光 ≠ 三侧描边）配圆角会在 paint 阶段抛
+          // 「A borderRadius can only be given on borders with uniform
+          // colors」（Flutter 硬性限制，整卡灰屏）：三侧描边统一色走圆角
+          // fast path，顶缘高光改为卡内 1.5px 高光条（ClipRRect 内随圆角裁切）。
           decoration: BoxDecoration(
             color: warm.glassTint,
             borderRadius: borderRadius,
-            border: Border(
-              top: BorderSide(color: warm.glassBevel, width: 1.5),
-              left: BorderSide(color: warm.glassBorder),
-              right: BorderSide(color: warm.glassBorder),
-              bottom: BorderSide(color: warm.glassBorder),
-            ),
+            border: Border.all(color: warm.glassBorder),
           ),
-          child: Material(
-            color: Colors.transparent,
-            child: InkWell(
-              onTap: onTap,
-              borderRadius: borderRadius,
-              child: Padding(padding: padding, child: child),
+          child: Stack(children: [
+            Positioned(
+              left: 0,
+              right: 0,
+              top: 0,
+              child: Container(height: 1.5, color: warm.glassBevel),
             ),
-          ),
+            Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: onTap,
+                borderRadius: borderRadius,
+                child: Padding(padding: padding, child: child),
+              ),
+            ),
+          ]),
         ),
       ),
     );
