@@ -71,6 +71,27 @@ class SettingsPage extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 24),
+              Text('背景样式', style: Theme.of(context).textTheme.titleSmall),
+              const SizedBox(height: 8),
+              SegmentedButton<BackgroundStyle>(
+                segments: const [
+                  ButtonSegment(
+                      value: BackgroundStyle.monet,
+                      icon: Icon(Icons.blur_on),
+                      label: Text('莫奈流动')),
+                  ButtonSegment(
+                      value: BackgroundStyle.plain,
+                      icon: Icon(Icons.crop_square_outlined),
+                      label: Text('默认')),
+                ],
+                selected: {s.backgroundStyle},
+                onSelectionChanged: (sel) =>
+                    controller.update(s.copyWith(backgroundStyle: sel.first)),
+              ),
+              const SizedBox(height: 8),
+              Text('莫奈流动＝暖纸画布上三色球漫游；默认＝纯色画布，低端机或省电时更省 GPU。',
+                  style: Theme.of(context).textTheme.bodySmall),
+              const SizedBox(height: 24),
               Text('模型下载源', style: Theme.of(context).textTheme.titleSmall),
               const SizedBox(height: 8),
               RadioGroup<DownloadSource>(

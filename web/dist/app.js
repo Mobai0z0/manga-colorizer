@@ -485,7 +485,7 @@
   const SET_KEY = 'mc-settings-v1';
   const settings = Object.assign(
     { mode: 'auto', device: 'auto', disclaimer_accepted: false, theme: null, refName: '',
-      scheme: 'standard', refMethod: 'reinhard', refStrength: 1.0 },
+      scheme: 'standard', refMethod: 'reinhard', refStrength: 1.0, monetBg: true },
     JSON.parse(localStorage.getItem(SET_KEY) || '{}')
   );
 
@@ -517,7 +517,26 @@
       if (dInput && !dInput.disabled) dInput.checked = true;
     }
     $('disclaimer').checked = !!settings.disclaimer_accepted;
+    applyMonetBg();
   }
+
+  /* 背景样式：莫奈流动（默认，.monet-canvas 三球漫游）或纯色画布（body 自带
+     surface 底色，隐藏画布即回退）——低端机/省电可关。localStorage 持久化，
+     不随 POST /api/v1/settings 下发（后端无关）。 */
+  function applyMonetBg() {
+    const canvas = document.querySelector('.monet-canvas');
+    if (canvas) canvas.style.display = settings.monetBg ? '' : 'none';
+    const bgInput = document.querySelector('input[name=bg-style][value="' + (settings.monetBg ? 'monet' : 'plain') + '"]');
+    if (bgInput) bgInput.checked = true;
+  }
+  document.querySelectorAll('input[name=bg-style]').forEach((el) => {
+    el.addEventListener('change', () => {
+      const on = el.value === 'monet';
+      if (on === settings.monetBg) return;
+      saveSettings({ monetBg: on });
+      applyMonetBg();
+    });
+  });
 
   // 模式附属面板：色彩方案（全自动）/ 参考图选择与迁移选项 / 提示点画布
   function toggleModePanels() {

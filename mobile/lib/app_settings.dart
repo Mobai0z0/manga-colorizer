@@ -12,6 +12,10 @@ import 'onnx/weights.dart';
 import 'package:manga_colorizer_core/manga_colorizer_core.dart'
     show isValidFinishScheme, kDefaultFinishScheme;
 
+/// 背景样式（设置页可选）：莫奈流动背景（默认，三球漫游）或纯色画布
+/// （低端机/省电可关，省去三层近全屏渐变逐帧重绘的 GPU 负担）。
+enum BackgroundStyle { plain, monet }
+
 class AppSettings {
   const AppSettings({
     this.downloadSource = DownloadSource.auto,
@@ -21,6 +25,7 @@ class AppSettings {
     this.refMethod = 'reinhard',
     this.refStrength = 1.0,
     this.customHintColors = const [],
+    this.backgroundStyle = BackgroundStyle.monet,
   });
 
   /// 权重下载源，见 [DownloadSource]。默认自动（主站优先、失败回退镜像）。
@@ -47,6 +52,9 @@ class AppSettings {
   /// 8）：工具栏「+」取色后落这里，跨会话复用。空 = 尚未用过自定义色。
   final List<int> customHintColors;
 
+  /// 背景样式：莫奈流动（默认）或纯色画布，见 [BackgroundStyle]。
+  final BackgroundStyle backgroundStyle;
+
   static const _fileName = 'settings.json';
 
   static AppSettings defaults() => const AppSettings();
@@ -60,11 +68,19 @@ class AppSettings {
       other.colorScheme == colorScheme &&
       other.refMethod == refMethod &&
       other.refStrength == refStrength &&
-      listEquals(other.customHintColors, customHintColors);
+      listEquals(other.customHintColors, customHintColors) &&
+      other.backgroundStyle == backgroundStyle;
 
   @override
-  int get hashCode => Object.hash(downloadSource, themeMode, themePreset,
-      colorScheme, refMethod, refStrength, Object.hashAll(customHintColors));
+  int get hashCode => Object.hash(
+      downloadSource,
+      themeMode,
+      themePreset,
+      colorScheme,
+      refMethod,
+      refStrength,
+      backgroundStyle,
+      Object.hashAll(customHintColors));
 
   AppSettings copyWith({
     DownloadSource? downloadSource,
@@ -74,6 +90,7 @@ class AppSettings {
     String? refMethod,
     double? refStrength,
     List<int>? customHintColors,
+    BackgroundStyle? backgroundStyle,
   }) =>
       AppSettings(
         downloadSource: downloadSource ?? this.downloadSource,
@@ -83,6 +100,7 @@ class AppSettings {
         refMethod: refMethod ?? this.refMethod,
         refStrength: refStrength ?? this.refStrength,
         customHintColors: customHintColors ?? this.customHintColors,
+        backgroundStyle: backgroundStyle ?? this.backgroundStyle,
       );
 
   Map<String, Object?> toJson() => {
@@ -93,6 +111,7 @@ class AppSettings {
         'refMethod': refMethod,
         'refStrength': refStrength,
         'customHintColors': customHintColors,
+        'backgroundStyle': backgroundStyle.name,
       };
 
   factory AppSettings.fromJson(Map<String, Object?> json) => AppSettings(
@@ -106,6 +125,8 @@ class AppSettings {
         refMethod: _refMethodFrom(json['refMethod']),
         refStrength: _refStrengthFrom(json['refStrength']),
         customHintColors: _hintColorsFrom(json['customHintColors']),
+        backgroundStyle: _enumFrom(json['backgroundStyle'],
+            BackgroundStyle.values, BackgroundStyle.monet),
       );
 
   /// 方案 id 白名单校验：未知值（旧版本/损坏）回退默认。

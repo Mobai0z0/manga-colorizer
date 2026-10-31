@@ -109,10 +109,18 @@ class _MangaColorizerAppState extends State<MangaColorizerApp>
               darkTheme: dyn && darkDynamic != null
                   ? buildDynamicTheme(darkDynamic, Brightness.dark)
                   : buildAppTheme(s.themePreset, Brightness.dark),
-              // 莫奈流动背景垫在最底层，其上透出各屏（Scaffold 背景已置透明）。
+              // 背景样式（设置页可切）：莫奈流动（默认，其上透出各屏，
+              // Scaffold 背景已置透明）或纯色画布——低端机/省电可关，省去
+              // 三层近全屏渐变逐帧重绘的 GPU 负担。
               builder: (context, child) => Stack(
                 children: [
-                  const Positioned.fill(child: MonetBackground()),
+                  if (s.backgroundStyle == BackgroundStyle.monet)
+                    const Positioned.fill(child: MonetBackground())
+                  else
+                    Positioned.fill(
+                      child: ColoredBox(
+                          color: Theme.of(context).colorScheme.surface),
+                    ),
                   if (child != null) child,
                 ],
               ),
