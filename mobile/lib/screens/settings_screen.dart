@@ -114,6 +114,34 @@ class SettingsPage extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 24),
+              Text('推理后端（全自动模式）', style: Theme.of(context).textTheme.titleSmall),
+              const SizedBox(height: 8),
+              SegmentedButton<InferenceBackend>(
+                segments: const [
+                  ButtonSegment(
+                      value: InferenceBackend.auto,
+                      icon: Icon(Icons.auto_awesome_outlined),
+                      label: Text('自动')),
+                  ButtonSegment(
+                      value: InferenceBackend.ort,
+                      icon: Icon(Icons.grid_on_outlined),
+                      label: Text('ORT')),
+                  ButtonSegment(
+                      value: InferenceBackend.mnn,
+                      icon: Icon(Icons.memory_outlined),
+                      label: Text('MNN')),
+                ],
+                selected: {s.inferenceBackend},
+                onSelectionChanged: (sel) =>
+                    controller.update(s.copyWith(inferenceBackend: sel.first)),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                  '自动＝MNN 权重已下载则用 MNN（mmap 加载，低内存更稳），否则 ONNX '
+                  'Runtime。选 MNN 需先在全自动页下载 MNN 权重；切换在重新进入'
+                  '全自动页后生效。',
+                  style: Theme.of(context).textTheme.bodySmall),
+              const SizedBox(height: 24),
               Text('关于', style: Theme.of(context).textTheme.titleSmall),
               const SizedBox(height: 8),
               Text(_license, style: Theme.of(context).textTheme.bodySmall),

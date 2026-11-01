@@ -166,9 +166,11 @@ Future<void> _runAutoWorker(ReceivePort rx, SendPort main) async {
   OnnxBackend? b;
   String? dirPath;
   // ['dir'] 消息携带设备分级的线程数与 arena 策略（消息缺省时用默认档，
-  // 兼容旧测试）。
+  // 兼容旧测试）；第 5 位是具体后端选择（'ort'|'mnn'，调用方已解析 auto
+  // 规则，缺省 ort 兼容旧测试）。
   int intraThreads = kDefaultIntraThreads;
   bool useArena = true;
+  String backendChoice = 'ort';
   var stopRequested = false; // 'stop' 已到：在飞任务做完当前块即收，不再接新块
   var jobInFlight = false;
   var draining = false; // 收尾流程已启动（封口 + dispose + ack）
@@ -206,6 +208,7 @@ Future<void> _runAutoWorker(ReceivePort rx, SendPort main) async {
       dirPath = m[1] as String;
       if (m.length > 2) intraThreads = m[2] as int;
       if (m.length > 3) useArena = m[3] as bool;
+      if (m.length > 4 && m[4] is String) backendChoice = m[4] as String;
       return;
     }
     if (m[0] == 'stop') {
@@ -217,8 +220,11 @@ Future<void> _runAutoWorker(ReceivePort rx, SendPort main) async {
     if (jobInFlight) return; // 并发守卫：引擎保证并发 1，此处防畸形序列
     jobInFlight = true;
     try {
-      final backend = b ??= autoBackendFactory(dirPath!,
-          intraThreads: intraThreads, useArena: useArena);
+      final backend = b ??= await loadBackendWithFallback(
+          choice: backendChoice,
+          weightsDir: dirPath!,
+          intraThreads: intraThreads,
+          useArena: useArena);
       // job 范围内安装 backend 阶段日志（isolate 路径无 stderr 取证需求，
       // 直达 ['log'] 事件 → LogBus）。
       backendLogSink = (line) => main.send(['log', '[backend] $line']);
@@ -335,10 +341,13 @@ class AutoEngine {
   /// dirPath 由主 isolate 的 getApplicationSupportDirectory()/manga-light-colorizer
   /// 传入；intraThreads/useArena 来自 ResourceTier 设备分级，随 ['dir'] 带给 worker；
   /// idleRelease 同源下发（高档 5min：连续多图不重付 10-20s 加载；低档 60s）。
+  /// [backend] 是调用方已解析 auto 规则后的具体选择（'ort'|'mnn'），随 ['dir']
+  /// 下发；引擎存活期不变更——切换后端经 shutdown 后下次 ensureStarted 生效。
   Future<void> ensureStarted(String dirPath,
       {int intraThreads = kDefaultIntraThreads,
       bool useArena = true,
-      Duration? idleRelease}) async {
+      Duration? idleRelease,
+      String backend = 'ort'}) async {
     if (alive) return;
     await _teardown; // 上一轮优雅拆机落地前绝不 spawn 新 worker
     _idle?.cancel();
@@ -364,7 +373,7 @@ class AutoEngine {
       _sub = sub;
       _handle = spawned;
       _to = to;
-      _to!.send(['dir', dirPath, intraThreads, useArena]);
+      _to!.send(['dir', dirPath, intraThreads, useArena, backend]);
       _armIdle(); // 从没用过也要能到期自释放
       _logBus?.info('auto', '引擎已启动（worker 握手完成）');
     } on Object {

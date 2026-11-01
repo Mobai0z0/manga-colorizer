@@ -176,6 +176,8 @@ curl -F "image=@page.png" -F "reference=@character.png" \
 | `COLORIZER_PRELOAD` | `1` | 启动时后台预热模型（加载 + 空推理）；`0` 关闭以省内存，代价是首次上色多等 10-20s |
 | `COLORIZER_IDLE_UNLOAD` | `600` | 空闲多少秒后释放模型（内存+显存归还系统，下次上色自动唤醒）；`0` = 常驻不释放 |
 | `COLORIZER_CHROMA_GAIN` | — | 覆写 standard 方案的色度增益（clamp 0.5-2.0）；未设置时用方案表默认 1.4 |
+| `COLORIZER_BACKEND` | `onnx` | 推理运行时：`onnx`（默认，行为与历史一致）/ `mnn`（阿里 MNN 3.6.1 CPU；须先安装 pymnn 3.6.1 源码构建版并把 `v6_*.fp32.mnn` 放入权重目录，加载失败自动回退 onnx） |
+| `COLORIZER_MNN_THREADS` | `4` | MNN 后端的推理线程数 |
 
 ## Dart 引擎（packages/manga_colorizer_core）
 
@@ -212,6 +214,25 @@ Android 侧轻量工作台（Flutter），两个页签：
   与「对自动结果叠加色调」两条旧路径已移除（桌面无对应行为）。权重不随 APK 分发
   （CC BY-NC-SA），首次使用时在应用内引导下载，支持断点续传与 SHA-256 校验，manifest
   内置 hf-mirror 镜像源备选（国内网络）。
+
+### 推理后端：ONNX Runtime 与 MNN 双后端（v0.6.x）
+
+全自动推理有**两个可切换的后端实现**，共用 `OnnxBackend` 接口
+（`onnx/backend_api.dart`：load/runSam/runGen/dispose）与工厂注入点
+（`onnx/serving_seams.dart`）。选择存于设置的 `inferenceBackend`
+（`auto`/`ort`/`mnn`，默认 auto），随 `['dir']` 消息与 config 帧下发 worker，
+切换在下次引擎启动时生效：
+
+- **ORT（默认）**：`OrtFfiBackend`（dart:ffi 直调 libonnxruntime.so C API），
+  权重 `v6_*.onnx`；表现与历史版本一致。
+- **MNN（v0.6.x 新增）**：`MnnFfiBackend`（dart:ffi 直调 libmnn_ffi.so——
+  仓库内 C ABI 薄封装，内部链接 git submodule 编译出的 libMNN.so 3.6.1），
+  权重 `v6_*.fp32.mnn`（由 `tool/mnn/` 管线从修复图转换，数值对拍过门，见
+  `docs/mnn-research.zh.md` 附录 A）。收益是 **mmap 权重加载**（文件背页可被
+  系统回收，LMK 压力下的机制性改善）；`auto` 规则 = MNN 权重集全部就绪才用
+  MNN，否则回退 ORT。
+- `:inference` 进程隔离、优雅停止、死亡重试、ResourceTier 分级对两后端一视
+  同仁（后端差异全部封闭在工厂之后）。
 
 ```bash
 cd mobile

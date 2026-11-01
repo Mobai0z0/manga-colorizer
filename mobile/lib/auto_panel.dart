@@ -23,6 +23,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 import 'onnx/auto_service.dart';
+import 'onnx/serving_seams.dart' show resolveBackendChoice;
 import 'onnx/weights.dart';
 import 'image_cap.dart';
 import 'mem_info.dart';
@@ -114,6 +115,16 @@ class _AutoTabState extends State<AutoTab> {
   // initState，旧本地副本不会自动跟随 settings 同步）。
   DownloadSource get _source => widget.controller.settings.downloadSource;
   DownloadSource _appliedSource = DownloadSource.auto;
+  // 推理后端选择的本地镜像（防监听器重复重建 store），见 _appliedSource 注释。
+  InferenceBackend _appliedBackend = InferenceBackend.auto;
+
+  /// 当前设置对应的权重文件集：MNN 后端 → kMnnWeightFiles；auto/ort → ONNX 集。
+  /// auto 规则的「MNN 就绪才用 MNN」在 resolveBackendChoice（ensureStarted 前）
+  /// 兜底，本页就绪探测/下载始终跟随显式选择。
+  List<WeightFile> _filesForChoice() =>
+      widget.controller.settings.inferenceBackend == InferenceBackend.mnn
+          ? kMnnWeightFiles
+          : kWeightFiles;
 
   bool _busy = false;
   bool _downloading = false;
@@ -173,7 +184,9 @@ class _AutoTabState extends State<AutoTab> {
     try {
       final dir = await (widget.resolveDir ?? _appWeightsDir)();
       final source = widget.controller.settings.downloadSource;
-      final store = WeightsStore(dir: dir, source: source);
+      _appliedBackend = widget.controller.settings.inferenceBackend;
+      final store = WeightsStore(dir: dir, source: source,
+          files: _filesForChoice());
       final ok = await store.ready;
       if (!mounted) return;
       setState(() {
@@ -209,16 +222,43 @@ class _AutoTabState extends State<AutoTab> {
         .update(widget.controller.settings.copyWith(downloadSource: source));
   }
 
-  /// 监听全局设置：任何来源（含设置页）改了下载源，都重建本页 store 与之对齐。
+  /// 监听全局设置：任何来源（含设置页）改了下载源或推理后端，都重建本页
+  /// store 与之对齐；后端变更且引擎空闲时停掉引擎（下次 ensureStarted 用
+  /// 新后端全新启动，避免旧 session 跨选择复用）。
   void _onSettingsSourceChanged() {
     final dir = _dir;
     if (dir == null || !mounted) return;
     final s = widget.controller.settings.downloadSource;
-    if (s == _appliedSource) return;
-    _appliedSource = s;
-    setState(() {
-      _store = WeightsStore(dir: dir, source: s);
-    });
+    final backend = widget.controller.settings.inferenceBackend;
+    if (s != _appliedSource || backend != _appliedBackend) {
+      _appliedSource = s;
+      final backendChanged = backend != _appliedBackend;
+      _appliedBackend = backend;
+      setState(() {
+        _store = WeightsStore(dir: dir, source: s, files: _filesForChoice());
+      });
+      // 重新探测就绪态（MNN 权重集与 ONNX 集不同）。
+      unawaited(_recheck());
+      if (backendChanged && !widget.engine.working) {
+        unawaited(widget.engine.shutdown());
+      }
+    }
+  }
+
+  /// 重探权重就绪态（后端/源切换后调用；失败静默保持原状态）。
+  Future<void> _recheck() async {
+    final store = _store;
+    if (store == null) return;
+    try {
+      final ok = await store.ready;
+      if (!mounted) return;
+      setState(() {
+        _weightsMissing = !ok;
+        _status = ok ? '权重就绪。' : '权重未下载，请先看下方说明。';
+      });
+    } on Object {
+      // 探测失败保持原状态（磁盘异常在下一次操作时再暴露）。
+    }
   }
 
   Future<void> _pickSource() async {
@@ -271,7 +311,7 @@ class _AutoTabState extends State<AutoTab> {
     });
     try {
       store.dir.createSync(recursive: true);
-      for (final f in kWeightFiles) {
+      for (final f in store.files) {
         if (store.readyFor(f)) continue; // 完整文件跳过；半截 .part 由下载器续传
         if (mounted) {
           setState(() {
@@ -419,11 +459,15 @@ class _AutoTabState extends State<AutoTab> {
       // 线程数/arena 策略/空闲保留时长随设备分级下发（低内存档 2 线程 +
       // arena 关闭 + 60s 空闲；高档 5min 空闲换连续多图不重加载），
       // 经 ['dir'] 消息进 worker、引擎侧持有空闲计时。
+      // 推理后端按设置解析（auto = MNN 权重就绪则 mnn，否则 ort）。
       final tier = await ResourceTier.detect();
+      final backend = resolveBackendChoice(
+          dir.path, widget.controller.settings.inferenceBackend);
       await widget.engine.ensureStarted(dir.path,
           intraThreads: tier.intraThreads,
           useArena: tier.useArena,
-          idleRelease: tier.idleRelease);
+          idleRelease: tier.idleRelease,
+          backend: backend);
       widget.logs.info('auto', '色彩方案：$_scheme');
       final out = await widget.engine.colorize(gray, _w, _h, scheme: _scheme,
           onProgress: (p) {
@@ -578,11 +622,15 @@ class _AutoTabState extends State<AutoTab> {
             'strength=$_refStrength${rssSuffix()}');
     try {
       // 线程数/arena 策略随设备分级下发（与全自动同源；引擎常驻复用）。
+      // 推理后端按设置解析（与全自动同源）。
       final tier = await ResourceTier.detect();
+      final backend = resolveBackendChoice(
+          dir.path, widget.controller.settings.inferenceBackend);
       await widget.engine.ensureStarted(dir.path,
           intraThreads: tier.intraThreads,
           useArena: tier.useArena,
-          idleRelease: tier.idleRelease);
+          idleRelease: tier.idleRelease,
+          backend: backend);
       final autoRgb = await widget.engine.colorize(srcGray, _refSrcW, _refSrcH,
           scheme: kDefaultFinishScheme, onProgress: (p) {
         if (!mounted) return;
@@ -677,8 +725,9 @@ class _AutoTabState extends State<AutoTab> {
 
   @override
   Widget build(BuildContext context) {
+    final files = _filesForChoice();
     final totalMb =
-        (kWeightFiles.fold<int>(0, (s, f) => s + f.size) / 1000000).round();
+        (files.fold<int>(0, (s, f) => s + f.size) / 1000000).round();
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -706,15 +755,16 @@ class _AutoTabState extends State<AutoTab> {
   }
 
   List<Widget> _guide(BuildContext context, int totalMb) {
+    final files = _filesForChoice();
     return [
-      Text('尚未检测到模型权重（${kWeightFiles.length} 个文件，约 $totalMb MB）。'),
+      Text('尚未检测到模型权重（${files.length} 个文件，约 $totalMb MB）。'),
       const SizedBox(height: 8),
       Text(_license, style: Theme.of(context).textTheme.bodySmall),
       const SizedBox(height: 12),
       OutlinedButton.icon(
         onPressed: (_store == null || _busy) ? null : _download,
         icon: const Icon(Icons.file_download_outlined),
-        label: const Text('下载权重(~300MB)'),
+        label: Text('下载权重(~$totalMb MB)'),
       ),
       if (_initError)
         TextButton(onPressed: _busy ? null : _init, child: const Text('重试')),

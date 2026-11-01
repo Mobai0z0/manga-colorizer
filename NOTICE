@@ -39,3 +39,14 @@ Third-party components:
   - crypto (pub.dev) — BSD-3-Clause, Copyright 2015 the Dart project authors,
     per the LICENSE shipped with the package.
     https://pub.dev/packages/crypto
+
+  - MNN inference engine (git submodule mobile/android/app/src/main/cpp/
+    third_party/mnn, pinned to tag 3.6.1, built from source into the APK as
+    libMNN.so + libmnn_ffi.so) — Apache License 2.0, Copyright (c) 2018-present,
+    Alibaba Group. https://github.com/alibaba/MNN
+    Its LICENSE.txt ships with the submodule checkout; the compiled libraries
+    are linked (not modified) by this project.
+
+  - MNN desktop runtime (optional COLORIZER_BACKEND=mnn path in
+    tool/colorizer_service) — pymnn 3.6.1 built from source, same Apache
+    License 2.0 as above.

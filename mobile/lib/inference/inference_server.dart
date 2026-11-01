@@ -28,10 +28,12 @@ const Duration kInferenceIdleExit = Duration(seconds: 15);
 /// 单客户端命令核心：hello/config/job → progress/log/result/error。
 /// 并发 1（引擎侧保证；双发防御性回 error）。
 class InferenceServerCore {
-  OnnxBackend? _backend;
+  OnnxBackend? _backendInstance;
   String? _dir;
   int _threads = kDefaultIntraThreads;
   bool _arena = true;
+  // 后端选择（'ort'|'mnn'，config 帧可选字段，缺省 ort）。
+  String _backend = 'ort';
   bool _busy = false;
 
   /// 是否有在飞任务：断连取证用（「推理中断连」与「空闲断连」的区分）。
@@ -49,8 +51,8 @@ class InferenceServerCore {
 
   /// 供测试与语义补全：进程正常靠 exit(0) 归还全部内存，这里是显式路径。
   Future<void> dispose() async {
-    final b = _backend;
-    _backend = null;
+    final b = _backendInstance;
+    _backendInstance = null;
     try {
       await b?.dispose();
     } on Object catch (_) {
@@ -67,6 +69,8 @@ class InferenceServerCore {
         _dir = f.data['dir'] as String?;
         _threads = (f.data['threads'] as num?)?.toInt() ?? kDefaultIntraThreads;
         _arena = (f.data['arena'] as bool?) ?? true;
+        // 后端选择（v0.6.x）：可选字段，缺省 ort 兼容旧主进程。
+        _backend = (f.data['backend'] as String?) ?? 'ort';
       case FrameType.job:
         await _runJob(f, send);
       default:
@@ -105,11 +109,14 @@ class InferenceServerCore {
             'job 缺 gray 或尺寸不符: ${gray?.length}B vs ${width}x$height');
       }
       if (dir == null) throw StateError('config 未就绪（缺 weights 目录）');
-      final backend = _backend ??=
-          autoBackendFactory(dir, intraThreads: _threads, useArena: _arena);
+      final backend = _backendInstance ??= await loadBackendWithFallback(
+          choice: _backend,
+          weightsDir: dir,
+          intraThreads: _threads,
+          useArena: _arena);
       await backend.load(); // 幂等；首次约模型大小级别的耗时
       send(Frame(FrameType.log, jobId: f.jobId, data: {
-        'line': '双 session 加载完成（threads=$_threads，'
+        'line': '双 session 加载完成（backend=$_backend，threads=$_threads，'
             'arena=${_arena ? '开启+每次Run收缩' : '关闭·时间换峰值'}，'
             '独立进程）${rssSuffix()}'
       }));

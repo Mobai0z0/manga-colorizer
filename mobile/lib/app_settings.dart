@@ -16,6 +16,12 @@ import 'package:manga_colorizer_core/manga_colorizer_core.dart'
 /// （低端机/省电可关，省去三层近全屏渐变逐帧重绘的 GPU 负担）。
 enum BackgroundStyle { plain, monet }
 
+/// 全自动模式推理后端（设置页可选）：
+/// auto = MNN 权重就绪则用 MNN（mmap 低内存），否则 ONNX Runtime（默认行为）；
+/// ort = 固定 ONNX Runtime；mnn = 固定 MNN（需先下载 MNN 权重）。
+/// 切换在下一次引擎启动时生效（重新进入全自动页即可）。
+enum InferenceBackend { auto, ort, mnn }
+
 class AppSettings {
   const AppSettings({
     this.downloadSource = DownloadSource.auto,
@@ -26,6 +32,7 @@ class AppSettings {
     this.refStrength = 1.0,
     this.customHintColors = const [],
     this.backgroundStyle = BackgroundStyle.monet,
+    this.inferenceBackend = InferenceBackend.auto,
   });
 
   /// 权重下载源，见 [DownloadSource]。默认自动（主站优先、失败回退镜像）。
@@ -55,6 +62,9 @@ class AppSettings {
   /// 背景样式：莫奈流动（默认）或纯色画布，见 [BackgroundStyle]。
   final BackgroundStyle backgroundStyle;
 
+  /// 全自动推理后端，见 [InferenceBackend]。默认 auto。
+  final InferenceBackend inferenceBackend;
+
   static const _fileName = 'settings.json';
 
   static AppSettings defaults() => const AppSettings();
@@ -69,7 +79,8 @@ class AppSettings {
       other.refMethod == refMethod &&
       other.refStrength == refStrength &&
       listEquals(other.customHintColors, customHintColors) &&
-      other.backgroundStyle == backgroundStyle;
+      other.backgroundStyle == backgroundStyle &&
+      other.inferenceBackend == inferenceBackend;
 
   @override
   int get hashCode => Object.hash(
@@ -80,6 +91,7 @@ class AppSettings {
       refMethod,
       refStrength,
       backgroundStyle,
+      inferenceBackend,
       Object.hashAll(customHintColors));
 
   AppSettings copyWith({
@@ -91,6 +103,7 @@ class AppSettings {
     double? refStrength,
     List<int>? customHintColors,
     BackgroundStyle? backgroundStyle,
+    InferenceBackend? inferenceBackend,
   }) =>
       AppSettings(
         downloadSource: downloadSource ?? this.downloadSource,
@@ -101,6 +114,7 @@ class AppSettings {
         refStrength: refStrength ?? this.refStrength,
         customHintColors: customHintColors ?? this.customHintColors,
         backgroundStyle: backgroundStyle ?? this.backgroundStyle,
+        inferenceBackend: inferenceBackend ?? this.inferenceBackend,
       );
 
   Map<String, Object?> toJson() => {
@@ -112,6 +126,7 @@ class AppSettings {
         'refStrength': refStrength,
         'customHintColors': customHintColors,
         'backgroundStyle': backgroundStyle.name,
+        'inferenceBackend': inferenceBackend.name,
       };
 
   factory AppSettings.fromJson(Map<String, Object?> json) => AppSettings(
@@ -127,6 +142,8 @@ class AppSettings {
         customHintColors: _hintColorsFrom(json['customHintColors']),
         backgroundStyle: _enumFrom(json['backgroundStyle'],
             BackgroundStyle.values, BackgroundStyle.monet),
+        inferenceBackend: _enumFrom(json['inferenceBackend'],
+            InferenceBackend.values, InferenceBackend.auto),
       );
 
   /// 方案 id 白名单校验：未知值（旧版本/损坏）回退默认。

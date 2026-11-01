@@ -218,6 +218,8 @@ are always `{"error": "..."}`).
 | `COLORIZER_PRELOAD` | `1` | Background model warm-up at startup (load + dummy inference); `0` disables it to save memory, at the cost of an extra 10-20s wait on the first colorization |
 | `COLORIZER_IDLE_UNLOAD` | `600` | How many seconds of idle before releasing the model (memory + VRAM returned to the system; the next colorization wakes it automatically); `0` = keep it resident, never release |
 | `COLORIZER_CHROMA_GAIN` | — | Overrides the standard scheme's chroma gain (clamped to 0.5-2.0); when unset the scheme table default 1.4 applies |
+| `COLORIZER_BACKEND` | `onnx` | Inference runtime: `onnx` (default, historical behavior) / `mnn` (Alibaba MNN 3.6.1 CPU; requires pymnn 3.6.1 built from source and `v6_*.fp32.mnn` in the weights dir; falls back to onnx on load failure) |
+| `COLORIZER_MNN_THREADS` | `4` | Inference threads for the MNN backend |
 
 ## Dart engine (packages/manga_colorizer_core)
 
@@ -267,6 +269,28 @@ A lightweight Android-side workbench (Flutter) with two tabs:
   the APK (CC BY-NC-SA); they are downloaded on first use inside the app, with
   resume support and SHA-256 verification, and the manifest carries an hf-mirror
   fallback source for mainland-China networks.
+
+### Inference backends: ONNX Runtime and MNN dual backend (v0.6.x)
+
+Fully-automatic inference has **two switchable backend implementations**, sharing
+the `OnnxBackend` interface (`onnx/backend_api.dart`: load/runSam/runGen/dispose)
+and the factory injection point (`onnx/serving_seams.dart`). The choice persists
+in settings as `inferenceBackend` (`auto`/`ort`/`mnn`, default auto), travels to
+the worker via the `['dir']` message and config frame, and takes effect on the
+next engine start:
+
+- **ORT (default)**: `OrtFfiBackend` (dart:ffi calling libonnxruntime.so C API),
+  weights `v6_*.onnx`; behavior identical to previous releases.
+- **MNN (new in v0.6.x)**: `MnnFfiBackend` (dart:ffi calling libmnn_ffi.so — an
+  in-repo thin C ABI wrapper linking libMNN.so 3.6.1 built from the git
+  submodule), weights `v6_*.fp32.mnn` (converted by the `tool/mnn/` pipeline
+  from the fixed graphs; numerically gated, see `docs/mnn-research.zh.md`
+  appendix A). The win is **mmap weight loading** (file-backed pages reclaimable
+  by the OS — a mechanical improvement under LMK pressure); the `auto` rule uses
+  MNN only when the MNN weight set is fully present, otherwise falls back to ORT.
+- `:inference` process isolation, graceful stop, worker-death retry, and
+  ResourceTier tiering treat both backends identically (backend differences are
+  fully enclosed behind the factory).
 
 ```bash
 cd mobile

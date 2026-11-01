@@ -186,6 +186,8 @@ class _SocketBridge implements AutoWorkerHandle {
   String? _dir;
   int? _threads;
   bool? _arena;
+  // 后端选择（'ort'|'mnn'；['dir'] 缺省时保持 ort 兼容旧主进程消息）。
+  String _backend = 'ort';
   int _jobId = 0;
   bool _handshaked = false;
   Completer<void>? _handshakeWaiter;
@@ -222,10 +224,17 @@ class _SocketBridge implements AutoWorkerHandle {
         _dir = m[1] as String?;
         _threads = (m[2] as num?)?.toInt();
         _arena = m[3] as bool?;
+        // 后端选择（v0.6.x）：可选第 5 位，'ort'|'mnn'（旧主进程缺省 → ort）
+        if (m.length > 4 && m[4] is String) _backend = m[4] as String;
         writeFrame(
             _socket,
             Frame(FrameType.config,
-                data: {'dir': _dir, 'threads': _threads, 'arena': _arena}));
+                data: {
+                  'dir': _dir,
+                  'threads': _threads,
+                  'arena': _arena,
+                  'backend': _backend,
+                }));
       case 'job':
         _jobId++;
         writeFrame(

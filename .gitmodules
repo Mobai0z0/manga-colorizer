@@ -1,0 +1,3 @@
+[submodule "mobile/android/app/src/main/cpp/third_party/mnn"]
+	path = mobile/android/app/src/main/cpp/third_party/mnn
+	url = https://github.com/alibaba/MNN.git

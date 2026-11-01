@@ -63,6 +63,31 @@ const kWeightFiles = <WeightFile>[
   ),
 ];
 
+/// MNN 后端（v0.6.x Stage 2）的 fp32 .mnn 权重：由 tool/mnn/convert_models.py
+/// 从修复图（v6_*.fix.onnx）转换（Stage 0 实测：If 内联 + pads 常量化 +
+/// InstanceNorm 分解，见 docs/mnn-research.zh.md 附录 A）。size/sha256 逐字定值，
+/// 改动即视同换版本；URL 需先将 .mnn 上传到 HF 模型仓对应路径。
+const kMnnWeightFiles = <WeightFile>[
+  WeightFile(
+    name: 'v6_generator.fp32.mnn',
+    size: 191064884,
+    sha256: '1b67ceea142535e057656b84057b246eaa596371c109a38beacc775b0d7fda3c',
+    url:
+        'https://huggingface.co/sharky172/manga-light-colorizer/resolve/main/models/v6_generator.fp32.mnn',
+    mirrorUrl:
+        'https://hf-mirror.com/sharky172/manga-light-colorizer/resolve/main/models/v6_generator.fp32.mnn',
+  ),
+  WeightFile(
+    name: 'v6_sam_encoder.fp32.mnn',
+    size: 133854840,
+    sha256: 'd74bbe65fd03a80d74a734a0b644cc7f4f27488531ab36a7747a349c985af0a2',
+    url:
+        'https://huggingface.co/sharky172/manga-light-colorizer/resolve/main/models/v6_sam_encoder.fp32.mnn',
+    mirrorUrl:
+        'https://hf-mirror.com/sharky172/manga-light-colorizer/resolve/main/models/v6_sam_encoder.fp32.mnn',
+  ),
+];
+
 /// 权重仓储的唯一对外异常类型：HTTP 非 2xx、传输中断（折叠原始错误文本）、
 /// 大小不符、sha256 校验失败都只以它出现，调用方无需感知底层异常。
 class WeightsException implements Exception {
@@ -72,16 +97,21 @@ class WeightsException implements Exception {
   String toString() => 'WeightsException: $message';
 }
 
-/// 权重仓储：在 [dir] 下按 [source] 管理 [kWeightFiles] 的就绪探测与断点续传下载。
+/// 权重仓储：在 [dir] 下按 [source] 管理 [files] 的就绪探测与断点续传下载。
 /// 不读不写内存缓存，状态全部以磁盘上的正式文件 / `<name>.part` 为准。
+/// [files] 默认 ONNX 权重集（kWeightFiles）；MNN 后端传 kMnnWeightFiles。
 class WeightsStore {
-  WeightsStore({required this.dir, this.source = DownloadSource.auto});
+  WeightsStore({required this.dir, this.source = DownloadSource.auto,
+                this.files = kWeightFiles});
 
   /// 权重目录（应用私有存储路径，[download] 时按需创建）。
   final Directory dir;
 
   /// 下载源策略，见 [DownloadSource]。
   final DownloadSource source;
+
+  /// 本仓储管理的权重文件集（下载/就绪探测的范围）。
+  final List<WeightFile> files;
 
   /// 权重文件的落盘路径（不校验存在性）。
   String pathOf(WeightFile f) => '${dir.path}/${f.name}';
@@ -93,9 +123,9 @@ class WeightsStore {
     return x.existsSync() && x.lengthSync() == f.size;
   }
 
-  /// [kWeightFiles] 是否全部就绪（逐项 [readyFor]）。
+  /// [files] 是否全部就绪（逐项 [readyFor]）。
   Future<bool> get ready async {
-    for (final f in kWeightFiles) {
+    for (final f in files) {
       if (!readyFor(f)) return false;
     }
     return true;

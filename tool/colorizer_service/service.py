@@ -67,6 +67,9 @@ ROOT = Path(__file__).resolve().parents[2]
 MODEL_DIR = Path(os.environ.get('COLORIZER_MODEL_DIR', str(ROOT / 'models' / 'manga-light-colorizer')))
 GENERATOR = MODEL_DIR / 'v6_generator.onnx'
 SAM_ENCODER = MODEL_DIR / 'v6_sam_encoder.onnx'
+# MNN 权重（仅 BACKEND=mnn 使用；由 tool/mnn/convert_models.py 从修复图转换）
+GENERATOR_MNN = MODEL_DIR / 'v6_generator.fp32.mnn'
+SAM_ENCODER_MNN = MODEL_DIR / 'v6_sam_encoder.fp32.mnn'
 INFER_SIZE = 1024
 OUTPUT_DIR = Path(os.environ.get('COLORIZER_OUTPUT_DIR', str(ROOT / 'out' / 'gallery')))
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -117,6 +120,15 @@ MAX_PIXELS = 16_000_000
 DEVICE = os.environ.get('COLORIZER_DEVICE', 'cpu').lower()
 if DEVICE not in ('cpu', 'auto', 'cuda'):
     raise ValueError('COLORIZER_DEVICE must be cpu, auto or cuda')
+# 推理运行时后端：onnx（默认，行为与历史版本一致）| mnn（阿里 MNN 3.6.1 CPU）。
+# MNN 路径只支持 CPU；加载失败自动回退 ONNX（进程生命周期内不再重试 MNN）。
+# 权重为 Stage 0 修复图转换的 fp32 .mnn（If 内联 + pads 常量化 + InstanceNorm
+# 分解，见 docs/mnn-research.zh.md 附录 A）。
+BACKEND = os.environ.get('COLORIZER_BACKEND', 'onnx').lower()
+if BACKEND not in ('onnx', 'mnn'):
+    raise ValueError('COLORIZER_BACKEND must be onnx or mnn')
+MNN_THREADS = max(1, int(os.environ.get('COLORIZER_MNN_THREADS', '4')))
+_mnn_failed = False  # MNN 加载失败后置位：本进程内固定走 ONNX，不再反复重试
 
 
 # ---- 色彩方案（与移动端 packages/manga_colorizer_core/lib/src/finish.dart 同表） ----
@@ -256,6 +268,62 @@ def _cpu_sessions():
         return _cpu_state['gen'], _cpu_state['sam']
 
 
+class _MnnSession:
+    """把 pymnn Module 包装成 ORT 会话的 `run(None, feed)` 鸭子接口。
+
+    feed: {输入名: NCHW float32 ndarray}；返回值按图输出顺序给 ndarray 列表
+    （NCHW）——与 onnxruntime InferenceSession.run 的消费约定逐字对齐，
+    _run_pair / colorize_single 因此零改动。4D 输入经 convert(NC4HW4) 喂入
+    （官方 demo 模式，规避内部布局差异）；2D（wd14_embedding）原样。
+    shape_mutable 必须 True：False（load 期预分配）在 Windows x86 对本子图
+    模型触发 MNN 内部整数除零崩溃（Stage 0 实测）。
+    """
+
+    def __init__(self, module, input_names, output_names):
+        self._module = module
+        self._inputs = list(input_names)
+        self._outputs = list(output_names)
+
+    def run(self, _output_names, feed):
+        import MNN.expr as F
+        feeds = []
+        for name in self._inputs:
+            arr = np.ascontiguousarray(feed[name], dtype=np.float32)
+            var = F.placeholder(list(arr.shape), F.NCHW)
+            var.write(arr)
+            feeds.append(F.convert(var, F.NC4HW4) if arr.ndim == 4 else var)
+        outs = self._module.forward(feeds)
+        return [F.convert(o, F.NCHW).read() for o in outs]
+
+    def get_inputs(self):
+        class _Meta:
+            def __init__(self, name):
+                self.name = name
+        return [_Meta(n) for n in self._inputs]
+
+
+def _mnn_pair():
+    """加载 MNN 双 module（encoder 先，失败即抛，generator 失败不留 encoder 孤儿）。"""
+    import MNN
+    import MNN.expr as F
+    common = dict(backend=F.Backend.CPU, memory_mode=F.MemoryMode.Normal,
+                  precision_mode=F.PrecisionMode.Normal, thread_num=MNN_THREADS,
+                  shape_mutable=True)
+    sam_module = MNN.nn.load_module_from_file(
+        str(SAM_ENCODER_MNN), ['rgb_input'], ['sam_level0', 'sam_level1'], **common)
+    try:
+        gen_module = MNN.nn.load_module_from_file(
+            str(GENERATOR_MNN), ['L_bw', 'sam_level0', 'sam_level1', 'wd14_embedding'],
+            ['rgb_pred'], **common)
+    except Exception:
+        del sam_module
+        raise
+    sam = _MnnSession(sam_module, ['rgb_input'], ['sam_level0', 'sam_level1'])
+    gen = _MnnSession(gen_module, ['L_bw', 'sam_level0', 'sam_level1', 'wd14_embedding'],
+                      ['rgb_pred'])
+    return gen, sam
+
+
 def _pick_providers():
     chosen = _runtime_device.get('value') or DEVICE
     if chosen == 'cpu':
@@ -270,6 +338,8 @@ def _device_label(providers) -> str:
     if isinstance(providers, dict):
         providers = [p for lst in providers.values() for p in (lst or [])]
     for p in providers or []:
+        if 'MNN' in p:
+            return 'mnn-cpu'
         if 'CUDA' in p:
             return 'gpu-cuda'
         if 'Dml' in p:
@@ -278,9 +348,30 @@ def _device_label(providers) -> str:
 
 
 def _sessions():
+    global _mnn_failed
     _last_use['ts'] = time.monotonic()
     with _session_lock:
         if _state['gen'] is None:
+            # MNN 后端：加载失败自动回退 ONNX（进程内不再重试 MNN），日志注明。
+            if BACKEND == 'mnn' and not _mnn_failed:
+                if not GENERATOR_MNN.is_file() or not SAM_ENCODER_MNN.is_file():
+                    _mnn_failed = True
+                    logging.warning('MNN 权重缺失（v6_*.fp32.mnn），本进程回退 ONNX 后端')
+                else:
+                    try:
+                        gen, sam = _mnn_pair()
+                        _state.update(gen=gen, sam=sam,
+                                      providers={'generator': ['MNN-CPU'],
+                                                 'sam': ['MNN-CPU']})
+                        _load_state['status'] = 'ready'
+                        _load_state['error'] = None
+                        logging.info('模型已加载: backend=mnn threads=%d device=mnn-cpu',
+                                     MNN_THREADS)
+                        return _state['gen'], _state['sam'], _state['providers']
+                    except Exception as exc:
+                        _mnn_failed = True
+                        logging.warning('MNN 加载失败，回退 ONNX 后端: %s',
+                                        str(exc).replace('\n', ' ')[:200])
             if not GENERATOR.is_file() or not SAM_ENCODER.is_file():
                 raise RuntimeError('模型未就绪：需要 v6_generator.onnx 和 v6_sam_encoder.onnx')
             providers = _pick_providers()
@@ -327,7 +418,11 @@ def _preload_worker():
 def _start_preload():
     if not PRELOAD:
         return
-    if not (GENERATOR.is_file() and SAM_ENCODER.is_file()):
+    if BACKEND == 'mnn':
+        ready = GENERATOR_MNN.is_file() and SAM_ENCODER_MNN.is_file()
+    else:
+        ready = GENERATOR.is_file() and SAM_ENCODER.is_file()
+    if not ready:
         return  # 权重缺失（等待下载），首个上色请求时再走正常加载报错
     threading.Thread(target=_preload_worker, daemon=True, name='model-preload').start()
 
@@ -894,7 +989,7 @@ def colorize_single(gray) -> np.ndarray:
     try:
         rgb = _run_pair(gen, sam, scaled)
     except Exception as exc:
-        if DEVICE == 'cpu':
+        if DEVICE == 'cpu' or BACKEND == 'mnn':
             raise
         # DirectML 首次推理可能因显存瞬时不足失败，重试通常即成功
         logging.warning('GPU 推理失败，重试一次: %s', str(exc).replace('\n', ' ')[:160])
@@ -972,6 +1067,7 @@ def _device_payload() -> dict:
     providers = _state['providers']
     loaded = _device_label(providers) if providers else None
     return {'available': ort.get_available_providers(), 'active': providers,
+            'backend': BACKEND, 'mnn_fallback': BACKEND == 'mnn' and _mnn_failed,
             'device': loaded or _expected_device(), 'loaded_device': loaded,
             'requested': DEVICE,
             'gpu_available': _gpu_available(), 'runtime_device': _runtime_device.get('value'),
@@ -989,9 +1085,15 @@ def health():
     # 仅当 auto 模式下实际落到 CPU 才算回退；DML/CUDA 正常运行不算
     fallback = bool(DEVICE == 'auto' and actual and not gpu_active)
     # 合并设备信息：前端只需一个 5s 轮询即可刷新服务状态 + 设备徽标
+    if BACKEND == 'mnn':
+        weights_present = GENERATOR_MNN.is_file() and SAM_ENCODER_MNN.is_file()
+    else:
+        weights_present = GENERATOR.is_file() and SAM_ENCODER.is_file()
     return {
         'ok': True,
-        'weights_present': GENERATOR.is_file() and SAM_ENCODER.is_file(),
+        'backend': BACKEND,
+        'mnn_fallback': BACKEND == 'mnn' and _mnn_failed,
+        'weights_present': weights_present,
         'generator_loaded': _state['gen'] is not None,
         'sam_loaded': _state['sam'] is not None,
         'model_status': _load_state['status'],

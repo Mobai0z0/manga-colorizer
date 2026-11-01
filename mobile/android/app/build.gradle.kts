@@ -37,6 +37,13 @@ android {
         // "ndk abiFilters cannot be present when splits abi filters are set"。
         // ABI 过滤交给 Flutter 的 split-per-abi（arm64-v8a/armeabi-v7a/x86_64 各出包），
         // 原生 .so 由各 split 触发对应 ABI 构建，模拟器 x86_64 包仍含该库。
+        externalNativeBuild {
+            cmake {
+                // MNN（libMNN + libmnn_ffi）需要动态 STL：多 so 共享
+                // libc++_shared.so，AGP 会自动打包（v0.6.x MNN 后端）。
+                arguments += listOf("-DANDROID_STL=c++_shared")
+            }
+        }
     }
 
     // v0.5.16 断连取证：C 层 fatal-signal 遗嘱（崩溃 vs 被杀的定罪证据）。

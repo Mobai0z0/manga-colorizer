@@ -1,0 +1,20 @@
+# MNN 后端（COLORIZER_BACKEND=mnn）运行依赖——仅 MNN 本体，随 requirements.txt 一起装。
+#
+# PyPI 的 mnn 停在 2.9.6（2024-10，禁用）；必须从 MNN 3.6.1 源码构建 pymnn：
+#
+#   1. 获取源码：git clone --branch 3.6.1 --depth 1 https://github.com/alibaba/MNN.git
+#   2. 构建依赖库（Windows：需 VS + Ninja + CMake，Ninja 限 -j 防 16GB 内存尖峰）：
+#        cd MNN/pymnn_build（自建目录）
+#        cmake -G Ninja -DMNN_LOW_MEMORY=ON -DMNN_USE_THREAD_POOL=ON -DMNN_OPENMP=OFF \
+#              -DMNN_BUILD_TRAIN=ON -DMNN_BUILD_CONVERTER=on -DMNN_BUILD_TORCH=OFF \
+#              -DMNN_BUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release -DMNN_WIN_RUNTIME_MT=ON \
+#              -DMNN_BUILD_OPENCV=ON -DMNN_IMGCODECS=ON -DMNN_BUILD_AUDIO=ON \
+#              -DMNN_AAPL_FMWK=OFF -DMNN_SEP_BUILD=OFF <MNN 源码根>
+#        ninja -j4 MNN MNNConvertDeps
+#      （MSVC 下 MNN_BUILD_CONVERTER=ON + 静态库必须 MNN_WIN_RUNTIME_MT=ON）
+#   3. 安装 wheel（在 MNN/pymnn/pip_package 下）：
+#        pip install . --no-build-isolation
+#   4. 自检：python -c "import MNN; print(MNN.version())"  → 3.6.1
+#
+# 详见仓库 tmp/pymnn-build.bat（幂等构建链）与 docs/mnn-research.zh.md 附录 A。
+# 注意：pymnn 依赖 numpy（requirements-common.txt 已带）。

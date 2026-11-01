@@ -37,6 +37,47 @@ accesses it cross-origin via CORS (the sidecar binds only the loopback address).
 - Files under `tool/` are one-off analysis/forensics scripts; rough code is acceptable, but each
   must keep a first-line comment stating its purpose/usage.
 
+## MNN inference backend (v0.6.x, one of two backends)
+
+The desktop sidecar and the mobile app both support MNN (Alibaba 3.6.1, CPU) as
+an optional inference runtime, coexisting with the default ONNX Runtime and
+switchable (desktop env `COLORIZER_BACKEND`, mobile settings "inference
+backend"). Pipeline and decisions: `docs/mnn-research.zh.md` appendix A.
+
+```bash
+# 1) Build the MNN toolchain from source (PyPI mnn is stuck at 2.9.6; source
+#    build required. On Windows see tmp/pymnn-build.bat: vcvars64 -> cmake
+#    Ninja -> ninja -> pip install)
+git clone --branch 3.6.1 --depth 1 https://github.com/alibaba/MNN.git tmp/mnn-src
+
+# 2) Graph fix + conversion + comparison (v6_*.fix.onnx is a prerequisite for
+#    passing the gate: If inlining / pads constant-folding / InstanceNorm
+#    decomposition — three confirmed root causes of MNN numeric drift)
+.venv/Scripts/python.exe tool/mnn/fix_encoder_graph.py \
+  --src models/manga-light-colorizer/v6_sam_encoder.onnx \
+  --dst models/manga-light-colorizer/v6_sam_encoder.fix.onnx
+.venv/Scripts/python.exe tool/mnn/fix_encoder_graph.py \
+  --src models/manga-light-colorizer/v6_generator.onnx \
+  --dst models/manga-light-colorizer/v6_generator.fix.onnx \
+  --input-name L_bw --skip-if-inline --decompose-instancenorm
+.venv/Scripts/python.exe tool/mnn/convert_models.py --models-dir models/manga-light-colorizer
+.venv/Scripts/python.exe tool/mnn/compare_onnx_mnn.py \
+  --models-dir models/manga-light-colorizer --variants fp32 --gate
+# Gate: rgb uint8 99.8% of pixels <=1, max <=3, feature cos >=0.999
+# (fp16/w8 fail and are not shipped)
+
+# 3) Desktop MNN backend: install pymnn into .venv (full build flags in
+#    requirements-mnn.txt), place models/manga-light-colorizer/v6_*.fp32.mnn
+#    into the weights dir, then
+COLORIZER_BACKEND=mnn  # sidecar env; the /health backend field shows the state
+```
+
+On mobile, MNN is vendored as a git submodule
+(`mobile/android/app/src/main/cpp/third_party/mnn`, pinned to the 3.6.1 tag)
+and compiled from source into the APK; the first `flutter build apk` is
+significantly slower (MNN built once per ABI). After cloning, run
+`git submodule update --init --depth 1`.
+
 ## Known limitations
 
 - Server-side hint points use local diffusion in a 64px window (the lightweight version); for a
@@ -59,6 +100,28 @@ accesses it cross-origin via CORS (the sidecar binds only the loopback address).
 - Weights are CC BY-NC-SA: uploading to GitHub / free sharing / non-commercial integration are
   OK; paid services and ad-monetized use require separate authorization
   (see [licensing.en.md](licensing.en.md) for details).
+- The MNN backend (v0.6.x) is currently an **optional backend; the default
+  remains ORT**. Flipping the default requires passing real-device acceptance.
+  Checklist (low/mid/high-tier devices, ORT vs MNN A/B via settings → inference
+  backend):
+  - Tile runtime: compare per-1024²-tile times on the same image (per-tile logs
+    on the log page); degradation must be ≤30%;
+  - Memory: `/proc` RSS instrumentation + `dumpsys meminfo <pkg>:inference` for
+    steady-state PSS (MNN mmap weights are file-backed and reclaimable — check
+    whether private dirty drops notably below ORT);
+  - Stability: ≥10-image stress loop on the low tier, zero LMK hits on the
+    `:inference` process, zero UI crashes;
+  - Quality: visual A/B of both backends on the same image — the **model
+    layer** delta is ≤4/255 on <0.3% of pixels (desktop-compared); the
+    **finishing layer** may diverge more: the per-pixel keep gate of the
+    white-rescue is only 2.0 wide (c0±1), so small model chroma perturbations
+    flip rescue strength (L press and chroma keep) in light/near-white areas
+    (measured L delta up to 14) — inherent narrow-gate sensitivity, not a
+    backend defect. The bar is "each output looks acceptable on its own", not
+    pixel identity. If cross-backend appearance diverges glaringly, a follow-up
+    would widen/soften the gate on both ends + regenerate goldens;
+  - Switching: set MNN → re-enter the auto page → readiness gating/download
+    entry correct; switching back to ORT leaves no residue.
 
 ## Contributing
 

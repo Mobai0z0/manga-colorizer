@@ -32,6 +32,40 @@ tauri build    # 产物：src-tauri/target/release/bundle/nsis/*.exe
 - 桌面壳改动跑 `cargo check`（在 `src-tauri/` 下）。
 - `tool/` 下为一次性分析与取证脚本，允许粗糙，但须保留首行用途/用法注释。
 
+## MNN 推理后端（v0.6.x，双后端之一）
+
+桌面 sidecar 与移动端都有 MNN（阿里 3.6.1，CPU）作为可选推理运行时，与默认
+ONNX Runtime 并存可切换（桌面 env `COLORIZER_BACKEND`，移动端设置页「推理后端」）。
+模型链路与决策记录见 `docs/mnn-research.zh.md` 附录 A。
+
+```bash
+# 1) MNN 源码构建工具链（PyPI mnn 停在 2.9.6，必须源码构建；Windows 参考
+#    tmp/pymnn-build.bat 的幂等构建链：vcvars64 → cmake Ninja → ninja → pip install）
+git clone --branch 3.6.1 --depth 1 https://github.com/alibaba/MNN.git tmp/mnn-src
+
+# 2) 图修复 + 转换 + 对拍（v6_*.fix.onnx 是过门前提：If 内联/pads 常量化/
+#    InstanceNorm 分解三处都是 MNN 数值漂移根因，跳过修复图直接转换会漂移）
+.venv/Scripts/python.exe tool/mnn/fix_encoder_graph.py \
+  --src models/manga-light-colorizer/v6_sam_encoder.onnx \
+  --dst models/manga-light-colorizer/v6_sam_encoder.fix.onnx
+.venv/Scripts/python.exe tool/mnn/fix_encoder_graph.py \
+  --src models/manga-light-colorizer/v6_generator.onnx \
+  --dst models/manga-light-colorizer/v6_generator.fix.onnx \
+  --input-name L_bw --skip-if-inline --decompose-instancenorm
+.venv/Scripts/python.exe tool/mnn/convert_models.py --models-dir models/manga-light-colorizer
+.venv/Scripts/python.exe tool/mnn/compare_onnx_mnn.py \
+  --models-dir models/manga-light-colorizer --variants fp32 --gate
+# 通过门：rgb uint8 99.8% 像素 ≤1、max ≤3、特征 cos ≥0.999（fp16/w8 不达标不分发）
+
+# 3) 桌面启用 MNN 后端：pymnn 装进 .venv（requirements-mnn.txt 有完整构建参数），
+#    把 models/manga-light-colorizer/v6_*.fp32.mnn 放进权重目录后
+COLORIZER_BACKEND=mnn  # sidecar 启动环境变量；/health 的 backend 字段可见生效情况
+```
+
+移动端 MNN 以 git submodule vendor（`mobile/android/app/src/main/cpp/third_party/mnn`，
+钉 3.6.1 tag）从源码编译进 APK，首次 `flutter build apk` 会显著变慢（三 ABI 各编一遍
+MNN）；克隆仓库后需 `git submodule update --init --depth 1`。
+
 ## 已知限制
 
 - 服务端提示点为 64px 窗口局部扩散（轻量版）；需要全局精确求解用 Dart CLI 路径。
@@ -46,6 +80,18 @@ tauri build    # 产物：src-tauri/target/release/bundle/nsis/*.exe
   lowmemorykiller 命中主进程。
 - 权重 CC BY-NC-SA：上传 GitHub / 免费分享 / 非商业集成 OK；收费服务、广告盈利需另行授权
   （详见 [licensing.zh.md](licensing.zh.md) / [licensing.en.md](licensing.en.md)）。
+- MNN 后端（v0.6.x）当前为**可选后端，默认仍是 ORT**；切默认需真机验收达标。验收清单
+  （低/中/高三档设备，ORT vs MNN A/B，设置→推理后端切换）：
+  - 分块耗时：同图全自动每 1024² 块耗时对比（log 页有逐块埋点），劣化 ≤30%；
+  - 内存：`/proc` RSS 埋点 + `dumpsys meminfo <pkg>:inference` 看稳态 PSS（MNN mmap
+    权重为 file-backed，可被回收——关注 private dirty 部分是否显著低于 ORT）；
+  - 稳定性：低档机连跑 ≥10 张压测，`:inference` 进程零 LMK 命中、UI 进程零闪退；
+  - 画质：同图双后端输出目检——**模型层**差异 ≤4/255 且占比 <0.3%（桌面已对拍）；
+    **收尾层**允许更大差异：白区救援的逐像素 keep 门限宽度仅 2.0（c0±1），模型色度
+    微扰会使浅色/近白区域的救援强度（压 L 与保色度）像素级翻转（实测 L 差至 14），
+    属窄门限固有敏感而非后端缺陷；验收标准是「两版各自画质可接受」而非像素一致。
+    若跨后端观感差异刺眼，后续可做救援门限加宽/软化的两端同步改动+金样重生成；
+  - 切换链路：设置切 MNN → 重新进全自动页 → 就绪门控/下载入口正确；切回 ORT 不残留。
 
 ## 参与
 
