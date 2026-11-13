@@ -17,7 +17,7 @@ const Color kTerracotta = Color(0xFFD97757); // 品牌主色（赤陶红）
 const Color kTerracottaStrong = Color(0xFFB0573A); // 小字号文本强调
 const Color kAmber = Color(0xFFD97706); // 速记口诀（琥珀黄）
 const Color kBrick = Color(0xFFB53333); // 避坑 / 错误（暖红）
-const Color kBrickDark = Color(0xFFFF8A80); // 避坑/错误（深色模式，提亮保证暗底对比）
+const Color kBrickDark = Color(0xFFE5826D); // 避坑/错误（深色模式，提亮保证暗底对比）
 
 /// 深色暖纸令牌。
 const Color kCanvasDark = Color(0xFF141413);

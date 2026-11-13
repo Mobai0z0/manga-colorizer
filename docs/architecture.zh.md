@@ -139,7 +139,7 @@ FastAPI 服务，端点：
 | POST | `/colorize_hints` | multipart `image` + `hints`(JSON) → PNG（提示点精修） |
 | POST | `/colorize_reference` | multipart `image` + `reference` → PNG（色调迁移） |
 | POST | `/api/v1/batch` | 批量队列（按提交顺序逐个处理，单个失败不阻断） |
-| GET | `/api/v1/gallery` | 上色台账（`limit` 参数，含耗时/设备/尺寸） |
+| GET | `/api/v1/gallery` | 上色台账（`limit` 参数，含耗时/设备/尺寸/进程内存） |
 | GET | `/api/v1/logs` | 后端日志环形缓冲增量拉取（`after` 序列号） |
 | GET/POST | `/api/v1/settings` | 模式 / 处理器 / 主题 / 免责声明 持久化 |
 | GET | `/gallery/file/{name}` | 读取图库成品图片（仅限输出目录下的文件，带缓存头） |

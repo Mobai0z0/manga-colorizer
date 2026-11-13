@@ -180,7 +180,7 @@ FastAPI service, endpoints:
 | POST | `/colorize_hints` | multipart `image` + `hints`(JSON) → PNG (hint-point refinement) |
 | POST | `/colorize_reference` | multipart `image` + `reference` → PNG (color transfer) |
 | POST | `/api/v1/batch` | Batch queue (processed one at a time in submission order; a single failure does not block the rest) |
-| GET | `/api/v1/gallery` | Colorization ledger (`limit` param, with elapsed time/device/dimensions) |
+| GET | `/api/v1/gallery` | Colorization ledger (`limit` param, with elapsed time/device/dimensions/process memory) |
 | GET | `/api/v1/logs` | Incremental pull of the backend log ring buffer (`after` sequence number) |
 | GET/POST | `/api/v1/settings` | Mode / processor / theme / disclaimer persistence |
 | GET | `/gallery/file/{name}` | Read a gallery result image (only files inside the output directory, with cache headers) |

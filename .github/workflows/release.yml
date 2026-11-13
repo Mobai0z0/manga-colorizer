@@ -50,6 +50,9 @@ jobs:
           fi
           echo "版本一致（$TAG_VER）"
 
+      - name: Cross-end contract check
+        run: python3 tool/contracts/check_contracts.py
+
   desktop:
     name: Windows desktop (Tauri NSIS) + sidecar
     needs: [validate]

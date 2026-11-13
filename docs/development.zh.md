@@ -32,6 +32,21 @@ tauri build    # 产物：src-tauri/target/release/bundle/nsis/*.exe
 - 桌面壳改动跑 `cargo check`（在 `src-tauri/` 下）。
 - `tool/` 下为一次性分析与取证脚本，允许粗糙，但须保留首行用途/用法注释。
 
+### 跨端契约检查（改方案表 / 设计令牌 / 上限后必跑）
+
+```bash
+python tool/contracts/check_contracts.py   # stdlib，无需 venv / 权重
+```
+
+校验色彩方案表（`service.py FINISH_SCHEMES` ↔ `core finish.dart kFinishSchemes` ↔ Web
+方案下拉）、暖纸设计令牌（`web/dist/app.css` ↔ `mobile/lib/theme/warm_tokens.dart`）、
+Web 手动/系统主题色值、批量上限（`MAX_BATCH` ↔ `MAXN`）。发布工作流在 validate 阶段
+自动执行；有漂移时退出码非 0 并逐条打印差异。
+
+内存观测：桌面 sidecar 每张图结束后在日志与 `gallery.jsonl` 记录 `rss_mb` /
+`rss_peak_mb`（CUDA 环境额外记 `gpu_mem_mb`；DirectML 没有用户态显存计数）；移动端
+关键阶段已有 `RSS=…MB（峰值 …MB）` 日志（`mobile/lib/mem_info.dart`）。
+
 ## MNN 推理后端（v0.6.x，双后端之一）
 
 桌面 sidecar 与移动端都有 MNN（阿里 3.6.1，CPU）作为可选推理运行时，与默认

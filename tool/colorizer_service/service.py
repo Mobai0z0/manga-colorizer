@@ -44,6 +44,7 @@ smoothstep 把近白像素色度收向中性, 去除模型对纸白的系统性�
 from __future__ import annotations
 
 from collections import deque
+import ctypes
 from datetime import datetime
 from io import BytesIO
 import json
@@ -117,6 +118,7 @@ if _log_file:
 logging.getLogger().setLevel(logging.INFO)
 MAX_BYTES = 20 * 1024 * 1024
 MAX_PIXELS = 16_000_000
+MAX_BATCH = 32
 DEVICE = os.environ.get('COLORIZER_DEVICE', 'cpu').lower()
 if DEVICE not in ('cpu', 'auto', 'cuda'):
     raise ValueError('COLORIZER_DEVICE must be cpu, auto or cuda')
@@ -347,6 +349,80 @@ def _device_label(providers) -> str:
     return 'cpu'
 
 
+class _ProcessMemoryCounters(ctypes.Structure):
+    """PROCESS_MEMORY_COUNTERS（Windows psapi）；仅 _proc_mem_mb 使用。"""
+    _fields_ = [
+        ('cb', ctypes.c_uint32),
+        ('PageFaultCount', ctypes.c_uint32),
+        ('PeakWorkingSetSize', ctypes.c_size_t),
+        ('WorkingSetSize', ctypes.c_size_t),
+        ('QuotaPeakPagedPoolUsage', ctypes.c_size_t),
+        ('QuotaPagedPoolUsage', ctypes.c_size_t),
+        ('QuotaPeakNonPagedPoolUsage', ctypes.c_size_t),
+        ('QuotaNonPagedPoolUsage', ctypes.c_size_t),
+        ('PagefileUsage', ctypes.c_size_t),
+        ('PeakPagefileUsage', ctypes.c_size_t),
+    ]
+
+
+def _proc_mem_mb():
+    """(当前 RSS, 峰值 RSS) MB；探测失败返回 None——纯观测，不影响功能。"""
+    try:
+        if os.name == 'nt':
+            kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+            psapi = ctypes.WinDLL('psapi', use_last_error=True)
+            kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+            psapi.GetProcessMemoryInfo.argtypes = [
+                ctypes.c_void_p, ctypes.POINTER(_ProcessMemoryCounters), ctypes.c_uint32]
+            psapi.GetProcessMemoryInfo.restype = ctypes.c_int
+            counters = _ProcessMemoryCounters()
+            counters.cb = ctypes.sizeof(counters)
+            if not psapi.GetProcessMemoryInfo(
+                    kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb):
+                return None
+            return (counters.WorkingSetSize / (1 << 20),
+                    counters.PeakWorkingSetSize / (1 << 20))
+        status = Path('/proc/self/status').read_text(encoding='ascii')
+        values = {}
+        for line in status.splitlines():
+            if line.startswith(('VmRSS:', 'VmHWM:')):
+                values[line.split(':')[0]] = int(line.split()[1]) / 1024.0
+        if 'VmRSS' in values:
+            return values['VmRSS'], values.get('VmHWM', values['VmRSS'])
+    except Exception:
+        pass
+    return None
+
+
+def _mem_suffix() -> str:
+    mem = _proc_mem_mb()
+    if not mem:
+        return ''
+    return f'，RSS={mem[0]:.0f}MB（峰值 {mem[1]:.0f}MB）'
+
+
+def _gpu_mem_mb(providers):
+    """CUDA device 0 的显存占用 MiB；DirectML/MNN/CPU 无用户态计数，返回 None。"""
+    flat = []
+    if isinstance(providers, dict):
+        for lst in providers.values():
+            flat.extend(lst or [])
+    elif providers:
+        flat = list(providers)
+    if not any('CUDA' in p for p in flat):
+        return None
+    try:
+        import subprocess
+        out = subprocess.run(
+            ['nvidia-smi', '--query-gpu=memory.used', '--format=csv,noheader,nounits'],
+            capture_output=True, text=True, timeout=2, check=False)
+        if out.returncode != 0 or not out.stdout.strip():
+            return None
+        return int(out.stdout.strip().splitlines()[0])
+    except Exception:
+        return None
+
+
 def _sessions():
     global _mnn_failed
     _last_use['ts'] = time.monotonic()
@@ -450,7 +526,8 @@ def _idle_unload_worker():
                     continue
                 _state.update(gen=None, sam=None, providers=None)
                 _load_state['status'] = 'idle'
-            logging.info('空闲 %.0fs，已释放模型（内存/显存归还系统，下次上色自动唤醒）', idle_for)
+            logging.info('空闲 %.0fs，已释放模型（内存/显存归还系统，下次上色自动唤醒）%s',
+                         idle_for, _mem_suffix())
         finally:
             _inference_lock.release()
 
@@ -1154,6 +1231,13 @@ def _gallery_insert(*, source_name: str, mode: str, device: str, elapsed_s: floa
             'mode': mode, 'device': device, 'elapsed_s': round(elapsed_s, 2),
             'source_name': source_name, 'status': 'ok' if (out_png or out_path) else 'failed',
         }
+        mem = _proc_mem_mb()
+        if mem:
+            rec['rss_mb'] = round(mem[0])
+            rec['rss_peak_mb'] = round(mem[1])
+        gpu_mem = _gpu_mem_mb(_state.get('providers'))
+        if gpu_mem is not None:
+            rec['gpu_mem_mb'] = gpu_mem
         if error:
             rec['error'] = error
         if out_path:
@@ -1209,8 +1293,8 @@ def _process(data: bytes, source_name: str = 'image.png', scheme: str = DEFAULT_
             out_path = None
         _gallery_insert(source_name=source_name, mode='auto', device=device, elapsed_s=elapsed,
                         src_bgr=bgr, out_path=out_path)
-        logging.info('上色完成: %s mode=auto device=%s elapsed=%.1fs size=%dx%d',
-                     source_name, device, elapsed, bgr.shape[1], bgr.shape[0])
+        logging.info('上色完成: %s mode=auto device=%s elapsed=%.1fs size=%dx%d%s',
+                     source_name, device, elapsed, bgr.shape[1], bgr.shape[0], _mem_suffix())
         return resp
     except RuntimeError as exc:
         logging.exception('Model unavailable')
@@ -1332,8 +1416,8 @@ def _persist_gallery(resp: Response, bgr: np.ndarray, *, source_name: str, mode:
         out_path = None
     _gallery_insert(source_name=source_name, mode=mode, device=device, elapsed_s=elapsed,
                     src_bgr=bgr, out_path=out_path)
-    logging.info('上色完成: %s mode=%s device=%s elapsed=%.1fs size=%dx%d',
-                 source_name, mode, device, elapsed, bgr.shape[1], bgr.shape[0])
+    logging.info('上色完成: %s mode=%s device=%s elapsed=%.1fs size=%dx%d%s',
+                 source_name, mode, device, elapsed, bgr.shape[1], bgr.shape[0], _mem_suffix())
 
 
 def _process_hints(data: bytes, hints_raw: str, source_name: str = 'image.png') -> Response:
@@ -1479,7 +1563,7 @@ async def batch_colorize(files: list[UploadFile] = File(...), scheme: str = Form
     if scheme not in FINISH_SCHEMES:
         return JSONResponse({'error': f'scheme 必须是 {"/".join(FINISH_SCHEMES)}'}, status_code=400)
     results = []
-    for uf in files[:32]:
+    for uf in files[:MAX_BATCH]:
         name = uf.filename or 'image.png'
         try:
             data = await uf.read(MAX_BYTES + 1)
@@ -1498,7 +1582,7 @@ async def batch_colorize(files: list[UploadFile] = File(...), scheme: str = Form
                 err = '处理失败'
             results.append({'name': name, 'status': 'failed', 'error': err})
     ok_n = sum(1 for r in results if r['status'] == 'ok')
-    logging.info('批量任务汇总: %d/%d 成功', ok_n, len(results))
+    logging.info('批量任务汇总: %d/%d 成功%s', ok_n, len(results), _mem_suffix())
     return {'total': len(results), 'ok': ok_n, 'failed': len(results) - ok_n, 'results': results}
 
 

@@ -37,6 +37,23 @@ accesses it cross-origin via CORS (the sidecar binds only the loopback address).
 - Files under `tool/` are one-off analysis/forensics scripts; rough code is acceptable, but each
   must keep a first-line comment stating its purpose/usage.
 
+### Cross-end contract check (required after changing schemes / design tokens / limits)
+
+```bash
+python tool/contracts/check_contracts.py   # stdlib only; no venv or weights needed
+```
+
+Validates the finish-scheme table (`service.py FINISH_SCHEMES` <-> `core finish.dart
+kFinishSchemes` <-> Web scheme selector), warm-paper design tokens (`web/dist/app.css` <->
+`mobile/lib/theme/warm_tokens.dart`), the Web manual/system theme color values, and the batch
+limit (`MAX_BATCH` <-> `MAXN`). The release workflow runs it in the validate job; any drift
+exits non-zero and prints every mismatch.
+
+Memory telemetry: the desktop sidecar appends `rss_mb` / `rss_peak_mb` (plus `gpu_mem_mb` on
+CUDA; DirectML exposes no user-space VRAM counter) to its log lines and `gallery.jsonl` after
+each image; the mobile app already logs `RSS=…MB (peak …MB)` at key stages
+(`mobile/lib/mem_info.dart`).
+
 ## MNN inference backend (v0.6.x, one of two backends)
 
 The desktop sidecar and the mobile app both support MNN (Alibaba 3.6.1, CPU) as
