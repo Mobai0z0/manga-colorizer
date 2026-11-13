@@ -114,8 +114,8 @@ class GlassCard extends StatelessWidget {
     super.key,
     required this.child,
     this.onTap,
-    this.padding = const EdgeInsets.all(14),
-    this.radius = 12,
+    this.padding = const EdgeInsets.all(16),
+    this.radius = 20,
   });
 
   final Widget child;
@@ -127,37 +127,51 @@ class GlassCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final warm = WarmPalette.of(context);
     final borderRadius = BorderRadius.circular(radius);
-    return ClipRRect(
-      borderRadius: borderRadius,
-      child: BackdropFilter(
-        filter:
-            ImageFilter.blur(sigmaX: kGlassBlurSigma, sigmaY: kGlassBlurSigma),
-        child: Container(
-          // 非均匀 Border（顶缘高光 ≠ 三侧描边）配圆角会在 paint 阶段抛
-          // 「A borderRadius can only be given on borders with uniform
-          // colors」（Flutter 硬性限制，整卡灰屏）：三侧描边统一色走圆角
-          // fast path，顶缘高光改为卡内 1.5px 高光条（ClipRRect 内随圆角裁切）。
-          decoration: BoxDecoration(
-            color: warm.glassTint,
-            borderRadius: borderRadius,
-            border: Border.all(color: warm.glassBorder),
-          ),
-          child: Stack(children: [
-            Positioned(
-              left: 0,
-              right: 0,
-              top: 0,
-              child: Container(height: 1.5, color: warm.glassBevel),
+    // 投影画在裁切层外：ClipRRect 会连同阴影一起裁掉。
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: borderRadius,
+        boxShadow: warm.glassShadow,
+      ),
+      child: ClipRRect(
+        borderRadius: borderRadius,
+        child: BackdropFilter(
+          filter: ImageFilter.blur(
+              sigmaX: kGlassBlurSigma, sigmaY: kGlassBlurSigma),
+          child: Container(
+            // 非均匀 Border（顶缘高光 ≠ 三侧描边）配圆角会在 paint 阶段抛
+            // 「A borderRadius can only be given on borders with uniform
+            // colors」（Flutter 硬性限制，整卡灰屏）：三侧描边统一色走圆角
+            // fast path，顶缘高光改为卡内 1.5px 高光条（ClipRRect 内随圆角裁切）。
+            decoration: BoxDecoration(
+              color: warm.glassTint,
+              borderRadius: borderRadius,
+              border: Border.all(color: warm.glassBorder),
             ),
-            Material(
-              color: Colors.transparent,
-              child: InkWell(
-                onTap: onTap,
-                borderRadius: borderRadius,
-                child: Padding(padding: padding, child: child),
+            child: Stack(children: [
+              Positioned(
+                left: 0,
+                right: 0,
+                top: 0,
+                child: Container(height: 1.5, color: warm.glassBevel),
               ),
-            ),
-          ]),
+              // 底部内嵌暖线：与 web --glass-bevel 的下缘 inset 同值。
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: Container(height: 1, color: warm.glassBevelBottom),
+              ),
+              Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: onTap,
+                  borderRadius: borderRadius,
+                  child: Padding(padding: padding, child: child),
+                ),
+              ),
+            ]),
+          ),
         ),
       ),
     );

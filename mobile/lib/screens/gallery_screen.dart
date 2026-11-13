@@ -10,6 +10,7 @@ import '../app_settings.dart';
 import '../gallery/gallery_entry.dart';
 import '../gallery/gallery_store.dart';
 import '../shell/screen_chrome.dart';
+import '../theme/warm_tokens.dart';
 import '../widgets/gallery_lightbox.dart';
 
 class GalleryScreen extends StatefulWidget {
@@ -163,36 +164,61 @@ class _GalleryScreenState extends State<GalleryScreen> {
     );
   }
 
+  /// 信息条第二行：与桌面 `.g-row` 同口径的数据（分辨率 / 提示点数或耗时 /
+  /// 参考图来源），等宽字体 + 数字等宽对齐。
+  String _metaLine(GalleryEntry e) {
+    final parts = <String>['${e.width}×${e.height}'];
+    if (e.hintCount != null) parts.add('提示点 ×${e.hintCount}');
+    if (e.elapsedS != null) parts.add('耗时 ${e.elapsedS!.toStringAsFixed(1)}s');
+    if (e.sourceLabel != null) parts.add('参考 ${e.sourceLabel}');
+    return parts.join(' · ');
+  }
+
   Widget _cell(BuildContext context, GalleryEntry e) {
     final scheme = Theme.of(context).colorScheme;
+    final text = Theme.of(context).textTheme;
     return GestureDetector(
       onTap: () => _openLightbox(e),
       onLongPress: () => _confirmDelete(e),
       child: ClipRRect(
-        borderRadius: BorderRadius.circular(12),
-        child: Stack(fit: StackFit.expand, children: [
-          Image.file(File(widget.gallery.pathOf(e.thumbFile)),
-              fit: BoxFit.cover,
-              gaplessPlayback: true,
-              errorBuilder: (_, __, ___) =>
-                  ColoredBox(color: scheme.surfaceContainerHighest)),
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 0,
-            child: Container(
-              color: Colors.black.withValues(alpha: 0.45),
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              child: Row(children: [
-                Text(e.mode == 'auto' ? '全自动' : '上色',
-                    style: TextStyle(
-                        fontSize: 11,
-                        color: scheme.onPrimary,
-                        fontWeight: FontWeight.w600)),
-                const Spacer(),
-                Text(e.timeLabel,
-                    style: TextStyle(fontSize: 11, color: scheme.onPrimary)),
-              ]),
+        borderRadius: BorderRadius.circular(20),
+        child: Column(children: [
+          Expanded(
+            child: Image.file(File(widget.gallery.pathOf(e.thumbFile)),
+                width: double.infinity,
+                height: double.infinity,
+                fit: BoxFit.cover,
+                gaplessPlayback: true,
+                errorBuilder: (_, __, ___) =>
+                    ColoredBox(color: scheme.surfaceContainerHighest)),
+          ),
+          // 信息条取代旧的黑 45% 渐变叠层：模式/时间一行 + 等宽数据一行。
+          Container(
+            width: double.infinity,
+            color: scheme.surfaceContainerHigh,
+            padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(children: [
+                  Text(e.modeLabel,
+                      style: text.labelMedium
+                          ?.copyWith(fontWeight: FontWeight.w600)),
+                  const Spacer(),
+                  Text(e.timeLabel,
+                      style: text.labelSmall?.copyWith(
+                          fontFamily: kMonoFamily,
+                          color: scheme.onSurfaceVariant)),
+                ]),
+                const SizedBox(height: 3),
+                Text(_metaLine(e),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: text.labelSmall?.copyWith(
+                        fontSize: 10.5,
+                        letterSpacing: 0.1,
+                        color: scheme.onSurfaceVariant)),
+              ],
             ),
           ),
         ]),

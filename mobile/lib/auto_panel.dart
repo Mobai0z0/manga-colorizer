@@ -30,6 +30,7 @@ import 'mem_info.dart';
 import 'png_encode.dart';
 import 'reference_flow.dart';
 import 'theme/glass.dart';
+import 'widgets/disclaimer_gate.dart';
 import 'resource_tier.dart';
 import 'app_settings.dart';
 import 'logs/log_bus.dart';
@@ -447,6 +448,10 @@ class _AutoTabState extends State<AutoTab> {
     final gray = _gray;
     final dir = _dir;
     if (gray == null || dir == null || _busy) return;
+    if (!widget.controller.settings.disclaimerAccepted) {
+      setState(() => _status = '请先勾选合规声明');
+      return;
+    }
     setState(() {
       _busy = true;
       _inferring = true;
@@ -611,6 +616,10 @@ class _AutoTabState extends State<AutoTab> {
     final dir = _dir;
     if (srcRgb == null || srcGray == null || ref == null || dir == null) return;
     if (_refBusy || _busy) return;
+    if (!widget.controller.settings.disclaimerAccepted) {
+      setState(() => _status = '请先勾选合规声明');
+      return;
+    }
     setState(() {
       _refBusy = true;
       _status = '参考图上色中…';
@@ -723,6 +732,12 @@ class _AutoTabState extends State<AutoTab> {
     }
   }
 
+  void _setDisclaimerAccepted(bool v) {
+    widget.controller
+        .update(widget.controller.settings.copyWith(disclaimerAccepted: v));
+    setState(() {});
+  }
+
   @override
   Widget build(BuildContext context) {
     final files = _filesForChoice();
@@ -741,7 +756,13 @@ class _AutoTabState extends State<AutoTab> {
             label: Text('下载源：${_sourceLabel(_source)}'),
           ),
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 4),
+        DisclaimerCheck(
+          accepted: widget.controller.settings.disclaimerAccepted,
+          onChanged: _setDisclaimerAccepted,
+          enabled: !_busy,
+        ),
+        const SizedBox(height: 8),
         if (!_checking && _weightsMissing) ..._guide(context, totalMb),
         if (!_weightsMissing && !_checking) ..._ready(context),
         // 参考图卡片常驻展示（含权重缺失时的下载引导提示）：
@@ -789,7 +810,11 @@ class _AutoTabState extends State<AutoTab> {
           const SizedBox(width: 8),
           Expanded(
             child: FilledButton.icon(
-              onPressed: (_busy || _gray == null) ? null : _run,
+              onPressed: (_busy ||
+                      _gray == null ||
+                      !widget.controller.settings.disclaimerAccepted)
+                  ? null
+                  : _run,
               icon: const Icon(Icons.auto_fix_high),
               label: const Text('开始全自动'),
             ),
@@ -920,7 +945,8 @@ class _AutoTabState extends State<AutoTab> {
                             _busy ||
                             _weightsMissing ||
                             _refSrcRgb == null ||
-                            _refRgb == null)
+                            _refRgb == null ||
+                            !widget.controller.settings.disclaimerAccepted)
                         ? null
                         : _runReference,
                     icon: const Icon(Icons.colorize),

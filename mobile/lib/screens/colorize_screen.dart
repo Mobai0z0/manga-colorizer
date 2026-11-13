@@ -26,6 +26,7 @@ import '../resource_tier.dart';
 import '../shell/screen_chrome.dart';
 import '../theme/glass.dart';
 import '../widgets/custom_color_picker.dart';
+import '../widgets/disclaimer_gate.dart';
 
 /// Color 通道（0..1 double）→ 8bit 整数。替代已弃用的 `.red/.green/.blue`
 /// 访问器（其弃用说明给出的等价式即 `(*.c * 255.0).round().clamp(0, 255)`；
@@ -222,6 +223,10 @@ class _ColorizeScreenState extends State<ColorizeScreen> {
   Future<void> _colorize() async {
     final src = _source;
     if (src == null || _busy) return;
+    if (!widget.controller.settings.disclaimerAccepted) {
+      setState(() => _status = '请先勾选下方合规声明');
+      return;
+    }
     final hints = _hints
         .map((h) => ColorHint(
               x: (h.pos.dx * (src.width - 1)).round(),
@@ -443,6 +448,12 @@ class _ColorizeScreenState extends State<ColorizeScreen> {
     );
   }
 
+  void _setDisclaimerAccepted(bool v) {
+    widget.controller
+        .update(widget.controller.settings.copyWith(disclaimerAccepted: v));
+    setState(() {});
+  }
+
   Widget _buildToolbar() {
     return SafeArea(
       // 液态玻璃底栏：与底部 NavigationBar 同一玻璃外观，消除拼接色差。
@@ -490,10 +501,20 @@ class _ColorizeScreenState extends State<ColorizeScreen> {
                 ),
               ]),
               const SizedBox(height: 8),
+              DisclaimerCheck(
+                accepted: widget.controller.settings.disclaimerAccepted,
+                onChanged: _setDisclaimerAccepted,
+                enabled: !_busy,
+              ),
+              const SizedBox(height: 2),
               Row(children: [
                 Expanded(
                   child: FilledButton.icon(
-                    onPressed: (_source == null || _busy) ? null : _colorize,
+                    onPressed: (_source == null ||
+                            _busy ||
+                            !widget.controller.settings.disclaimerAccepted)
+                        ? null
+                        : _colorize,
                     icon: _busy
                         ? const SizedBox(
                             width: 16,

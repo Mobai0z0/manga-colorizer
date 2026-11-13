@@ -60,7 +60,7 @@ class _GalleryLightboxPageState extends State<GalleryLightboxPage> {
     return Scaffold(
       appBar: GlassAppBar(
         title:
-            '${widget.entry.mode == 'auto' ? '全自动' : '上色'} · ${widget.entry.timeLabel}',
+            '${widget.entry.modeLabel} · ${widget.entry.timeLabel}',
         actions: [
           IconButton(
             tooltip: '分享',

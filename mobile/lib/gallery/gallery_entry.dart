@@ -56,6 +56,14 @@ class GalleryEntry {
         thumbFile: j['thumb_file'] as String,
       );
 
+  /// 展示用模式标签：与图库排序菜单的「全自动/提示点」词表一致，
+  /// 参考图模式单列（旧实现把 reference 误归为「上色」）。
+  String get modeLabel => switch (mode) {
+        'auto' => '全自动',
+        'reference' => '参考图',
+        _ => '提示点',
+      };
+
   /// 供网格/灯箱展示的本地时间标签（yyyy-MM-dd HH:mm）。
   String get timeLabel {
     final dt = DateTime.tryParse(timeIso);

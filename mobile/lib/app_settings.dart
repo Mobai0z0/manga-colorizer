@@ -33,6 +33,7 @@ class AppSettings {
     this.customHintColors = const [],
     this.backgroundStyle = BackgroundStyle.monet,
     this.inferenceBackend = InferenceBackend.auto,
+    this.disclaimerAccepted = false,
   });
 
   /// 权重下载源，见 [DownloadSource]。默认自动（主站优先、失败回退镜像）。
@@ -65,6 +66,10 @@ class AppSettings {
   /// 全自动推理后端，见 [InferenceBackend]。默认 auto。
   final InferenceBackend inferenceBackend;
 
+  /// 合规免责声明是否已接受（与桌面 `disclaimer_accepted` 同语义）：
+  /// 未接受时上色 / 全自动 / 参考图上色的运行入口保持禁用。
+  final bool disclaimerAccepted;
+
   static const _fileName = 'settings.json';
 
   static AppSettings defaults() => const AppSettings();
@@ -80,7 +85,8 @@ class AppSettings {
       other.refStrength == refStrength &&
       listEquals(other.customHintColors, customHintColors) &&
       other.backgroundStyle == backgroundStyle &&
-      other.inferenceBackend == inferenceBackend;
+      other.inferenceBackend == inferenceBackend &&
+      other.disclaimerAccepted == disclaimerAccepted;
 
   @override
   int get hashCode => Object.hash(
@@ -92,6 +98,7 @@ class AppSettings {
       refStrength,
       backgroundStyle,
       inferenceBackend,
+      disclaimerAccepted,
       Object.hashAll(customHintColors));
 
   AppSettings copyWith({
@@ -104,6 +111,7 @@ class AppSettings {
     List<int>? customHintColors,
     BackgroundStyle? backgroundStyle,
     InferenceBackend? inferenceBackend,
+    bool? disclaimerAccepted,
   }) =>
       AppSettings(
         downloadSource: downloadSource ?? this.downloadSource,
@@ -115,6 +123,7 @@ class AppSettings {
         customHintColors: customHintColors ?? this.customHintColors,
         backgroundStyle: backgroundStyle ?? this.backgroundStyle,
         inferenceBackend: inferenceBackend ?? this.inferenceBackend,
+        disclaimerAccepted: disclaimerAccepted ?? this.disclaimerAccepted,
       );
 
   Map<String, Object?> toJson() => {
@@ -127,6 +136,7 @@ class AppSettings {
         'customHintColors': customHintColors,
         'backgroundStyle': backgroundStyle.name,
         'inferenceBackend': inferenceBackend.name,
+        'disclaimerAccepted': disclaimerAccepted,
       };
 
   factory AppSettings.fromJson(Map<String, Object?> json) => AppSettings(
@@ -144,6 +154,8 @@ class AppSettings {
             BackgroundStyle.values, BackgroundStyle.monet),
         inferenceBackend: _enumFrom(json['inferenceBackend'],
             InferenceBackend.values, InferenceBackend.auto),
+        // 仅接受布尔 true：损坏值（字符串/数字）一律回退未接受。
+        disclaimerAccepted: json['disclaimerAccepted'] == true,
       );
 
   /// 方案 id 白名单校验：未知值（旧版本/损坏）回退默认。

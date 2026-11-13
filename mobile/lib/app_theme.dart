@@ -216,7 +216,7 @@ ThemeData _finalize(ColorScheme scheme, Brightness b) {
       elevation: 0,
       margin: EdgeInsets.zero,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(20),
       ),
     ),
     dialogTheme: DialogThemeData(

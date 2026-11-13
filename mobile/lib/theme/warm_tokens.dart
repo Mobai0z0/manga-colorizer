@@ -129,7 +129,7 @@ const WarmAccent kAmberAccent = WarmAccent(
 );
 
 /// 主题扩展：ColorScheme 装不下的设计令牌（玻璃质感、莫奈色球、
-/// 文本强调色）。经 Theme.of(context).extension<WarmPalette>() 取用。
+/// 文本强调色）。经 `Theme.of(context).extension<WarmPalette>()` 取用。
 @immutable
 class WarmPalette extends ThemeExtension<WarmPalette> {
   const WarmPalette({
@@ -138,6 +138,8 @@ class WarmPalette extends ThemeExtension<WarmPalette> {
     required this.glassTint,
     required this.glassBorder,
     required this.glassBevel,
+    required this.glassBevelBottom,
+    required this.glassShadow,
     required this.monetTerracotta,
     required this.monetSage,
     required this.monetSand,
@@ -152,6 +154,18 @@ class WarmPalette extends ThemeExtension<WarmPalette> {
           glassTint: const Color(0xB8FFFFFF),
           glassBorder: const Color(0x80FFFFFF),
           glassBevel: const Color(0xA6FFFFFF),
+          glassBevelBottom: const Color.fromARGB(31, 150, 128, 92),
+          glassShadow: const [
+            BoxShadow(
+                color: Color(0x1454422C),
+                offset: Offset(0, 1),
+                blurRadius: 2),
+            BoxShadow(
+                color: Color(0x0D54422C),
+                offset: Offset(0, 1),
+                blurRadius: 3,
+                spreadRadius: 1),
+          ],
           monetTerracotta: kMonetTerracotta,
           monetSage: kMonetSage,
           monetSand: kMonetSand,
@@ -166,6 +180,18 @@ class WarmPalette extends ThemeExtension<WarmPalette> {
           glassTint: const Color(0xB8252525),
           glassBorder: const Color(0x17FFFFFF),
           glassBevel: const Color(0x14FFFFFF),
+          glassBevelBottom: const Color.fromARGB(76, 0, 0, 0),
+          glassShadow: const [
+            BoxShadow(
+                color: Color(0x66000000),
+                offset: Offset(0, 1),
+                blurRadius: 2),
+            BoxShadow(
+                color: Color(0x3D000000),
+                offset: Offset(0, 1),
+                blurRadius: 3,
+                spreadRadius: 1),
+          ],
           monetTerracotta: kMonetTerracotta,
           monetSage: kMonetSage,
           monetSand: kMonetSand,
@@ -182,6 +208,12 @@ class WarmPalette extends ThemeExtension<WarmPalette> {
   final Color glassTint;
   final Color glassBorder;
   final Color glassBevel;
+
+  /// 底部内嵌暖线（web `inset 0 -1px 0 rgba(150,128,92,.12)`，深色为黑 30%）。
+  final Color glassBevelBottom;
+
+  /// 卡片两级暖投影（web `--md-sys-elevation-1` 同值）。
+  final List<BoxShadow> glassShadow;
 
   /// 莫奈三色球与浓度。
   final Color monetTerracotta;
@@ -205,6 +237,8 @@ class WarmPalette extends ThemeExtension<WarmPalette> {
     Color? glassTint,
     Color? glassBorder,
     Color? glassBevel,
+    Color? glassBevelBottom,
+    List<BoxShadow>? glassShadow,
     Color? monetTerracotta,
     Color? monetSage,
     Color? monetSand,
@@ -216,6 +250,8 @@ class WarmPalette extends ThemeExtension<WarmPalette> {
         glassTint: glassTint ?? this.glassTint,
         glassBorder: glassBorder ?? this.glassBorder,
         glassBevel: glassBevel ?? this.glassBevel,
+        glassBevelBottom: glassBevelBottom ?? this.glassBevelBottom,
+        glassShadow: glassShadow ?? this.glassShadow,
         monetTerracotta: monetTerracotta ?? this.monetTerracotta,
         monetSage: monetSage ?? this.monetSage,
         monetSand: monetSand ?? this.monetSand,
@@ -231,6 +267,9 @@ class WarmPalette extends ThemeExtension<WarmPalette> {
       glassTint: Color.lerp(glassTint, other.glassTint, t)!,
       glassBorder: Color.lerp(glassBorder, other.glassBorder, t)!,
       glassBevel: Color.lerp(glassBevel, other.glassBevel, t)!,
+      glassBevelBottom:
+          Color.lerp(glassBevelBottom, other.glassBevelBottom, t)!,
+      glassShadow: t < 0.5 ? glassShadow : other.glassShadow,
       monetTerracotta: Color.lerp(monetTerracotta, other.monetTerracotta, t)!,
       monetSage: Color.lerp(monetSage, other.monetSage, t)!,
       monetSand: Color.lerp(monetSand, other.monetSand, t)!,
