@@ -51,6 +51,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import subprocess
 import threading
 import time
 import traceback
@@ -192,36 +193,101 @@ _server_ref = {'server': None}
 _gpu_info_cache = {'info': None, 'ts': 0.0}
 
 
-def _gpu_info() -> dict:
-    """Best-effort GPU details: model, vram, driver. Empty dict when unavailable.
+def _subprocess_flags() -> int:
+    """Windows 无控制台 sidecar 里拉起子进程不闪黑框。"""
+    return 0x08000000 if os.name == 'nt' else 0
 
-    结果缓存 5 分钟：nvidia-smi 是子进程调用，设备信息轮询接口不应每次拉起。
+
+def _gpu_hardware() -> dict:
+    """物理 GPU 身份（与 ORT Provider 是否存在无关），best-effort。
+
+    NVIDIA 走 nvidia-smi（显存/驱动准确）；其余 Windows 显卡用 WMI 的
+    Win32_VideoController 枚举，覆盖 AMD / Intel 核显，以及「有卡但装的是
+    CPU 版运行库」这一最常见情况——旧实现只在 DML Provider 存在时才认卡，
+    导致有 GPU 的机器仍显示「未检测到可用 GPU」。
+    结果缓存 5 分钟：nvidia-smi / PowerShell 是子进程调用，不应随 5s
+    健康轮询反复拉起。
     """
     now = time.monotonic()
     if _gpu_info_cache['info'] is not None and now - _gpu_info_cache['ts'] < 300:
         return _gpu_info_cache['info']
     info: dict = {}
     try:
-        import subprocess
         out = subprocess.run(
             ['nvidia-smi', '--query-gpu=name,memory.total,driver_version',
-             '--format=csv,noheader'], capture_output=True, text=True, timeout=4)
+             '--format=csv,noheader'], capture_output=True, text=True, timeout=4,
+            creationflags=_subprocess_flags())
         if out.returncode == 0 and out.stdout.strip():
-            parts = [p.strip() for p in out.stdout.strip().split(',')]
+            first = out.stdout.strip().splitlines()[0]
+            parts = [p.strip() for p in first.split(',')]
             if len(parts) >= 3:
                 info = {'name': parts[0], 'vram': parts[1], 'driver': parts[2], 'kind': 'nvidia'}
     except Exception:
         pass
-    if not info:
-        # DML covers non-NVIDIA GPUs too; mark generic accelerator when DML provider exists
-        if 'DmlExecutionProvider' in ort.get_available_providers():
-            info = {'name': 'DirectML 兼容 GPU', 'vram': None, 'driver': None, 'kind': 'directml'}
+    if not info and os.name == 'nt':
+        # 只取名称/驱动版本：AdapterRAM 是 uint32，>4GB 显存会溢出，不可信。
+        # 过滤向日葵/虚拟显示器（OrayIddDriver 等），优先真实厂商适配器。
+        ps = ("$g = Get-CimInstance Win32_VideoController | "
+              "Where-Object { $_.Name -notmatch 'Microsoft Basic|Remote|Parsec|Virtual|Oray|Idd|DisplayLink|USB Display|Sunlogin' }; "
+              "$p = $g | Where-Object { $_.Name -match 'NVIDIA|AMD|Radeon|Intel|Arc' } | Select-Object -First 1; "
+              "if (-not $p) { $p = $g | Select-Object -First 1 }; "
+              "$p | Select-Object Name,DriverVersion | ConvertTo-Json -Compress")
+        try:
+            out = subprocess.run(
+                ['powershell', '-NoProfile', '-NonInteractive', '-Command', ps],
+                capture_output=True, text=True, timeout=6,
+                creationflags=_subprocess_flags())
+            raw = (out.stdout or '').strip()
+            if raw:
+                data = json.loads(raw)
+                name = str(data.get('Name') or '').strip()
+                if name:
+                    low = name.lower()
+                    kind = ('nvidia' if 'nvidia' in low
+                            else 'amd' if ('amd' in low or 'radeon' in low)
+                            else 'intel' if 'intel' in low else 'other')
+                    info = {'name': name, 'vram': None,
+                            'driver': str(data.get('DriverVersion') or '').strip() or None,
+                            'kind': kind}
+        except Exception:
+            pass
     _gpu_info_cache.update(info=info, ts=now)
+    return info
+
+
+def _gpu_info() -> dict:
+    """设备徽标用 GPU 详情：硬件身份 + 当前运行库是否带 GPU Provider。"""
+    info = dict(_gpu_hardware())
+    providers = ort.get_available_providers()
+    ready = any('Dml' in p or 'CUDA' in p for p in providers)
+    if not info and ready:
+        dml = 'DmlExecutionProvider' in providers
+        info = {'name': 'DirectML 兼容 GPU' if dml else 'CUDA GPU',
+                'vram': None, 'driver': None,
+                'kind': 'directml' if dml else 'cuda'}
+    if info:
+        info['provider_ready'] = bool(ready)
     return info
 
 
 def _gpu_available() -> bool:
     return any('Dml' in p or 'CUDA' in p for p in ort.get_available_providers())
+
+
+def _gpu_state() -> dict:
+    """结构化 GPU 诊断: ready（可加速）/ no_provider（有卡缺运行库）/ none。"""
+    providers = ort.get_available_providers()
+    gpu_providers = [p for p in providers if 'Dml' in p or 'CUDA' in p]
+    hardware = _gpu_hardware()
+    if gpu_providers:
+        state = 'ready'
+    elif hardware:
+        state = 'no_provider'
+    else:
+        state = 'none'
+    return {'state': state, 'providers': providers, 'gpu_providers': gpu_providers,
+            'hardware': hardware or None,
+            'ort_version': getattr(ort, '__version__', None)}
 
 
 def _expected_device() -> str:
@@ -1148,7 +1214,7 @@ def _device_payload() -> dict:
             'device': loaded or _expected_device(), 'loaded_device': loaded,
             'requested': DEVICE,
             'gpu_available': _gpu_available(), 'runtime_device': _runtime_device.get('value'),
-            'gpu_info': _gpu_info(),
+            'gpu_info': _gpu_info(), 'gpu_state': _gpu_state(),
             'output_dir': str(OUTPUT_DIR), 'settings': _load_settings()}
 
 
@@ -1641,6 +1707,12 @@ async def settings_set(request: Request):
         if patch['device'] not in ('cpu', 'gpu', 'auto'):
             return JSONResponse({'error': 'device 必须是 cpu/gpu/auto'}, status_code=400)
         if patch['device'] == 'gpu' and not _gpu_available():
+            hw = _gpu_hardware()
+            if hw.get('name'):
+                return JSONResponse(
+                    {'error': f"检测到 {hw['name']}，但当前服务是 CPU 运行时"
+                              "（缺少 DirectML/CUDA Provider），请安装 GPU 版或重新构建"},
+                    status_code=400)
             return JSONResponse({'error': '本机没有可用的 GPU Provider'}, status_code=400)
     if 'mode' in patch and patch['mode'] not in ('auto', 'hints', 'reference'):
         return JSONResponse({'error': 'mode 必须是 auto/hints/reference'}, status_code=400)

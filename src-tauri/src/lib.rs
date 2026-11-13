@@ -4,11 +4,12 @@
 mod downloader;
 mod sidecar_mgr;
 
+use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex as StdMutex;
 use std::thread;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Url};
 
 use downloader::{DownloadEvent, Manifest, WeightsStatus};
@@ -18,6 +19,59 @@ pub struct AppState {
     manifest: Option<Manifest>,
     manifest_error: Option<String>,
     downloading: StdMutex<bool>,
+}
+
+/// Shell-level settings persisted next to weights (independent of webview
+/// localStorage, so the boot downloader can honour them before the UI loads).
+#[derive(Serialize, Deserialize, Default)]
+struct ShellSettings {
+    #[serde(rename = "downloadSource", default)]
+    download_source: String,
+}
+
+fn shell_settings_path() -> PathBuf {
+    downloader::app_data_dir().join("settings.json")
+}
+
+fn normalize_source(raw: &str) -> &'static str {
+    match raw {
+        "primary" => "primary",
+        "mirror" => "mirror",
+        _ => "auto",
+    }
+}
+
+fn read_shell_settings() -> ShellSettings {
+    fs::read_to_string(shell_settings_path())
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+fn write_shell_settings(settings: &ShellSettings) -> Result<(), String> {
+    let path = shell_settings_path();
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| format!("创建设置目录失败: {e}"))?;
+    }
+    let raw = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
+    fs::write(&path, raw).map_err(|e| format!("写入设置失败: {e}"))
+}
+
+#[tauri::command]
+fn cmd_get_download_source() -> String {
+    normalize_source(&read_shell_settings().download_source).to_string()
+}
+
+#[tauri::command]
+fn cmd_set_download_source(source: String) -> Result<String, String> {
+    let normalized = normalize_source(&source);
+    if normalized != source {
+        return Err("下载源必须是 auto / primary / mirror".into());
+    }
+    let mut settings = read_shell_settings();
+    settings.download_source = normalized.to_string();
+    write_shell_settings(&settings)?;
+    Ok(normalized.to_string())
 }
 
 #[derive(Clone, Serialize)]
@@ -150,6 +204,8 @@ fn cmd_start_download(app: AppHandle, state: tauri::State<AppState>) -> Result<b
     let manifest = state.manifest.clone().ok_or_else(|| {
         state.manifest_error.clone().unwrap_or_else(|| "权重清单未加载".into())
     })?;
+    // 下载源由设置页写入 settings.json；boot 页不需要传参，首次启动缺省 auto。
+    let mode = normalize_source(&read_shell_settings().download_source);
     *state.downloading.lock().unwrap() = true;
     let app2 = app.clone();
 
@@ -172,7 +228,8 @@ fn cmd_start_download(app: AppHandle, state: tauri::State<AppState>) -> Result<b
         let mut completed_bytes: u64 = 0;
 
         for (idx, entry) in manifest.files.iter().enumerate() {
-            let mut use_mirror = false;
+            let mut use_mirror = mode == "mirror";
+            let allow_fallback = mode == "auto";
             let mut attempt = 0;
             loop {
                 attempt += 1;
@@ -201,8 +258,9 @@ fn cmd_start_download(app: AppHandle, state: tauri::State<AppState>) -> Result<b
                     }
                     Ok(Err(e)) => {
                         last_err = Some(e.clone());
-                        // one retry on primary, then one via mirror, then give up (keep partials)
-                        if attempt == 1 && !use_mirror {
+                        // auto: one retry on primary, then one via mirror, then give up.
+                        // primary/mirror: the user picked a single source, no fallback.
+                        if allow_fallback && attempt == 1 && !use_mirror {
                             use_mirror = true;
                             continue;
                         }
@@ -211,7 +269,7 @@ fn cmd_start_download(app: AppHandle, state: tauri::State<AppState>) -> Result<b
                     }
                     Err(_) => {
                         last_err = Some("下载线程异常崩溃".into());
-                        if attempt == 1 && !use_mirror {
+                        if allow_fallback && attempt == 1 && !use_mirror {
                             use_mirror = true;
                             continue;
                         }
@@ -365,6 +423,8 @@ pub fn run() {
             cmd_delete_weights,
             cmd_open_weights_dir,
             cmd_start_download,
+            cmd_get_download_source,
+            cmd_set_download_source,
             cmd_sidecar_status,
             cmd_sidecar_log_path,
             cmd_service_port,

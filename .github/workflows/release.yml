@@ -65,8 +65,14 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Python deps
-        run: pip install -r tool/colorizer_service/requirements.txt pyinstaller
+      - name: Install Python deps (DirectML GPU runtime)
+        shell: bash
+        run: |
+          # 必须用 requirements-directml.txt：requirements.txt 是 CPU 版
+          # onnxruntime，打出来的 sidecar 在 NVIDIA/AMD 机器上会报
+          # “本机未检测到可用 GPU”。版本钉 <1.21 见依赖文件注释。
+          pip install -r tool/colorizer_service/requirements-directml.txt pyinstaller
+          python -c "import onnxruntime as ort; p = ort.get_available_providers(); print(p); assert 'DmlExecutionProvider' in p, 'sidecar 缺少 DirectML Provider'"
 
       - name: Build sidecar (PyInstaller onefile)
         run: |

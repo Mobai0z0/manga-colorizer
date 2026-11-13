@@ -91,26 +91,26 @@
 </div>
 <div class="card">
     <div class="brand"><h1>Manga Colorizer</h1><span class="ver" id="ver">—</span></div>
-    <div class="sub" id="subtitle">首次启动：需要下载上色模型权重（约 287 MB，一次性）</div>
+    <div class="sub" id="subtitle" data-i18n="boot.subtitle">首次启动：需要下载上色模型权重（约 287 MB，一次性）</div>
 
     <div class="metric-row">
-      <div class="metric"><div class="k">总体进度</div><div class="v" id="pct">0%</div></div>
-      <div class="metric"><div class="k">已完成</div><div class="v" id="bytes">0 / 0 MB</div></div>
-      <div class="metric"><div class="k">断点续传</div><div class="v" id="resume">—</div></div>
+      <div class="metric"><div class="k" data-i18n="boot.total">总体进度</div><div class="v" id="pct">0%</div></div>
+      <div class="metric"><div class="k" data-i18n="boot.done">已完成</div><div class="v" id="bytes">0 / 0 MB</div></div>
+      <div class="metric"><div class="k" data-i18n="boot.resume">断点续传</div><div class="v" id="resume">—</div></div>
     </div>
     <div class="track"><div class="fill" id="fill"></div></div>
-    <div class="status" id="status">正在准备…</div>
+    <div class="status" id="status" data-i18n="boot.preparing">正在准备…</div>
     <div class="file" id="curfile"></div>
 
     <div class="actions">
-      <button class="primary" id="btn-start">开始下载</button>
-      <button id="btn-retry" class="hidden">重试</button>
-      <button id="btn-dir" class="ghost">打开权重目录</button>
-      <button id="btn-del" class="ghost hidden">删除已下载权重</button>
+      <button class="primary" id="btn-start" data-i18n="boot.start">开始下载</button>
+      <button id="btn-retry" class="hidden" data-i18n="boot.retry">重试</button>
+      <button id="btn-dir" class="ghost" data-i18n="boot.openDir">打开权重目录</button>
+      <button id="btn-del" class="ghost hidden" data-i18n="boot.delete">删除已下载权重</button>
     </div>
 
     <div class="ledger hidden" id="ledger-box">
-      <h2>下载台账 <button id="btn-ledger">刷新</button></h2>
+      <h2><span data-i18n="boot.ledger">下载台账</span> <button id="btn-ledger" data-i18n="boot.refresh">刷新</button></h2>
       <div class="ledger-list" id="ledger"></div>
     </div>
   </div>
@@ -120,6 +120,64 @@
   var invoke = window.__TAURI__.core.invoke, listen = window.__TAURI__.event.listen;
   var $ = function (id) { return document.getElementById(id); };
   var fmtMB = function (n) { return (n / 1048576).toFixed(1); };
+
+  // 与工作台共用同一份语言偏好（tauri.localhost 同源 localStorage）；首启按系统语言。
+  var LANG = (function () {
+    try {
+      var saved = JSON.parse(localStorage.getItem('mc-settings-v1') || '{}');
+      if (saved.lang === 'zh' || saved.lang === 'en') return saved.lang;
+    } catch (e) { }
+    return String(navigator.language || 'zh').toLowerCase().indexOf('zh') === 0 ? 'zh' : 'en';
+  })();
+  var TEXT = {
+    zh: {
+      'boot.subtitle': '首次启动：需要下载上色模型权重（约 287 MB，一次性）',
+      'boot.total': '总体进度', 'boot.done': '已完成', 'boot.resume': '断点续传', 'boot.preparing': '正在准备…',
+      'boot.start': '开始下载', 'boot.retry': '重试', 'boot.openDir': '打开权重目录', 'boot.delete': '删除已下载权重',
+      'boot.ledger': '下载台账', 'boot.refresh': '刷新',
+      'boot.status.downloading': '正在下载权重…',
+      'boot.status.verifying': '下载完成，正在校验 sha256…',
+      'boot.status.done': '权重就绪，正在启动上色服务…',
+      'boot.status.failed': '下载失败',
+      'boot.status.idle': '就绪。点击「开始下载」获取模型权重。',
+      'boot.serviceReady': '服务已就绪，正在进入工作台…',
+      'boot.uiLoading': '界面即将加载。',
+      'boot.startingService': '正在启动上色服务…',
+      'boot.weightsReady': '模型权重已就绪',
+      'boot.partial': '检测到未完成的下载，可从断点继续。',
+      'boot.confirmDelete': '确定删除已下载的权重文件？删除后可重新完整下载。',
+      'boot.deleted': '已删除，释放 {freed} MB。可重新下载。',
+      'boot.resumed': '续传',
+    },
+    en: {
+      'boot.subtitle': 'First launch: download the colorization model weights (about 287 MB, one time).',
+      'boot.total': 'Overall progress', 'boot.done': 'Downloaded', 'boot.resume': 'Resumed', 'boot.preparing': 'Preparing…',
+      'boot.start': 'Start download', 'boot.retry': 'Retry', 'boot.openDir': 'Open weights folder', 'boot.delete': 'Delete downloaded weights',
+      'boot.ledger': 'Download log', 'boot.refresh': 'Refresh',
+      'boot.status.downloading': 'Downloading weights…',
+      'boot.status.verifying': 'Download complete, verifying sha256…',
+      'boot.status.done': 'Weights ready, starting the colorization service…',
+      'boot.status.failed': 'Download failed',
+      'boot.status.idle': 'Ready. Click “Start download” to fetch the model weights.',
+      'boot.serviceReady': 'Service ready, opening the workspace…',
+      'boot.uiLoading': 'Loading the interface.',
+      'boot.startingService': 'Starting the colorization service…',
+      'boot.weightsReady': 'Model weights ready',
+      'boot.partial': 'An unfinished download was found; it will resume from the breakpoint.',
+      'boot.confirmDelete': 'Delete the downloaded weights? You can download them again afterward.',
+      'boot.deleted': 'Deleted, freed {freed} MB. You can download again.',
+      'boot.resumed': 'resumed',
+    },
+  };
+  function t(key, vars) {
+    var table = TEXT[LANG] || TEXT.zh;
+    var text = table[key] != null ? table[key] : (TEXT.zh[key] != null ? TEXT.zh[key] : key);
+    return String(text).replace(/\{(\w+)\}/g, function (m, name) {
+      return vars && Object.prototype.hasOwnProperty.call(vars, name) ? String(vars[name]) : m;
+    });
+  }
+  document.documentElement.lang = LANG === 'zh' ? 'zh-CN' : 'en';
+  document.querySelectorAll('[data-i18n]').forEach(function (el) { el.textContent = t(el.dataset.i18n); });
 
   function setProgress(p) {
     var pct = p.totalBytes ? Math.round(100 * p.totalBytesDone / p.totalBytes) : 0;
@@ -132,11 +190,11 @@
     if (p.currentFile) $('curfile').textContent = p.currentFile;
     var st = $('status');
     st.classList.remove('err');
-    if (p.phase === 'downloading') st.textContent = '正在下载权重…' + (p.message ? '' : '');
-    else if (p.phase === 'verifying') st.textContent = '下载完成，正在校验 sha256…';
-    else if (p.phase === 'done') { st.textContent = '权重就绪，正在启动上色服务…'; refreshLedger(); }
-    else if (p.phase === 'failed') { st.textContent = p.message || '下载失败'; st.classList.add('err'); showRetry(); }
-    else if (p.phase === 'idle') st.textContent = '就绪。点击「开始下载」获取模型权重。';
+    if (p.phase === 'downloading') st.textContent = t('boot.status.downloading');
+    else if (p.phase === 'verifying') st.textContent = t('boot.status.verifying');
+    else if (p.phase === 'done') { st.textContent = t('boot.status.done'); refreshLedger(); }
+    else if (p.phase === 'failed') { st.textContent = p.message || t('boot.status.failed'); st.classList.add('err'); showRetry(); }
+    else if (p.phase === 'idle') st.textContent = t('boot.status.idle');
   }
   function showRetry() {
     $('btn-retry').classList.remove('hidden');
@@ -148,9 +206,9 @@
       if (!rows.length) return;
       $('ledger-box').classList.remove('hidden');
       $('ledger').innerHTML = rows.slice(-40).map(function (r) {
-        return '<div>' + new Date(r.time).toLocaleTimeString() + ' · ' + r.event + ' · ' + (r.file || '') +
+        return '<div>' + new Date(r.time).toLocaleTimeString(LANG === 'zh' ? 'zh-CN' : 'en-US') + ' · ' + r.event + ' · ' + (r.file || '') +
                (r.size ? ' · ' + fmtMB(r.size) + 'MB' : '') +
-               (r.resumedFrom ? ' · 续传' + fmtMB(r.resumedFrom) + 'MB' : '') +
+               (r.resumedFrom ? ' · ' + t('boot.resumed') + ' ' + fmtMB(r.resumedFrom) + 'MB' : '') +
                (r.reason ? ' · ' + r.reason : '') + '</div>';
       }).join('');
     }).catch(function(){});
@@ -163,9 +221,9 @@
   $('btn-retry').addEventListener('click', function () { $('btn-start').click(); });
   $('btn-dir').addEventListener('click', function () { invoke('cmd_open_weights_dir').catch(function(){}); });
   $('btn-del').addEventListener('click', function () {
-    if (!confirm('确定删除已下载的权重文件？删除后可重新完整下载。')) return;
+    if (!confirm(t('boot.confirmDelete'))) return;
     invoke('cmd_delete_weights').then(function (freed) {
-      $('status').textContent = '已删除，释放 ' + fmtMB(freed) + ' MB。可重新下载。';
+      $('status').textContent = t('boot.deleted', { freed: fmtMB(freed) });
       $('fill').style.width = '0%'; $('pct').textContent = '0%'; $('bytes').textContent = '0 / 0 MB';
       $('resume').textContent = '—'; $('resume').classList.remove('pill'); refreshLedger();
     }).catch(function (e) { $('status').textContent = String(e); $('status').classList.add('err'); });
@@ -175,10 +233,10 @@
   listen('download-progress', function (ev) { setProgress(ev.payload); });
   listen('sidecar-status', function (ev) {
     if (ev.payload.state === 'ready') {
-      $('subtitle').textContent = '服务已就绪，正在进入工作台…';
-      $('status').textContent = '界面即将加载。';
+      $('subtitle').textContent = t('boot.serviceReady');
+      $('status').textContent = t('boot.uiLoading');
     } else if (ev.payload.state === 'starting') {
-      $('status').textContent = '正在启动上色服务…';
+      $('status').textContent = t('boot.startingService');
     } else if (ev.payload.message) {
       $('status').textContent = ev.payload.message; $('status').classList.add('err');
     }
@@ -191,14 +249,14 @@
         var pct = st.totalBytes ? Math.round(100 * st.doneBytes / st.totalBytes) : 0;
         $('pct').textContent = pct + '%'; $('fill').style.width = pct + '%';
         if (st.doneBytes > 0) {
-          $('status').textContent = '检测到未完成的下载，可从断点继续。';
+          $('status').textContent = t('boot.partial');
           $('resume').textContent = '+' + fmtMB(st.doneBytes) + 'MB'; $('resume').classList.add('pill');
-        } else { $('status').textContent = '就绪。点击「开始下载」获取模型权重。'; }
+        } else { $('status').textContent = t('boot.status.idle'); }
         refreshLedger();
       }).catch(function(){});
     } else if (ev.payload === 'starting-service') {
-      $('subtitle').textContent = '模型权重已就绪';
-      $('status').textContent = '正在启动上色服务…';
+      $('subtitle').textContent = t('boot.weightsReady');
+      $('status').textContent = t('boot.startingService');
       $('fill').style.width = '100%'; $('pct').textContent = '100%';
       $('btn-start').disabled = true;
     }
