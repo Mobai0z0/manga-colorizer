@@ -1390,8 +1390,8 @@ def colorize(gray: np.ndarray, opt: dict, scheme: str = DEFAULT_SCHEME) -> np.nd
     """灰度 uint8 [H,W] → BGR uint8 [H,W,3]。
 
     引擎=sana: 整页 i2i（短边 512、32 倍数）, 输出自带明度（不做 L 回写/
-    收尾/一致性——Sana 的手涂质感与跨格协调由模型条件端承担）, 方案映射为
-    tag 预设（sana_engine.SANA_SCHEMES）。
+    收尾/一致性——Sana 的手涂质感与跨格协调由模型条件端承担）, 色彩方案固定
+    standard（其余方案的闭集标签会整页染色, 见 colorize_sana）。
     引擎=v6（默认）: 长边 >1024 自动分块, opt=收尾方案。
     """
     if _engine() == 'sana':
@@ -1407,16 +1407,30 @@ def colorize(gray: np.ndarray, opt: dict, scheme: str = DEFAULT_SCHEME) -> np.nd
     return _finish_bgr(lab_l, ab, _with_rescue(lab_l, ab, opt))
 
 
+def _sana_scheme_tags(scheme: str) -> dict:
+    """sana 引擎色彩方案 → 闭集标签。
+
+    2026-11-22 用户五档同页实测裁决: 仅 standard（空标签, 模型原生先验）达标
+    ——其余方案的闭集 palette 全局词会把整页连皮肤纸白一起染色（淡彩全页粉/
+    昭和全页黄）。UI 已隐藏四档, 请求侧一律回退 standard;
+    SANA_SCHEMES 词表保留供后续重调与 API 实验。
+    """
+    from sana_engine import SANA_SCHEMES
+    if scheme != DEFAULT_SCHEME:
+        logging.info('sana 引擎色彩方案固定 standard, 忽略请求的 %s', scheme)
+    return dict(SANA_SCHEMES[DEFAULT_SCHEME])
+
+
 def colorize_sana(gray: np.ndarray, scheme: str = DEFAULT_SCHEME) -> np.ndarray:
     """Sana 整页上色: 灰度 → 32 倍数页 → 20 步 CFG 去噪 → 放大回原尺寸 BGR。
 
     取消/进度: 每步经后端日志环报心跳（auto 端点无流式进度, 与 v6 同现状）;
     cache=0.15 首块步缓存（官方标称 ≈1.6x, 环境变量 COLORIZER_SANA_CACHE 可调）。
     """
-    from sana_engine import SANA_SCHEMES, prepare_page
+    from sana_engine import prepare_page
     c = _sana_colorizer()
     bw = prepare_page(gray)
-    tags = dict(SANA_SCHEMES.get(scheme) or SANA_SCHEMES[DEFAULT_SCHEME])
+    tags = _sana_scheme_tags(scheme)
     th, tw = bw.shape[2], bw.shape[3]
     try:
         cache = float(os.environ.get('COLORIZER_SANA_CACHE', '0.15'))

@@ -475,6 +475,13 @@ def test_sana_scheme_tags():
             assert value is None or value in TAGS[field],                 f'{scheme}.{field}={value} 不在闭集词表内'
 
 
+def test_sana_scheme_standard_only():
+    """Sana 方案回退（2026-11-22 用户裁决）: 任何方案都产出 standard 空标签。"""
+    from sana_engine import SANA_SCHEMES
+    for s in service.FINISH_SCHEMES:
+        assert service._sana_scheme_tags(s) == SANA_SCHEMES['standard'], f'{s} 未回退 standard 标签'
+
+
 def test_wd14_tagger_input():
     """WD14 tagger 预处理纯函数: 白底补方 448² + BGR float32 (0-255)。"""
     rgb = np.zeros((100, 200, 3), np.uint8)
@@ -501,6 +508,7 @@ if __name__ == '__main__':
              test_reference_transfer,
              test_blend_reference_rescue,
              test_sana_scheme_tags,
+             test_sana_scheme_standard_only,
              test_wd14_tagger_input]
     for t in tests:
         t()

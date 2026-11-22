@@ -47,6 +47,8 @@ SHORT_SIDE, SNAP = 512, 32
 # 色彩方案 → tag 预设（与 FINISH_SCHEMES 同名的观感对应, 仅 sana 引擎消费;
 # None = "<null>" 让模型自选）。取证: null 档偏 sepia 低调, vivid 标签在
 # 用户样张上得到明亮教室氛围且无伪影（2026-11-22 tmp/sana_p0008*.png）。
+# 2026-11-22 五档同页真机对比: 仅 standard 达标（其余四档 palette 全局词整页
+# 染色）——service.colorize_sana 一律回退 standard, 本表保留供后续重调/实验。
 SANA_SCHEMES: dict[str, dict[str, str | None]] = {
     'standard': {},
     'vivid-cel': {'saturation': 'vivid', 'palette': 'bright primary colors',
