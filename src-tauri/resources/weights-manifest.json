@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "version": "v6",
-  "updatedAt": "2026-09-18",
+  "version": "v6.1",
+  "updatedAt": "2026-11-21",
   "baseDir": "manga-light-colorizer",
   "source": {
     "license": "CC-BY-NC-SA-4.0",
@@ -22,6 +22,13 @@
       "sha256": "97c4cad5814e1fb12c13d1b23d3969dd9e2fce92d818539fe7db575140333a34",
       "pathTemplate": "https://huggingface.co/sharky172/manga-light-colorizer/resolve/main/models/v6_sam_encoder.onnx",
       "mirrorPathTemplate": "https://hf-mirror.com/sharky172/manga-light-colorizer/resolve/main/models/v6_sam_encoder.onnx"
+    },
+    {
+      "name": "wd14_tagger_moat.onnx",
+      "size": 326197413,
+      "sha256": "fee5f892879e3552885ecd18e04a3cb79a4537c10ba9e5b1a93116af0f8de423",
+      "pathTemplate": "https://huggingface.co/deepghs/wd14_tagger_with_embeddings/resolve/main/SmilingWolf/wd-v1-4-moat-tagger-v2/model.onnx",
+      "mirrorPathTemplate": "https://hf-mirror.com/deepghs/wd14_tagger_with_embeddings/resolve/main/SmilingWolf/wd-v1-4-moat-tagger-v2/model.onnx"
     }
   ]
 }

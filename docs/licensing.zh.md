@@ -12,6 +12,7 @@
 | 组件 | 许可 | 说明 |
 |---|---|---|
 | 模型权重 | [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) | 非商业可选后端；不随源码分发，使用者自行下载 |
+| WD14 tagger 权重（语义自举可选组件, wd14_tagger_moat.onnx） | [Apache-2.0](https://huggingface.co/deepghs/wd14_tagger_with_embeddings)（[SmilingWolf/wd-v1-4-moat-tagger-v2](https://huggingface.co/SmilingWolf/wd-v1-4-moat-tagger-v2) 的 deepghs ONNX 转换） | 不随源码分发，与主权重同样经 weights-manifest.json 下载；缺失时自动回退 zeros 路径 |
 | 上游推理代码 | [GPL-3.0](https://www.gnu.org/licenses/gpl-3.0.html) | 保留来源说明；本地 service.py 为独立实现，与上游代码的相似性待审计 |
 | 本仓库原创代码 | Apache-2.0 | 见 LICENSE / NOTICE；调用 NC 权重不改变权重自身许可 |
 | Material Web | Apache-2.0（见安装包 LICENSE） | 保留第三方许可证；前端构建不改变模型权重许可 |

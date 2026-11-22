@@ -97,6 +97,83 @@ significantly slower (MNN built once per ABI). After cloning, run
 
 ## Known limitations
 
+- **Engine migration: Sana-manga-coloring (round 4, 2026-11-22)**: the v6 GAN
+  quality ceiling (thin colors / yellow-green wash) is reached — the WD14
+  semantic bootstrap lost a real-device 8-page regression (see next item), so
+  model migration is the mainline. New engine `COLORIZER_ENGINE=sana` wires
+  [Sana-manga-coloring ONNX int8](https://huggingface.co/masterofaudio2077/sana-manga-coloring-onnx-int8)
+  (**Apache-2.0**, SANA 600M img2img manga-coloring fine-tune, pure
+  onnxruntime without PyTorch): whole-page img2img (short side 512, both sides
+  multiples of 32, no tiling), closed-vocabulary 5-field tag conditioning
+  (mood/time_of_day/lighting/saturation/palette; scheme table
+  `sana_engine.SANA_SCHEMES`, vocabulary validated in quality_check), output
+  carries its own hand-colored luminance (no L write-back / finish /
+  consistency). Performance: CPU int8 20 steps ≈ 55-75s/page (4 threads;
+  cache=0.15 step cache ≈1.6x), DirectML fp16 conversion is the future
+  perf mainline. Weights ~2.7GB (encode/decode/head/blocks/out) live in
+  `models/manga-light-colorizer/sana-manga-coloring-int8/`; downloader
+  manifest wiring and a settings engine selector are next; hints/reference
+  still run on v6. Acceptance: start with `COLORIZER_ENGINE=sana` and compare
+  /colorize_auto output against v6 zeros — natural skin / dark hair retained /
+  clean backgrounds / no yellow-green wash; known variance: palette shifts
+  with the noise seed (fixed seed = reproducible), a "re-color" button is
+  future UX.
+- **WD14 semantic bootstrap (default off)**: the
+  generator's `wd14_embedding` input is a FiLM semantic-chroma pathway; the official
+  inference script always feeds zeros, leaving the model in a degenerate under-saturated
+  state (chroma C≈5.8). On real-device 8-page regression (2026-11-22) the full-strength
+  bootstrap produced yellow-green wash + jaundiced faces on typical manga pages and was
+  judged worse than the zeros path by the user (α damping and white-balanced tagger input
+  both failed; LayerNorm collapses the damping scaling). The machinery stays for
+  experiments (`COLORIZER_WD14=1` opt-in). The sidecar now colorizes via "single-step bootstrap":
+  gen@512 zeros → MOAT tagger reads the *descreened* raw output to get a 1024-dim
+  embedding → gen@512 with the embedding. Key findings (`tmp/wd14_*.py`): (1) the FiLM
+  pathway only works at the training resolution 512 (at 1024 the embedding barely changes
+  the output; embedding directions agree across resolutions, cosine 0.94), so the
+  generator always runs at 512 and the chroma field is upsampled (cel-style flat chroma
+  is low-frequency; structure comes from writing the original L back); (2) two-step
+  iteration oscillates and drifts — one step converges; (3) the tagger must read the
+  first-pass *colored* output — feeding the B&W page pulls toward monochrome semantics
+  (chroma drops); (4) **the tagger input must be descreened (3×3 median ×2)** — halftone
+  noise makes the tagger read the character as bandages/black_background, steering the
+  user sample's face green (C=27, hue 81°); descreened it reads smile/open_mouth/1girl
+  and the face lands at a natural 42° mean hue (green coverage 77%→46%).
+  Effect: finished chroma in non-paper areas 7.9→28.8 (gag page) / 8.0→15.8 (4-koma
+  page), cleaner paper white. The tagger weights (wd14_tagger_moat.onnx, 326MB,
+  Apache-2.0) download via weights-manifest.json alongside the main weights; **when
+  missing or corrupt, the service falls back to the legacy zeros path automatically**
+  (see the `wd14` tri-state in `/health`). Env: `COLORIZER_WD14=0` disables,
+  `COLORIZER_WD14_THREADS` (default 4). **Mobile is now enabled (round 3,
+  2026-11-21)**: the tagger weights are tier-gated — only the full-spec tier
+  (≥6GB, `ResourceTier.hostTagger`) downloads them after the required weights
+  (optional component; the download never blocks or fails the main flow —
+  failures just log a warning). The backend loads by file presence
+  (missing/corrupt → zeros path); a load failure (low-memory OOM) also
+  degrades gracefully. The pipeline (`pipeline.dart`) follows the desktop
+  recipe (gen@512 twice + descreened tagger input + per-channel bilinear
+  feature resize to 32²/16²); a mid-tile bootstrap failure degrades that tile
+  to zeros@1024. The MNN backend has no tagger (zeros path). Device acceptance
+  checklist: on the full-spec tier the download page shows the tagger entry
+  and fully-automatic output becomes visibly more saturated (compare against a
+  zeros-path screenshot); mid/low tiers show no tagger download and behave
+  exactly like the old build; killing the `:inference` process mid-run and
+  restarting restores bootstrap. Acceptance: colorize one image each under
+  auto(DML) and CPU — colors should be visibly more saturated (DML and CPU have
+  inherent numeric differences; each is acceptable on its own). Fallback:
+  rename the tagger file, restart, `/health` shows wd14.active=false and all
+  three modes still work.
+- **Reference mode upgrade (2026-11-21, both ends synced)**: (1) the auto pass's semantic
+  guidance now uses tagger(reference-image) embedding (`_emb_override`; the output
+  palette clearly leans toward the reference semantics, `tmp/ref_emb.py`); falls back to
+  self-bootstrap when the tagger is unavailable. (2) The tone transfer now runs on the
+  auto output instead of the grayscale page — the old path applied ref_std/src_std to
+  grayscale scan noise (std 1-3), amplifying chroma 5-8× into per-pixel noise that the
+  5:5 blend then used to wash out the semantic colors. (3) The blend finish now applies
+  the white-foreground rescue (both ends: desktop `_blend_reference_auto` / Dart
+  `blendReferenceAuto` + a new rescue golden case) — screentone clothing areas are
+  enclosed near-white in the source (L=255), and without rescue the L=100 gamut mapping
+  collapses chroma to pure white. Mobile `referenceColorizeInIsolate` gains width/height
+  params (the rescue marks need connected components).
 - Server-side hint points use local diffusion in a 64px window (the lightweight version); for a
   globally exact solve, use the Dart CLI path.
 - Reference-image transfer is a global statistic (Reinhard/histogram); there is no per-region
@@ -149,5 +226,6 @@ significantly slower (MNN built once per ABI). After cloning, run
 ## Acknowledgments and references
 
 - [sharky172/manga-light-colorizer](https://huggingface.co/sharky172/manga-light-colorizer) — ONNX weights (CC BY-NC-SA 4.0)
+- [SmilingWolf/wd-v1-4-moat-tagger-v2](https://huggingface.co/SmilingWolf/wd-v1-4-moat-tagger-v2) and [deepghs/wd14_tagger_with_embeddings](https://huggingface.co/deepghs/wd14_tagger_with_embeddings) — tagger weights for the WD14 semantic bootstrap (Apache-2.0)
 - [BinitDOX/Manga-Colorizer](https://github.com/BinitDOX/Manga-Colorizer), [qweasdd/manga-colorization-v2](https://github.com/qweasdd/manga-colorization-v2), [xiaogdgenuine/Manga-Colorization-FJ](https://github.com/xiaogdgenuine/Manga-Colorization-FJ), [lllyasviel/Style2Paints](https://github.com/lllyasviel/Style2Paints) — research references (no code/weights copied)
 - Levin-Lischinski-Weiss 2004 chroma diffusion — algorithmic basis of the Dart engine

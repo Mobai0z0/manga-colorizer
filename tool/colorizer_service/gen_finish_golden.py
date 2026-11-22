@@ -141,6 +141,12 @@ def gen_reference_blend() -> None:
     src[4:24, 4:28, 0] = grad.reshape(20, 24)
     src[4:24, 4:28, 1] = grad.reshape(20, 24)
     src[4:24, 4:28, 2] = grad.reshape(20, 24)
+    # 封闭近白用例（2026-11-21 融合白救援两端同步）: 白底上墨线(ring≈40)围出
+    # 一块纯白(网点衣服/画格内背景的抽象), auto 在该块内有真实色度——不带救援
+    # 的融合会在 L=100 处被色域映射坍缩成纯白, 带救援则压 L 保色度。
+    src_ring = src.copy()
+    src_ring[38:58, 38:58] = 40
+    src_ring[40:56, 40:56] = 255
     ramp = np.arange(256, dtype=np.uint8).reshape(16, 16)
     ref = np.stack([ramp,
                     np.roll(ramp, 85),
@@ -160,6 +166,20 @@ def gen_reference_blend() -> None:
                 'auto': auto[..., ::-1].reshape(-1, 3).tolist(),
                 'out': out[..., ::-1].reshape(-1, 3).tolist(),
             }
+        # 封闭近白救援用例: auto 在封闭白块内给青色色度（模拟模型对网点衣服
+        # 的配色）; styled 只铺底色。救援应压 L 保色度, 融合后白块可见着色。
+        styled_r = service._reference_transfer(src_ring, ref, method=method, strength=1.0)
+        auto_r = src_ring.copy()
+        auto_r[40:56, 40:56, 0] = 255
+        auto_r[40:56, 40:56, 1] = 220
+        auto_r[40:56, 40:56, 2] = 120  # BGR: 青蓝色度
+        out_r = service._blend_reference_auto(auto_r, styled_r, src_ring)
+        data[f'{method}_rescue'] = {
+            'src': src_ring[..., ::-1].reshape(-1, 3).tolist(),
+            'ref': ref[..., ::-1].reshape(-1, 3).tolist(),
+            'auto': auto_r[..., ::-1].reshape(-1, 3).tolist(),
+            'out': out_r[..., ::-1].reshape(-1, 3).tolist(),
+        }
     out_path = GOLDENS / 'reference_blend_golden.json'
     out_path.write_text(json.dumps(data), encoding='utf-8')
     print(f'written {out_path} ({len(data)} cases)')

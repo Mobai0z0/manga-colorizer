@@ -15,6 +15,17 @@
 长图说明: 长边超过 TILE=1024 自动分块推理 (OVERLAP=256, 线性羽化融合),
 避免整页下采样到 1024 方形造成的精度损失。
 
+WD14 语义自举（2026-11-21 起, tagger 权重就绪时默认开启, COLORIZER_WD14=0 关闭）:
+生成器的 wd14_embedding 是 FiLM 语义主色通路, 训练时与彩色图成对出现, 推理端
+官方脚本恒置零 → 模型欠饱和退化态（C≈5.8, 依赖收尾增益硬补偿）。自举两遍
+gen@512（FiLM 仅在训练分辨率有效）: zeros 出图 → tagger(MOAT, 1024 维 hidden
+state) 吃原始输出去网点后的版本得嵌入 → 带嵌入出图。单步即收敛（两步会振荡
+漂移）。tagger 输入必须去网点（3×3 中值×2）——网点高频会污染嵌入, 用户样张
+实测脸部被引导成绿色（C=27, hue 81°）, 去网点后圆均色相 42° 自然肤色。tagger
+权重缺失自动回退 zeros 路径, MNN 后端暂不启用。
+参考图模式升级: auto 的语义引导改用 tagger(参考图) 嵌入（输出色板向参考图
+语义靠拢, 实验 tmp/ref_emb.py）, tagger 不可用回退自举。
+
 跨格一致性 v1（收尾前的色度场后处理, 两端同数学）: ①同材质色相统一——
 色调签名（原稿 L 直方图）相同而色相冲突（圆距 ≥30°）的色块统一到质量
 更大的色相, 修复「同一人物/物件跨格不同色」; ②中性区色度保底——L∈[64,234)
@@ -69,6 +80,10 @@ ROOT = Path(__file__).resolve().parents[2]
 MODEL_DIR = Path(os.environ.get('COLORIZER_MODEL_DIR', str(ROOT / 'models' / 'manga-light-colorizer')))
 GENERATOR = MODEL_DIR / 'v6_generator.onnx'
 SAM_ENCODER = MODEL_DIR / 'v6_sam_encoder.onnx'
+# WD14 tagger（MOAT, 1024 维 hidden state 嵌入, SmilingWolf wd-v1-4-moat-tagger-v2
+# 的 deepghs ONNX 转换, Apache-2.0）：语义自举用。权重不随仓库分发, 与主权重同样
+# 由桌面端下载器按 weights-manifest.json 拉取；文件缺失时自动回退 zeros 路径。
+TAGGER = MODEL_DIR / 'wd14_tagger_moat.onnx'
 # MNN 权重（仅 BACKEND=mnn 使用；由 tool/mnn/convert_models.py 从修复图转换）
 GENERATOR_MNN = MODEL_DIR / 'v6_generator.fp32.mnn'
 SAM_ENCODER_MNN = MODEL_DIR / 'v6_sam_encoder.fp32.mnn'
@@ -132,6 +147,66 @@ if BACKEND not in ('onnx', 'mnn'):
     raise ValueError('COLORIZER_BACKEND must be onnx or mnn')
 MNN_THREADS = max(1, int(os.environ.get('COLORIZER_MNN_THREADS', '4')))
 _mnn_failed = False  # MNN 加载失败后置位：本进程内固定走 ONNX，不再反复重试
+# ---- 推理引擎（2026-11-22 模型迁移主线）----
+# v6（默认, GAN）| sana（Sana-manga-coloring ONNX int8, Apache-2.0 diffusion）。
+# sana 取证（用户画廊 8 页 0001-0008, tmp/sana_p000*.png）: 自然肤色+深发保留+
+# 干净背景+tag 可控氛围, 完胜 v6 的两条路径（zeros 灰淡 / 自举黄绿泛染——已回退
+# 默认关闭）。sana 整页 i2i 无分块, CPU int8 20 步 ≈ 70s/页（cache=0.15 ≈45s）,
+# DirectML fp16 转换为后续性能主线。hints/reference 仍走 v6（提示点引擎独立,
+# 参考迁移是 Lab 统计, 与基底无关）。
+ENGINE = os.environ.get('COLORIZER_ENGINE', 'v6').lower()
+if ENGINE not in ('v6', 'sana'):
+    raise ValueError('COLORIZER_ENGINE must be v6 or sana')
+SANA_DIR = Path(os.environ.get('COLORIZER_SANA_DIR',
+                               str(MODEL_DIR / 'sana-manga-coloring-int8')))
+_sana_state = {'c': None}
+
+
+def _sana_colorizer():
+    """Sana 五会话单例（权重 ~2.7GB 常驻, 随空闲卸载统一释放）。"""
+    with _session_lock:
+        if _sana_state['c'] is None:
+            from sana_engine import SanaColorizer
+            if not all((SANA_DIR / f).is_file() for f in
+                       ('encode.onnx', 'decode.onnx', 'head.onnx',
+                        'blocks.onnx', 'out.onnx')):
+                raise RuntimeError(
+                    'Sana 权重未就绪：需要 '
+                    f'{SANA_DIR}/{{encode,decode,head,blocks,out}}.onnx'
+                    '（含 .onnx.data）')
+            threads = max(1, int(os.environ.get('COLORIZER_SANA_THREADS', '4')))
+            _sana_state['c'] = SanaColorizer(SANA_DIR, threads=threads)
+            logging.info('Sana 引擎已加载（threads=%d）%s', threads,
+                         _mem_suffix())
+        return _sana_state['c']
+
+
+def _sana_release():
+    """释放 Sana 会话。调用方必须已持有 _session_lock（与 v6 卸载同临界区,
+    避免不可重入锁死锁）。"""
+    _sana_state.update(c=None)
+# ---- WD14 语义自举（2026-11-21 取证, tmp/wd14_*.py）----
+# 生成器的 wd14_embedding (1,1024) 是 FiLM 语义主色通路（Gemm→LayerNorm→GELU 投影,
+# 经 film_heads.featN.semantic_proj 调制解码特征）。LayerNorm 使幅值无关、只有方向
+# 有效; 训练时嵌入与彩色图成对出现, 官方独立脚本恒置零（"WD14: DISABLED"）→ 模型
+# 处于欠饱和退化态（实测色度 C≈5.8, 是「偏灰」需要 1.4-1.8 倍收尾增益硬补偿的根源）。
+# 语义自举: 第一遍 gen@512 用 zeros 出图 → tagger 吃该原始输出得嵌入 → 第二遍
+# gen@512 用真嵌入出图。两遍 bootstrap 会振荡漂移（反馈放大成迷幻噪声）, 单步即收敛。
+# **FiLM 通路仅在训练分辨率 512 有效**: @512 自举色度 ×3.6（C 7.8→28.3）, @1024 嵌入
+# 几乎不影响输出（C 反降, 两分辨率嵌入方向余弦 0.94）——模型卡「推理分辨率偏离 512
+# 越远颜色越不忠实」的机制即此。故生成器固定跑 512, 色度场上采样（赛璐璐平涂色度
+# 本就低频, 结构细节由原稿 L 回写承担）。MOAT tagger 1024 维 hidden state 即输出[1]
+# （deepghs/wd14_tagger_with_embeddings）; 预处理与 SmilingWolf 官方 demo 一致:
+# 白底补方→448² INTER_AREA→BGR 0-255 float32（无归一化, 模型内置）。
+# 默认关闭（2026-11-22 用户真机 8 页回归）：全强度自举在典型漫画页（大面积灰
+# 网点背景+多人物）把 pass-1 的暖偏自强化成整页黄绿泛染+脸部黄色过曝，比 zeros
+# 旧路径差（用户画廊 0001-0008 取证，tmp/fix_matrix.py）；α 嵌入阻尼与白平衡
+# tagger 输入均无效（LN 归一化塌缩缩放差）。小样张（单人物干净背景）的收益是
+# 幸运收敛，不具代表性。保留机制供实验（显式 COLORIZER_WD14=1 开启），模型
+# 迁移（Sana-manga-coloring ONNX, Apache-2.0）为主线。
+WD14_ENABLED = os.environ.get('COLORIZER_WD14', '0').lower() not in ('0', 'false', 'no')
+WD14_INFER_SIZE = 512
+WD14_THREADS = max(1, int(os.environ.get('COLORIZER_WD14_THREADS', '4')))
 
 
 # ---- 色彩方案（与移动端 packages/manga_colorizer_core/lib/src/finish.dart 同表） ----
@@ -184,6 +259,39 @@ def _resolve_finish(scheme: str, *, flat: bool = False) -> dict:
         opt['gain'] = _ENV_GAIN
     return opt
 _state = {'gen': None, 'sam': None, 'providers': None}
+# WD14 tagger 会话单例（恒 CPU, 与主会话同锁保护, 随 _release_models/空闲卸载释放）。
+# 独立于 gen/sam 的 GPU/CPU 双态: tagger 没有独立 GPU 会话, 0.7s(4 线程) 没有必要。
+_tagger_state = {'sess': None, 'warned': False}
+# 参考图模式的外部嵌入（tagger(参考图), 仅 _process_reference 在推理锁内设置）:
+# 设置后 _run_pair 跳过自举, 直接用该嵌入走 gen@512 单遍——语义色相由参考图引导。
+_emb_override = {'v': None}
+
+
+def _get_tagger():
+    """WD14 tagger CPU 会话; 权重缺失/关闭/MNN 后端时返回 None（回退 zeros 路径）。"""
+    if not WD14_ENABLED or BACKEND == 'mnn':
+        return None
+    with _session_lock:
+        if _tagger_state['sess'] is None:
+            if not TAGGER.is_file():
+                if not _tagger_state['warned']:
+                    _tagger_state['warned'] = True
+                    logging.info('WD14 tagger 权重缺失（%s），语义自举关闭，回退 zeros 路径',
+                                 TAGGER.name)
+                return None
+            so = ort.SessionOptions()
+            so.intra_op_num_threads = WD14_THREADS
+            try:
+                _tagger_state['sess'] = ort.InferenceSession(
+                    str(TAGGER), so, providers=['CPUExecutionProvider'])
+                logging.info('WD14 tagger 已加载（语义自举开启）%s', _mem_suffix())
+            except Exception as exc:
+                # 权重损坏（下载中断等）不致命: 本进程回退 zeros 路径, 不再重试
+                _tagger_state['warned'] = True
+                logging.warning('WD14 tagger 加载失败（权重损坏？），回退 zeros 路径: %s',
+                                str(exc).replace('\n', ' ')[:160])
+                return None
+        return _tagger_state['sess']
 _runtime_device = {'value': None}
 _load_state = {'status': 'idle', 'error': None}  # idle | loading | ready | failed
 # uvicorn Server 实例由启动入口注入；/shutdown 据此请求优雅退出
@@ -537,11 +645,12 @@ _last_use = {'ts': time.monotonic()}
 
 def _warmup():
     """加载会话并跑一次空推理：DirectML 的内核编译与显存预留发生在首次推理时，
-    不预热的话用户提交的第一张图要等 10-20s（还会挤爆显存上限触发瞬时 OOM）。"""
+    不预热的话用户提交的第一张图要等 10-20s（还会挤爆显存上限触发瞬时 OOM）。
+    语义自举路径连同 tagger 会话一并预热。"""
     gen, sam, _ = _sessions()
     zeros = np.zeros((INFER_SIZE, INFER_SIZE), dtype=np.uint8)
     try:
-        _run_pair(gen, sam, zeros)
+        _run_pair(gen, sam, zeros, _get_tagger())
     except Exception:
         logging.warning('预热推理失败，将依赖首次上色时的自动重试: %s', traceback.format_exc(limit=1))
 
@@ -591,6 +700,8 @@ def _idle_unload_worker():
                 if time.monotonic() - _last_use['ts'] < IDLE_UNLOAD_SECONDS:
                     continue
                 _state.update(gen=None, sam=None, providers=None)
+                _tagger_state.update(sess=None)
+                _sana_release()
                 _load_state['status'] = 'idle'
             logging.info('空闲 %.0fs，已释放模型（内存/显存归还系统，下次上色自动唤醒）%s',
                          idle_for, _mem_suffix())
@@ -603,6 +714,8 @@ def _release_models():
     with _session_lock:
         _state.update(gen=None, sam=None, providers=None)
         _cpu_state.update(gen=None, sam=None)
+        _tagger_state.update(sess=None)
+        _sana_release()
     try:
         import gc
         gc.collect()
@@ -1106,22 +1219,77 @@ def _tile_bounds(total: int, tile: int, overlap: int) -> list[tuple[int, int]]:
     return bounds
 
 
-def _run_pair(gen, sam, scaled):
-    """一次 SAM+generator 推理（输入为 1024² 灰度），返回模型原始 RGB 浮点输出。"""
+def _feat_resize(feat: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+    """SAM 特征逐通道缩放（cv2 5.0 不收 (H,W,C) float32；特征平滑开销可忽略）。"""
+    c = feat[0]
+    return np.stack([cv2.resize(c[i], size, interpolation=cv2.INTER_LINEAR)
+                     for i in range(c.shape[0])])[None].astype(np.float32)
+
+
+def _tagger_input(rgb_u8: np.ndarray) -> np.ndarray:
+    """WD14 tagger 输入: RGB uint8 → 白底补方 448² BGR float32 (0-255)。
+
+    与 SmilingWolf 官方 wd-tagger demo 预处理逐字一致（模型内置归一化, 输入
+    不再缩放）; 其前先 3×3 中值×2 去网点——tagger 是动漫彩图模型, 网点高频
+    会污染嵌入（用户样张实测: 原始输入被读成 bandages/black_background,
+    脸部被 FiLM 引导成绿色 C=27 hue81°; 去网点后读出 smile/open_mouth/1girl,
+    脸部圆均色相 42° 自然肤色, 绿域 77%→46%）。纯函数, quality_check 覆盖。
+    """
+    descreened = cv2.medianBlur(rgb_u8, 3)
+    descreened = cv2.medianBlur(descreened, 3)
+    h, w = descreened.shape[:2]
+    m = max(h, w)
+    canvas = np.full((m, m, 3), 255, np.uint8)
+    canvas[:h, :w] = cv2.cvtColor(descreened, cv2.COLOR_RGB2BGR)
+    return cv2.resize(canvas, (448, 448), interpolation=cv2.INTER_AREA).astype(np.float32)
+
+
+def _run_pair(gen, sam, scaled, tagger=None):
+    """一次 SAM+generator 推理，返回模型原始 RGB 浮点输出。
+
+    _emb_override 就绪时（参考图模式）直接用该嵌入走 gen@512 单遍（无需
+    tagger 在场）。否则 tagger 就绪时走 512 语义自举: SAM 特征（固定 1024²
+    输入）缩放到 512 网格 → gen@512 zeros 出图 → tagger 吃该原始输出（RGB,
+    与训练时「嵌入和彩色图成对」的联合分布对齐）→ gen@512 带嵌入出图。
+    都不可用时保持旧行为（gen@推理分辨率 zeros, MNN 后端同此路径）。
+    """
     s_in = cv2.cvtColor(scaled, cv2.COLOR_GRAY2BGR)
     s_x = (s_in.astype(np.float32) / 127.5 - 1.0).transpose(2, 0, 1)[None]
     sam0, sam1 = sam.run(None, {sam.get_inputs()[0].name: s_x})
-    feed = {
-        'L_bw': (scaled.astype(np.float32) / 127.5 - 1.0)[None, None],
-        'sam_level0': sam0,
-        'sam_level1': sam1,
-        'wd14_embedding': np.zeros((1, 1024), dtype=np.float32),
-    }
-    return gen.run(None, feed)[0][0].transpose(1, 2, 0)
+    if tagger is None and _emb_override['v'] is None:
+        feed = {
+            'L_bw': (scaled.astype(np.float32) / 127.5 - 1.0)[None, None],
+            'sam_level0': sam0,
+            'sam_level1': sam1,
+            'wd14_embedding': np.zeros((1, 1024), dtype=np.float32),
+        }
+        return gen.run(None, feed)[0][0].transpose(1, 2, 0)
+    r = WD14_INFER_SIZE  # 语义路径（自举或参考图嵌入）一律训练分辨率
+    small = cv2.resize(scaled, (r, r), interpolation=cv2.INTER_AREA)
+    f0 = _feat_resize(sam0, (r // 16, r // 16))
+    f1 = _feat_resize(sam1, (r // 32, r // 32))
+
+    def genrun(emb):
+        feed = {
+            'L_bw': (small.astype(np.float32) / 127.5 - 1.0)[None, None],
+            'sam_level0': f0,
+            'sam_level1': f1,
+            'wd14_embedding': (np.zeros((1, 1024), dtype=np.float32) if emb is None
+                               else emb[None]),
+        }
+        return gen.run(None, feed)[0][0].transpose(1, 2, 0)
+
+    if _emb_override['v'] is not None:
+        return genrun(_emb_override['v'])
+    rgb1 = np.clip((genrun(None) + 1.0) * 127.5, 0, 255).astype(np.uint8)
+    outs = tagger.run(None, {tagger.get_inputs()[0].name: _tagger_input(rgb1)[None]})
+    emb = np.asarray(outs[1][0], dtype=np.float32)
+    return genrun(emb)
 
 
 def colorize_single(gray) -> np.ndarray:
-    """单块推理: 缩 1024 方形 → SAM+generator → 放大回原尺寸 (RGB)。
+    """单块推理: 缩 1024 方形 → SAM+generator（语义自举/参考图嵌入时 gen@512）
+    → 放大回原尺寸 (RGB)。
 
     GPU 推理失败（如 DirectML 显存瞬时不足 OOM）时该块自动回退 CPU 重试，
     长页分块不再因单块 GPU 异常整体 500。
@@ -1129,15 +1297,16 @@ def colorize_single(gray) -> np.ndarray:
     h, w = gray.shape
     scaled = cv2.resize(gray, (INFER_SIZE, INFER_SIZE), interpolation=cv2.INTER_AREA)
     gen, sam, _ = _sessions()
+    tagger = _get_tagger()
     try:
-        rgb = _run_pair(gen, sam, scaled)
+        rgb = _run_pair(gen, sam, scaled, tagger)
     except Exception as exc:
         if DEVICE == 'cpu' or BACKEND == 'mnn':
             raise
         # DirectML 首次推理可能因显存瞬时不足失败，重试通常即成功
         logging.warning('GPU 推理失败，重试一次: %s', str(exc).replace('\n', ' ')[:160])
         try:
-            rgb = _run_pair(gen, sam, scaled)
+            rgb = _run_pair(gen, sam, scaled, tagger)
         except Exception as exc2:
             logging.warning('GPU 重试仍失败，本块回退 CPU: %s', str(exc2).replace('\n', ' ')[:160])
             # 先释放 GPU 会话再建 CPU 会话，避免两套模型同时驻留（低内存机器上
@@ -1145,7 +1314,7 @@ def colorize_single(gray) -> np.ndarray:
             with _session_lock:
                 _state.update(gen=None, sam=None, providers=None)
             c_gen, c_sam = _cpu_sessions()
-            rgb = _run_pair(c_gen, c_sam, scaled)
+            rgb = _run_pair(c_gen, c_sam, scaled, tagger)
     rgb = np.clip((rgb + 1.0) * 127.5, 0, 255).astype(np.uint8)
     return cv2.resize(rgb, (w, h), interpolation=cv2.INTER_CUBIC)
 
@@ -1180,8 +1349,16 @@ def colorize_tiled(gray: np.ndarray, opt: dict, tile: int = 1024, overlap: int =
     return _finish_bgr(lab_l, ab, _with_rescue(lab_l, ab, opt))
 
 
-def colorize(gray: np.ndarray, opt: dict) -> np.ndarray:
-    """灰度 uint8 [H,W] → BGR uint8 [H,W,3]; 长边 >1024 自动分块。opt=收尾方案。"""
+def colorize(gray: np.ndarray, opt: dict, scheme: str = DEFAULT_SCHEME) -> np.ndarray:
+    """灰度 uint8 [H,W] → BGR uint8 [H,W,3]。
+
+    ENGINE=sana: 整页 i2i（短边 512、32 倍数）, 输出自带明度（不做 L 回写/
+    收尾/一致性——Sana 的手涂质感与跨格协调由模型条件端承担）, 方案映射为
+    tag 预设（sana_engine.SANA_SCHEMES）。
+    ENGINE=v6（默认）: 长边 >1024 自动分块, opt=收尾方案。
+    """
+    if ENGINE == 'sana':
+        return colorize_sana(gray, scheme)
     if max(gray.shape) > INFER_SIZE:
         return colorize_tiled(gray, opt)
     rgb = colorize_single(gray)
@@ -1191,6 +1368,41 @@ def colorize(gray: np.ndarray, opt: dict) -> np.ndarray:
     ab = lab_c[..., 1:].astype(np.float32)
     ab = _consistency_pass(lab_l, ab)
     return _finish_bgr(lab_l, ab, _with_rescue(lab_l, ab, opt))
+
+
+def colorize_sana(gray: np.ndarray, scheme: str = DEFAULT_SCHEME) -> np.ndarray:
+    """Sana 整页上色: 灰度 → 32 倍数页 → 20 步 CFG 去噪 → 放大回原尺寸 BGR。
+
+    取消/进度: 每步经后端日志环报心跳（auto 端点无流式进度, 与 v6 同现状）;
+    cache=0.15 首块步缓存（官方标称 ≈1.6x, 环境变量 COLORIZER_SANA_CACHE 可调）。
+    """
+    from sana_engine import SANA_SCHEMES, prepare_page
+    c = _sana_colorizer()
+    bw = prepare_page(gray)
+    tags = dict(SANA_SCHEMES.get(scheme) or SANA_SCHEMES[DEFAULT_SCHEME])
+    th, tw = bw.shape[2], bw.shape[3]
+    try:
+        cache = float(os.environ.get('COLORIZER_SANA_CACHE', '0.15'))
+        step = {'n': 0}
+
+        def on_step(done: int, total: int) -> None:
+            step['n'] = done
+            if done == 1 or done % 5 == 0 or done == total:
+                logging.info('sana 步进 %d/%d %s', done, total, _mem_suffix())
+
+        rgb = c(bw, tags, cache=max(0.0, min(0.5, cache)),
+                on_step=on_step, ink=1.0)
+        if rgb is None:
+            raise RuntimeError('Sana 推理被取消')
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        logging.warning('Sana 推理失败: %s', str(exc).replace('\n', ' ')[:200])
+        raise
+    h, w = gray.shape
+    rgb8 = np.clip(rgb[0].transpose(1, 2, 0) * 255.0 + 0.5, 0, 255).astype(np.uint8)
+    out = cv2.resize(rgb8, (w, h), interpolation=cv2.INTER_CUBIC)
+    return cv2.cvtColor(out, cv2.COLOR_RGB2BGR)
 
 
 app = FastAPI(title='Manga Colorizer · Community Preview', version='0.4.0')
@@ -1239,6 +1451,8 @@ def health():
         'weights_present': weights_present,
         'generator_loaded': _state['gen'] is not None,
         'sam_loaded': _state['sam'] is not None,
+        'wd14': {'enabled': WD14_ENABLED, 'tagger_present': TAGGER.is_file(),
+                 'active': _tagger_state['sess'] is not None},
         'model_status': _load_state['status'],
         'model_error': _load_state['error'],
         'requested_device': DEVICE,
@@ -1256,9 +1470,11 @@ def capabilities():
         'modes': ['auto', 'hints', 'reference'],
         'endpoints': {'auto': '/colorize_auto', 'hints': '/colorize_hints',
                       'reference': '/colorize_reference'},
+        'engine': ENGINE,
         'schemes': {k: v['gain'] for k, v in FINISH_SCHEMES.items()},
         'default_scheme': DEFAULT_SCHEME,
         'ref_methods': ['reinhard', 'histogram'],
+        'wd14_bootstrap': {'enabled': WD14_ENABLED, 'tagger_present': TAGGER.is_file()},
         'max_hints': 4096,
         'license': {'id': 'CC-BY-NC-SA-4.0', 'commercial_use': False,
                     'url': 'https://creativecommons.org/licenses/by-nc-sa/4.0/',
@@ -1347,9 +1563,10 @@ def _process(data: bytes, source_name: str = 'image.png', scheme: str = DEFAULT_
         except ValueError as exc:
             _gallery_insert(source_name=source_name, mode='auto', device='-', elapsed_s=0.0, error=str(exc))
             return JSONResponse({'error': str(exc)}, status_code=400)
-        out = colorize(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), _resolve_finish(scheme))
+        out = colorize(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY),
+                       _resolve_finish(scheme), scheme=scheme)
         resp = _encode_png(out)
-        device = _device_label(_state['providers'])
+        device = 'sana-cpu' if ENGINE == 'sana' else _device_label(_state['providers'])
         elapsed = (datetime.now() - t0).total_seconds()
         stamp = datetime.now().strftime('%Y%m%d%H%M%S')
         out_path = OUTPUT_DIR / (stamp + '_auto.png')
@@ -1505,12 +1722,15 @@ def _process_hints(data: bytes, hints_raw: str, source_name: str = 'image.png') 
         auto = colorize(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), _resolve_finish(DEFAULT_SCHEME))
         hinted = _hint_colorize(bgr, hints)
         # 提示点作用区 (色度幅值显著高于中性) 用 hinted 的色度, 其余保留模型色
+        # （幅值按 a/b−128 的中性偏置修正——cv2 8bit Lab 的 128 是中性, 直接平方
+        # 会让中性像素幅值恒为 181、掩码失效整页被无提示色覆盖成灰, 2026-11-21
+        # 语义自举让底色变鲜艳后暴露）。
         lab_a = cv2.cvtColor(auto, cv2.COLOR_BGR2LAB).astype(np.float32)
         lab_h = cv2.cvtColor(hinted, cv2.COLOR_BGR2LAB).astype(np.float32)
         out = auto.copy()
         lab_o = cv2.cvtColor(out, cv2.COLOR_BGR2LAB).astype(np.float32)
-        chroma_mag = np.sqrt(lab_h[..., 1] ** 2 + lab_h[..., 2] ** 2)
-        auto_mag = np.sqrt(lab_a[..., 1] ** 2 + lab_a[..., 2] ** 2)
+        chroma_mag = np.hypot(lab_h[..., 1] - 128.0, lab_h[..., 2] - 128.0)
+        auto_mag = np.hypot(lab_a[..., 1] - 128.0, lab_a[..., 2] - 128.0)
         mask = (chroma_mag > 6) & (chroma_mag > auto_mag * 0.5)
         ab = np.where(mask[..., None], lab_h[..., 1:3], lab_o[..., 1:3]).astype(np.float32)
         # 收尾只做色域映射、不再施加增益: 模型底色在 colorize() 内已增益过
@@ -1539,6 +1759,12 @@ def _blend_reference_auto(auto: np.ndarray, styled: np.ndarray,
     """参考图模式融合: 模型语义色(auto) ⊕ 参考图迁移色(styled) 在 Lab a/b 上
     5:5 混合, L 恒取原稿; 收尾只做色域映射(平增益, 不二次放大用户色)。
 
+    白色前景救援与 auto 路径同套（2026-11-21 两端同步修复）: 漫画衣服/画格内
+    背景的网点区在原稿里是封闭近白（L=255 基底+暗点）, L=100 处色域映射必然
+    把任何色度坍缩成纯白——不带救援的融合会把语义自举给网点区上的鲜艳色抹掉
+    （老底色灰暗时不可见, 鲜艳后暴露）。救援门限 c0 用融合后色度场的纸白
+    中位数估计, 与 auto 的 `_with_rescue` 同公式。
+
     Dart 镜像: core `blendReferenceAuto`（金样对拍见 gen_finish_golden.py
     的 gen_reference_blend 与 test/reference_blend_golden_test.dart）。
     """
@@ -1548,7 +1774,9 @@ def _blend_reference_auto(auto: np.ndarray, styled: np.ndarray,
     lab_o[..., 1] = 0.5 * lab_a[..., 1] + 0.5 * lab_s[..., 1]
     lab_o[..., 2] = 0.5 * lab_a[..., 2] + 0.5 * lab_s[..., 2]
     # 收尾只做色域映射、增益保持 1: 色调统计来自用户所选参考图, 不再放大。
-    return _finish_bgr(lab_o[..., 0].astype(np.uint8), lab_o[..., 1:3])
+    l_u8 = lab_o[..., 0].astype(np.uint8)
+    ab = lab_o[..., 1:3].astype(np.float32)
+    return _finish_bgr(l_u8, ab, _with_rescue(l_u8, ab, _FLAT_FINISH))
 
 
 def _process_reference(data: bytes, ref_data: bytes, source_name: str = 'image.png',
@@ -1562,9 +1790,28 @@ def _process_reference(data: bytes, ref_data: bytes, source_name: str = 'image.p
             ref = _decode(ref_data)
         except ValueError as exc:
             return JSONResponse({'error': str(exc)}, status_code=400)
-        # 语义结构来自模型 (auto), 色彩统计来自参考图
-        auto = colorize(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), _resolve_finish(DEFAULT_SCHEME))
-        styled = _reference_transfer(bgr, ref, method=method, strength=strength)
+        # 语义结构来自模型 (auto), 色彩统计来自参考图。auto 的语义引导升级为
+        # 参考图嵌入（tagger(参考图), 2026-11-21 实验 tmp/ref_emb.py: 输出色板
+        # 明确向参考图语义靠拢; 参考 tagger 不可用时回退自举嵌入）。
+        ref_emb = None
+        tagger = _get_tagger()
+        if tagger is not None:
+            _outs = tagger.run(None, {tagger.get_inputs()[0].name:
+                                      _tagger_input(cv2.cvtColor(ref, cv2.COLOR_BGR2RGB))[None]})
+            ref_emb = np.asarray(_outs[1][0], dtype=np.float32)
+        _emb_override['v'] = ref_emb
+        try:
+            auto = colorize(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY),
+                            _resolve_finish(DEFAULT_SCHEME))
+        finally:
+            _emb_override['v'] = None
+        # 色调迁移作用在 auto 上（2026-11-21 两端同步修复）: 旧实现作用在灰度
+        # 原稿上, 灰度 ink 区 a/b 标准差仅 1-3（扫描噪声）, Reinhard 的
+        # ref_std/src_std 会把参考图色度放大 5-8 倍成逐像素随机噪声, 5:5 融合
+        # 后把 auto 的鲜艳色稀释成灰洗（语义自举让底色变鲜艳后暴露）。作用在
+        # auto（真实色度场）上则是对 auto 做一次朝参考图统计的重调色, 结构
+        # 保留。移动端 core transfer.dart / mobile reference_flow.dart 同步同改。
+        styled = _reference_transfer(auto, ref, method=method, strength=strength)
         # 融合: 模型提供语义色相, 参考图提供全局色调统计 → 在 Lab 上按 5:5 混合
         out = _blend_reference_auto(auto, styled, bgr)
         resp = _encode_png(out)

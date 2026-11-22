@@ -13,6 +13,7 @@ Source: [sharky172/manga-light-colorizer model card](https://huggingface.co/shar
 | Component | License | Notes |
 |---|---|---|
 | Model weights | [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) | Non-commercial optional backend; not distributed with the source code — users download it themselves |
+| WD14 tagger weights (optional semantic-bootstrap component, wd14_tagger_moat.onnx) | [Apache-2.0](https://huggingface.co/deepghs/wd14_tagger_with_embeddings) (deepghs ONNX conversion of [SmilingWolf/wd-v1-4-moat-tagger-v2](https://huggingface.co/SmilingWolf/wd-v1-4-moat-tagger-v2)) | Not distributed with the source code; downloaded via weights-manifest.json like the main weights. Falls back to the zeros path automatically when missing |
 | Upstream inference code | [GPL-3.0](https://www.gnu.org/licenses/gpl-3.0.html) | Attribution retained; the local service.py is an independent implementation, and its similarity to the upstream code is pending audit |
 | Original code in this repository | Apache-2.0 | See LICENSE / NOTICE; calling the NC weights does not change the weights' own license |
 | Material Web | Apache-2.0 (see the LICENSE in the installer package) | Third-party licenses retained; building the frontend does not change the model weights' license |

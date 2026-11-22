@@ -29,6 +29,7 @@ a = Analysis(
         "uvicorn.lifespan.on",
         "python_multipart",
         "service",
+        "sana_engine",
     ],
     hookspath=[],
     hooksconfig={},

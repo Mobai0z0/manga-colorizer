@@ -83,6 +83,54 @@ MNN）；克隆仓库后需 `git submodule update --init --depth 1`。
 
 ## 已知限制
 
+- **引擎迁移：Sana-manga-coloring（2026-11-22, 第四轮）**: v6 GAN 的质量上限
+  （色彩贫瘠/黄绿泛染）已到顶——WD14 语义自举在用户真机 8 页回归中被判负
+  （见下条），模型迁移为主线。新引擎 `COLORIZER_ENGINE=sana` 接入
+  [Sana-manga-coloring ONNX int8](https://huggingface.co/masterofaudio2077/sana-manga-coloring-onnx-int8)
+  （**Apache-2.0**，SANA 600M i2i 漫画上色微调，纯 onnxruntime 无 PyTorch）:
+  整页 i2i（短边 512、两边 32 倍数，无分块）、闭集五维标签条件
+  （mood/time_of_day/lighting/saturation/palette，方案表 `sana_engine.SANA_SCHEMES`
+  映射，quality_check 有词表校验）、输出自带手涂明度（不做 L 回写/收尾/一致性）。
+  性能: CPU int8 20 步 ≈ 55-75s/页（4 线程；cache=0.15 步缓存 ≈1.6x），
+  DirectML fp16 转换为后续性能主线。权重 ~2.7GB（encode/decode/head/blocks/out
+  五文件）放 `models/manga-light-colorizer/sana-manga-coloring-int8/`，下载器
+  清单接入与设置页引擎选择器为下一步；hints/reference 仍走 v6。
+  验收: `COLORIZER_ENGINE=sana` 起服后 /colorize_auto 出图对比 v6 zeros——
+  自然肤色/深发保留/背景干净/无黄绿泛染；已知差异: 调色板随噪声种子波动
+  （固定种子可复现），「重新上色」按钮为后续 UX。
+- **WD14 语义自举（默认关闭）**: 生成器 `wd14_embedding` 是
+  FiLM 语义主色通路，官方推理脚本恒置零使模型处于欠饱和退化态（色度 C≈5.8）。sidecar
+  现按「单步自举」出图: gen@512 zeros → MOAT tagger 吃原始输出去网点后的版本得
+  1024 维嵌入 → gen@512 带嵌入出图。关键取证（`tmp/wd14_*.py`）: ①FiLM 通路仅在训练
+  分辨率 512 有效（@1024 嵌入几乎不影响输出，嵌入方向两分辨率余弦 0.94），生成器因此
+  固定跑 512、色度场上采样（赛璐璐平涂色度低频，结构由原稿 L 回写承担）；②两步迭代
+  会振荡漂移，单步即收敛；③tagger 吃黑白原稿会拉向 monochrome 语义（色度反降），必须
+  吃第一遍的彩色输出；④**tagger 输入必须去网点（3×3 中值×2）**——网点高频让 tagger
+  把角色读成 bandages/black_background，嵌入把用户样张脸部引导成绿色（C=27, hue81°），
+  去网点后读出 smile/open_mouth/1girl，脸部圆均色相 42° 自然肤色、绿域 77%→46%。
+  效果: 收尾后非纸白区色度 gag 页 7.9→28.8 / 4koma 页 8.0→15.8，纸白更净。
+  tagger 权重（wd14_tagger_moat.onnx, 326MB, Apache-2.0）经 weights-manifest.json
+  随主权重下载；**缺失/损坏时自动回退 zeros 旧路径**（`/health` 的 `wd14` 三态可见）。
+  env: `COLORIZER_WD14=0` 关闭、`COLORIZER_WD14_THREADS`（默认 4）。
+  **移动端已启用（2026-11-21 第三轮）**: tagger 权重按档位门控——只有满配档
+  （≥6GB，`ResourceTier.hostTagger`）在主权重就绪后顺手下载（可选组件，不阻塞
+  必需权重；下载失败仅告警）；后端按文件存在性加载（缺失/损坏 → zeros 路径），
+  加载失败（低内存 OOM）也只回退不致命。管线 `pipeline.dart` 走桌面同配方
+  （gen@512 两遍 + 去网点 tagger 输入 + 特征逐通道双线性缩 32²/16²），自举
+  中途失败整块降级 zeros@1024。MNN 后端不支持 tagger（zeros 路径）。真机验收
+  清单: 满配档下载入口出现 tagger 条目且下载后全自动出图显著更饱和（对比
+  zeros 版截图）；中/低档不出 tagger 下载且行为与旧版一致；推理中杀
+  `:inference` 进程重启后自举恢复。验收: auto(DML) 与 CPU 各出一张，观感色彩
+  应显著更饱和（DML 与 CPU 有固有数值差，各自可接受即可）；回退: 改名 tagger
+  文件重启后 `/health` wd14.active=false 且三模式正常。
+- **参考图模式升级（2026-11-21, 两端同步）**: ①auto 语义引导改用 tagger(参考图) 嵌入
+  （`_emb_override`，输出色板明确向参考图语义靠拢，`tmp/ref_emb.py`）；tagger 不可用
+  回退自举嵌入。②色调迁移从「作用在灰度原稿」改为「作用在 auto 输出」——旧实现把
+  Reinhard 的 ref_std/src_std 作用在灰度扫描噪声上（std 1-3），色度被放大 5-8 倍成
+  随机噪声，5:5 融合把语义色稀释成灰洗。③融合收尾补白色前景救援（两端同步:
+  桌面 `_blend_reference_auto` / Dart `blendReferenceAuto` + 金样新增 rescue 用例）——
+  网点衣服区在原稿是封闭近白（L=255），无救援时 L=100 色域映射把色度坍缩成纯白。
+  移动端 `referenceColorizeInIsolate` 增加 width/height 参数（救援标记需要连通域）。
 - 服务端提示点为 64px 窗口局部扩散（轻量版）；需要全局精确求解用 Dart CLI 路径。
 - 参考图迁移是全局统计（Reinhard/histogram），不做逐区域语义对应；参考图模式的
   语义色相由模型提供（Lab a/b 5:5 融合），参考图只贡献全局色调统计。
@@ -116,5 +164,6 @@ MNN）；克隆仓库后需 `git submodule update --init --depth 1`。
 ## 致谢与参考
 
 - [sharky172/manga-light-colorizer](https://huggingface.co/sharky172/manga-light-colorizer) — ONNX 权重（CC BY-NC-SA 4.0）
+- [SmilingWolf/wd-v1-4-moat-tagger-v2](https://huggingface.co/SmilingWolf/wd-v1-4-moat-tagger-v2) 与 [deepghs/wd14_tagger_with_embeddings](https://huggingface.co/deepghs/wd14_tagger_with_embeddings) — WD14 语义自举的 tagger 权重（Apache-2.0）
 - [BinitDOX/Manga-Colorizer](https://github.com/BinitDOX/Manga-Colorizer)、[qweasdd/manga-colorization-v2](https://github.com/qweasdd/manga-colorization-v2)、[xiaogdgenuine/Manga-Colorization-FJ](https://github.com/xiaogdgenuine/Manga-Colorization-FJ)、[lllyasviel/Style2Paints](https://github.com/lllyasviel/Style2Paints) — 调研参考（未复制代码/权重）
 - Levin-Lischinski-Weiss 2004 色度扩散 — Dart 引擎算法基础

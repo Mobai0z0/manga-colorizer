@@ -415,6 +415,53 @@ def test_reference_transfer():
             f'{method}: 纸白色度({paper_c:.1f})不应显著高于墨迹({ink_c:.1f})'
 
 
+def test_blend_reference_rescue():
+    """参考图融合的白色前景救援: 封闭近白区的模型色度不被 L=100 色域映射抹白。"""
+    # 白底 + 墨线围出的封闭白块（网点衣服抽象）; auto 给块内青色色度
+    src = np.full((32, 32, 3), 255, np.uint8)
+    src[8:24, 8:24] = 40          # BGR 墨环
+    src[10:22, 10:22] = 255       # 封闭白块
+    auto = src.copy()
+    auto[10:22, 10:22, 0] = 255   # BGR: 块内青色
+    auto[10:22, 10:22, 1] = 220
+    auto[10:22, 10:22, 2] = 120
+    styled = np.full_like(auto, 250)
+    out = service._blend_reference_auto(auto, styled, src)
+    lab = cv2.cvtColor(out, cv2.COLOR_BGR2LAB).astype(np.float64)
+    l_out = lab[12:20, 12:20, 0] * 100.0 / 255.0
+    C = np.hypot(lab[12:20, 12:20, 1] - 128, lab[12:20, 12:20, 2] - 128)
+    # 救援应压 L（255→≥239 即 ≤93.7）并保留可见色度; 无救援时 L=100 恒纯白
+    assert l_out.max() <= 94.5, f'封闭白块 L 未被救援压低: max {l_out.max():.1f}'
+    assert C.mean() >= 4.0, f'封闭白块色度被抹掉: mean {C.mean():.1f}'
+    # 纸白（贴边）保持纯白
+    paper_c = np.hypot(lab[:6, :6, 1] - 128, lab[:6, :6, 2] - 128).max()
+    paper_l = lab[:6, :6, 0].max()
+    assert paper_c <= 6.0 and paper_l >= 250, f'纸白被染色: C={paper_c:.1f} L={paper_l:.0f}'
+
+
+def test_sana_scheme_tags():
+    """Sana 方案→tag 预设: 每个值都在模型闭集词表内, 字段名五维齐全。"""
+    from sana_engine import SANA_SCHEMES, TAGS
+    assert set(SANA_SCHEMES) == set(service.FINISH_SCHEMES),         'SANA_SCHEMES 与 FINISH_SCHEMES 方案集必须同表'
+    for scheme, tags in SANA_SCHEMES.items():
+        for field, value in tags.items():
+            assert field in TAGS, f'{scheme}.{field} 不是合法五维字段'
+            assert value is None or value in TAGS[field],                 f'{scheme}.{field}={value} 不在闭集词表内'
+
+
+def test_wd14_tagger_input():
+    """WD14 tagger 预处理纯函数: 白底补方 448² + BGR float32 (0-255)。"""
+    rgb = np.zeros((100, 200, 3), np.uint8)
+    rgb[..., 0] = 200  # R 通道亮色（RGB 序）
+    x = service._tagger_input(rgb)
+    assert x.shape == (448, 448, 3) and x.dtype == np.float32
+    assert float(x.min()) >= 0.0 and float(x.max()) <= 255.0
+    # 白底补方: 输入 100×200 → 补到 200² → 缩 448²; 顶部是内容(蓝), 底部是白底
+    assert x[0, 10, 0] == 0.0 and x[447, 10, 0] == 255.0
+    # RGB→BGR: 输入 R=200 在 BGR 输出的第 2 通道（索引 2）
+    assert x[50, 100, 2] == 200.0 and x[50, 100, 0] == 0.0
+
+
 if __name__ == '__main__':
     tests = [test_in_gamut_matches_cv2, test_out_of_gamut_hue_and_luma,
              test_knee_boosts_chroma, test_gain_leaves_neutral_unchanged,
@@ -424,7 +471,10 @@ if __name__ == '__main__':
              test_dominant_hue_fill,
              test_unify_material_hues, test_neutral_chroma_floor,
              test_consistency_disabled,
-             test_reference_transfer]
+             test_reference_transfer,
+             test_blend_reference_rescue,
+             test_sana_scheme_tags,
+             test_wd14_tagger_input]
     for t in tests:
         t()
         print(f'PASS {t.__name__}')
