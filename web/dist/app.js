@@ -29,7 +29,7 @@
       'colorize.sub': '按加入顺序逐个处理；完成品自动进入图库。单张 ≤ 20MiB，一次最多 32 张。',
       'set.mode': '上色模式', 'set.mode.auto': '全自动', 'set.mode.hints': '提示点', 'set.mode.reference': '参考图',
       'set.scheme': '色彩方案',
-      'scheme.standard': '标准（修复偏黄偏灰）', 'scheme.vivid-cel': '鲜明赛璐璐',
+      'scheme.standard': '标准', 'scheme.vivid-cel': '鲜明赛璐璐',
       'scheme.soft-pastel': '柔和淡彩', 'scheme.impasto': '厚涂浓郁', 'scheme.retro-showa': '昭和复古',
       'set.ref': '参考图', 'set.ref.pick': '选择参考图…', 'set.ref.none': '未选择',
       'set.ref.options': '迁移选项', 'set.ref.reinhard': '氛围对齐', 'set.ref.histogram': '分布对齐',
@@ -70,6 +70,16 @@
       'settings.background': '背景', 'settings.bg.monet': '莫奈流动', 'settings.bg.plain': '默认',
       'settings.bg.hint': '莫奈流动＝暖纸画布上三色球漫游；默认＝纯色画布，低端机或省电时更省 GPU。',
       'settings.model': '模型',
+      'settings.colorModel': '上色模型',
+      'settings.colorModel.v6': 'v6 轻量', 'settings.colorModel.sana': 'Sana 扩散',
+      'settings.colorModel.desc.v6': 'manga-light-colorizer v6：FastViT 编码 + SAM 特征引导 + UNet 解码（GAN），权重约 300MB（CC BY-NC-SA 4.0 非商用）。分块推理秒级，色彩淡雅偏保守，线稿结构与文字气泡保留好。',
+      'settings.colorModel.desc.sana': 'Sana-manga-coloring（SANA 600M 图生图扩散微调，Apache-2.0），权重约 2.7GB、推理峰值内存约 4GB。整页推理自带手涂明度与跨格协调，肤色自然、背景干净；CPU 约 35-75s/页。',
+      'settings.colorModel.note': '切换立即生效（下次上色用新模型）；与「推理后端」正交——模型决定画风，后端决定 CPU/GPU。',
+      'settings.colorModel.switched': '上色模型已切换为 {model}，下次上色生效。',
+      'settings.sana.download': '下载 Sana 权重（约 2.7GB）',
+      'settings.sana.downloading': 'Sana 权重下载中… {pct}%',
+      'settings.sana.ready': 'Sana 权重已就绪。',
+      'settings.sana.missing': 'Sana 权重未就绪：点击下方下载（断点续传），或手动放置 5 个 ONNX 到权重目录的 sana-manga-coloring-int8/ 子目录（含 .onnx.data）。',
       'settings.source': '下载源', 'settings.source.auto': '自动（推荐）',
       'settings.source.primary': '仅主站', 'settings.source.mirror': '仅镜像',
       'settings.source.hint.auto': '主站优先，失败自动改走镜像续传',
@@ -138,7 +148,7 @@
       'colorize.sub': 'Processed in queue order; results go straight to the gallery. Up to 20 MiB per image, 32 images per run.',
       'set.mode': 'Mode', 'set.mode.auto': 'Auto', 'set.mode.hints': 'Hints', 'set.mode.reference': 'Reference',
       'set.scheme': 'Palette',
-      'scheme.standard': 'Standard (fixes yellow/gray cast)', 'scheme.vivid-cel': 'Vivid cel',
+      'scheme.standard': 'Standard', 'scheme.vivid-cel': 'Vivid cel',
       'scheme.soft-pastel': 'Soft pastel', 'scheme.impasto': 'Impasto', 'scheme.retro-showa': 'Retro Showa',
       'set.ref': 'Reference', 'set.ref.pick': 'Choose image…', 'set.ref.none': 'None',
       'set.ref.options': 'Transfer', 'set.ref.reinhard': 'Mood match', 'set.ref.histogram': 'Histogram match',
@@ -179,6 +189,16 @@
       'settings.background': 'Background', 'settings.bg.monet': 'Monet flow', 'settings.bg.plain': 'Plain',
       'settings.bg.hint': 'Monet flow animates three soft color fields on warm paper; Plain uses a solid canvas and saves GPU on low-end or battery-powered machines.',
       'settings.model': 'Model',
+      'settings.colorModel': 'Color model',
+      'settings.colorModel.v6': 'v6 light', 'settings.colorModel.sana': 'Sana diffusion',
+      'settings.colorModel.desc.v6': 'manga-light-colorizer v6: FastViT encoder + SAM feature guidance + UNet decoder (GAN), about 300MB of weights (CC BY-NC-SA 4.0, non-commercial). Tiled second-level inference; subdued, conservative colors with line art and speech bubbles well preserved.',
+      'settings.colorModel.desc.sana': 'Sana-manga-coloring (SANA 600M img2img diffusion fine-tune, Apache-2.0), about 2.7GB of weights and ~4GB peak inference memory. Full-page inference with hand-painted luminance and cross-panel coherence; natural skin tones, clean backgrounds; roughly 35-75s per page on CPU.',
+      'settings.colorModel.note': 'Switching takes effect immediately (the next run uses the new model); orthogonal to the inference backend — the model decides the style, the backend decides CPU/GPU.',
+      'settings.colorModel.switched': 'Color model switched to {model}; it applies on the next run.',
+      'settings.sana.download': 'Download Sana weights (~2.7GB)',
+      'settings.sana.downloading': 'Downloading Sana weights… {pct}%',
+      'settings.sana.ready': 'Sana weights are ready.',
+      'settings.sana.missing': 'Sana weights missing: download below (resumable), or place the 5 ONNX files (incl. .onnx.data) in the sana-manga-coloring-int8/ subfolder of the weights directory.',
       'settings.source': 'Download source', 'settings.source.auto': 'Auto (recommended)',
       'settings.source.primary': 'Primary only', 'settings.source.mirror': 'Mirror only',
       'settings.source.hint.auto': 'Primary first; falls back to the mirror and resumes on failure',
@@ -297,6 +317,7 @@
   /* ---------- 服务与设备状态（/health 单次轮询同时刷新两个徽标） ---------- */
   let svcFailCount = 0;
   let lastDevice = null;
+  let lastHealth = null;
   async function pollHealth() {
     const pill = $('svc-pill');
     try {
@@ -322,7 +343,9 @@
           dir: j.model_dir || '%LOCALAPPDATA%\\manga-colorizer\\weights',
         });
       }
+      lastHealth = j;
       applyDevice(j.device_info);
+      updateModelAvailability(j);
     } catch (err) {
       svcFailCount += 1;
       pill.textContent = t('svc.offline', { n: svcFailCount });
@@ -752,7 +775,7 @@
   const settings = Object.assign(
     { mode: 'auto', device: 'auto', disclaimer_accepted: false, theme: null, refName: '',
       scheme: 'standard', refMethod: 'reinhard', refStrength: 1.0, monetBg: true,
-      lang: 'auto', downloadSource: 'auto' },
+      lang: 'auto', downloadSource: 'auto', engine: 'v6' },
     savedSettings
   );
 
@@ -760,12 +783,14 @@
     Object.assign(settings, patch);
     localStorage.setItem(SET_KEY, JSON.stringify(settings));
     const payload = { mode: settings.mode, device: settings.device, disclaimer_accepted: settings.disclaimer_accepted,
-      scheme: settings.scheme, ref_method: settings.refMethod, ref_strength: settings.refStrength };
+      scheme: settings.scheme, ref_method: settings.refMethod, ref_strength: settings.refStrength,
+      engine: settings.engine };
     if (settings.theme) payload.theme = settings.theme;
-    fetch(api('/api/v1/settings'), {
+    // 返回 fetch promise（reject 已吞成 null）——引擎切换需要读响应校验结果
+    return fetch(api('/api/v1/settings'), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
-    }).catch(() => {});
+    }).catch(() => null);
   }
 
   function applySettingsToUI() {
@@ -783,6 +808,10 @@
       if (dInput && !dInput.disabled) dInput.checked = true;
     }
     $('disclaimer').checked = !!settings.disclaimer_accepted;
+    // 上色模型（v6 / Sana）
+    const cmInput = document.querySelector('input[name=color-model][value="' + (settings.engine || 'v6') + '"]');
+    if (cmInput) cmInput.checked = true;
+    applyModelDesc();
     // 主题 / 语言 / 下载源 / 背景
     const themeVal = settings.theme || 'auto';
     const themeInput = document.querySelector('input[name=theme][value="' + themeVal + '"]');
@@ -812,6 +841,94 @@
       applyMonetBg();
     });
   });
+
+  /* ---------- 上色模型（v6 / Sana，与移动端设置页同语义） ----------
+     engine 写 settings.json 由 service 热切换（释放两会话集，新引擎下次
+     上色生效）；Sana 权重就绪与否由 /health 轮询同步（未就绪置灰 + 下载
+     按钮，见 updateModelAvailability）。 */
+  function applyModelDesc() {
+    const desc = $('model-desc');
+    if (desc) desc.textContent = t('settings.colorModel.desc.' + (settings.engine || 'v6'));
+  }
+  document.querySelectorAll('input[name=color-model]').forEach((el) =>
+    el.addEventListener('change', async () => {
+      if (!el.checked) return;
+      const prev = settings.engine || 'v6';
+      const next = el.value;
+      if (next === prev) return;
+      const r = await saveSettings({ engine: next });
+      if (!r || !r.ok) {
+        // 服务端拒绝（Sana 权重未就绪等）：回滚单选并提示
+        if (r) {
+          try { const j = await r.json(); if (j && j.error) toast(j.error, true); } catch { }
+        }
+        settings.engine = prev;
+        localStorage.setItem(SET_KEY, JSON.stringify(settings));
+        const p = document.querySelector('input[name=color-model][value="' + prev + '"]');
+        if (p) p.checked = true;
+        applyModelDesc();
+        return;
+      }
+      toast(t('settings.colorModel.switched', { model: t('settings.colorModel.' + next) }));
+      applyModelDesc();
+    }));
+
+  /* /health 轮询同步 Sana 可用性与服务端实际引擎（服务启动时权重缺失会
+     回退 v6，UI 跟随现实）。 */
+  function updateModelAvailability(d) {
+    const sanaInput = document.querySelector('input[name=color-model][value="sana"]');
+    if (!sanaInput || !d) return;
+    const sanaOk = !!d.sana_ready;
+    sanaInput.disabled = !sanaOk;
+    const note = $('sana-note');
+    if (note) { note.hidden = false; note.textContent = t(sanaOk ? 'settings.sana.ready' : 'settings.sana.missing'); }
+    // 服务端引擎与本地不一致（启动回退）：跟随服务实际值
+    if (d.engine && d.engine !== settings.engine) {
+      settings.engine = d.engine;
+      localStorage.setItem(SET_KEY, JSON.stringify(settings));
+      const inp = document.querySelector('input[name=color-model][value="' + d.engine + '"]');
+      if (inp) inp.checked = true;
+    }
+    const btn = $('sana-download');
+    if (btn) btn.hidden = !(isTauri && !sanaOk);
+    applyModelDesc();
+  }
+
+  if (isTauri && window.__TAURI__.event) {
+    $('sana-download').addEventListener('click', async () => {
+      if (!invoke) return;
+      const btn = $('sana-download');
+      try {
+        const started = await invoke('cmd_start_optional_download');
+        if (started) btn.disabled = true;
+        else pollHealth();
+      } catch (err) { toast(String(err), true); }
+    });
+    window.__TAURI__.event.listen('download-progress', async (ev) => {
+      const p = ev.payload || {};
+      const btn = $('sana-download');
+      if (!btn || btn.hidden) return; // boot 下载在 boot 页处理，主 UI 不接
+      if (p.phase === 'downloading' || p.phase === 'verifying') {
+        btn.textContent = t('settings.sana.downloading',
+          { pct: p.totalBytes ? Math.round(100 * p.totalBytesDone / p.totalBytes) : 0 });
+      } else if (p.phase === 'failed') {
+        btn.disabled = false;
+        btn.textContent = t('settings.sana.download');
+        if (p.message) toast(p.message, true);
+      } else if (p.phase === 'done') {
+        btn.disabled = false;
+        btn.textContent = t('settings.sana.download');
+        pollHealth();
+        // 权重就绪：若服务端持久化选择是 sana（启动时因权重缺失回退过 v6），
+        // 重新下发激活——以服务端 settings.json 为准，UI 本地值可能已被
+        // updateModelAvailability 纠正成回退后的 v6。
+        fetch(api('/api/v1/settings')).then((r) => r.json()).then((sv) => {
+          if (sv && sv.engine === 'sana') saveSettings({ engine: 'sana' });
+        }).catch(() => {});
+      }
+    });
+  }
+
 
   // 模式附属面板：色彩方案（全自动）/ 参考图选择与迁移选项 / 提示点画布
   function toggleModePanels() {
@@ -1013,6 +1130,7 @@
     applyI18n();
     // 重新渲染 JS 生成的文案
     applyDevice(lastDevice);
+    updateModelAvailability(lastHealth);
     renderQueue();
     updateHintsCount();
     renderRefName();

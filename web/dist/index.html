@@ -141,7 +141,7 @@
           <span class="set-label" data-i18n="set.scheme">色彩方案</span>
           <div class="ref-picker">
             <select id="scheme-select" aria-label="色彩方案" class="set-select" data-i18n-aria="set.scheme">
-              <option value="standard" data-i18n="scheme.standard">标准（修复偏黄偏灰）</option>
+              <option value="standard" data-i18n="scheme.standard">标准</option>
               <option value="vivid-cel" data-i18n="scheme.vivid-cel">鲜明赛璐璐</option>
               <option value="soft-pastel" data-i18n="scheme.soft-pastel">柔和淡彩</option>
               <option value="impasto" data-i18n="scheme.impasto">厚涂浓郁</option>
@@ -293,6 +293,19 @@
 
         <div class="card settings-card">
           <h3 data-i18n="settings.model">模型</h3>
+          <div class="set-block">
+            <span class="set-label" data-i18n="settings.colorModel">上色模型</span>
+            <div class="seg-group" role="radiogroup" aria-label="上色模型" data-i18n-aria="settings.colorModel">
+              <label class="seg"><input type="radio" name="color-model" value="v6"><span data-i18n="settings.colorModel.v6">v6 轻量</span></label>
+              <label class="seg"><input type="radio" name="color-model" value="sana"><span data-i18n="settings.colorModel.sana">Sana 扩散</span></label>
+            </div>
+            <p class="set-helper" id="model-desc"></p>
+            <p class="set-helper" id="sana-note" hidden></p>
+            <div class="set-actions">
+              <button class="tonal-button" id="sana-download" hidden data-i18n="settings.sana.download">下载 Sana 权重（约 2.7GB）</button>
+            </div>
+            <p class="set-helper" data-i18n="settings.colorModel.note">切换立即生效（下次上色用新模型）；与「推理后端」正交——模型决定画风，后端决定 CPU/GPU。</p>
+          </div>
           <div class="set-block">
             <span class="set-label" data-i18n="settings.source">下载源</span>
             <div class="seg-group" role="radiogroup" aria-label="模型下载源" data-i18n-aria="settings.source">

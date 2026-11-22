@@ -93,8 +93,14 @@ MNN）；克隆仓库后需 `git submodule update --init --depth 1`。
   映射，quality_check 有词表校验）、输出自带手涂明度（不做 L 回写/收尾/一致性）。
   性能: CPU int8 20 步 ≈ 55-75s/页（4 线程；cache=0.15 步缓存 ≈1.6x），
   DirectML fp16 转换为后续性能主线。权重 ~2.7GB（encode/decode/head/blocks/out
-  五文件）放 `models/manga-light-colorizer/sana-manga-coloring-int8/`，下载器
-  清单接入与设置页引擎选择器为下一步；hints/reference 仍走 v6。
+  五文件）放 `models/manga-light-colorizer/sana-manga-coloring-int8/`。
+  2026-11-22 续: 设置页新增「上色模型」切换（与移动端同语义）——service 以
+  settings.json `engine` 热切换（释放两会话集，v6 重新预热，sana 五会话不常驻
+  预热、首次上色懒加载），`COLORIZER_ENGINE` 环境变量只定启动默认；下载清单
+  以 `optional: true` 条目接入 Sana 权重（boot 下载跳过可选文件、allReady 不
+  计入），设置页「下载 Sana 权重」按钮按需触发（`cmd_start_optional_download`，
+  复用断点续传/校验/镜像）。hints/reference 的语义基底同样经 colorize() 按
+  当前引擎路由。
   验收: `COLORIZER_ENGINE=sana` 起服后 /colorize_auto 出图对比 v6 zeros——
   自然肤色/深发保留/背景干净/无黄绿泛染；已知差异: 调色板随噪声种子波动
   （固定种子可复现），「重新上色」按钮为后续 UX。

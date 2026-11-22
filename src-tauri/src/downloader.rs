@@ -32,6 +32,10 @@ pub struct ManifestEntry {
     pub path_template: String,
     #[serde(rename = "mirrorPathTemplate", default)]
     pub mirror_path_template: Option<String>,
+    /// 可选组件（如 Sana 权重 2.7GB）：boot 下载跳过、allReady 不计入，
+    /// 由设置页按需触发下载（2026-11-22 上色模型切换）。
+    #[serde(default)]
+    pub optional: bool,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -43,13 +47,17 @@ pub struct WeightStatus {
     pub partial_bytes: u64,
     pub verified: bool,
     pub verifyError: Option<String>,
+    pub optional: bool,
 }
 
 #[derive(Debug, Serialize, Clone)]
 pub struct WeightsStatus {
     pub dir: PathBuf,
     pub manifestVersion: String,
+    /// 必需文件全部校验通过（可选文件不计入）——boot 下载门控用。
     pub allReady: bool,
+    /// 可选文件也全部校验通过（无可选文件时恒 true）。
+    pub optionalReady: bool,
     pub totalBytes: u64,
     pub doneBytes: u64,
     pub files: Vec<WeightStatus>,
@@ -120,13 +128,17 @@ fn file_size(path: &Path) -> u64 {
 }
 
 /// Check current on-disk status for every manifest entry.
+/// 必需文件的 verified 汇总进 allReady/totalBytes/doneBytes；可选文件只出现在
+/// files[]（totalBytes 不含可选权重，避免设置页「已就绪 · {size}」把 2.7GB
+/// Sana 算进必需体积）。
 pub fn status(manifest: &Manifest) -> WeightsStatus {
     let dir = weights_dir(manifest);
     let mut files = Vec::new();
     let mut total = 0u64;
     let mut done = 0u64;
+    let mut all_ready = true;
+    let mut optional_ready = true;
     for f in &manifest.files {
-        total += f.size;
         let final_path = dir.join(&f.name);
         let part_path = dir.join(format!("{}.part", f.name));
         let present = final_path.is_file();
@@ -147,6 +159,12 @@ pub fn status(manifest: &Manifest) -> WeightsStatus {
         } else {
             done += partial.min(f.size);
         }
+        if f.optional {
+            optional_ready &= verified;
+        } else {
+            total += f.size;
+            all_ready &= verified;
+        }
         files.push(WeightStatus {
             name: f.name.clone(),
             size: f.size,
@@ -155,12 +173,14 @@ pub fn status(manifest: &Manifest) -> WeightsStatus {
             partial_bytes: partial,
             verified,
             verifyError: verify_error,
+            optional: f.optional,
         });
     }
     WeightsStatus {
         dir,
         manifestVersion: manifest.version.clone(),
-        allReady: files.iter().all(|f| f.verified),
+        allReady: all_ready,
+        optionalReady: optional_ready,
         totalBytes: total,
         doneBytes: done,
         files,

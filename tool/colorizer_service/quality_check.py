@@ -2,13 +2,14 @@
 
 用法: ..\\.venv\\Scripts\\python.exe tool/colorizer_service/quality_check.py
 
-断言十五件事:
+断言以下事项:
   1. 色域内像素与 cv2 LAB2BGR 逐值差 ≤1（平增益收尾时是无损替代）;
   2. 超色域像素的输出色相偏移 <2.5°（旧逐通道截断可偏 30°+，是发灰发闷主因）;
   3. 亮度严格保持（色域映射前后 L 差 ≤1，8bit 量化容差）;
   4. 自适应膝点增益单调放大输出色度;
   5. 极暗像素不被色度"提亮"成彩黑色（L=0 时旧路径会输出 ~RGB(103,0,0)）;
-  6. 纸白中和: 近白像素的暖偏被定点去除（偏黄修复）;
+  6. 纸白中和: 近白像素的暖偏被定点去除（偏黄修复; vivid-cel 载体）;
+  6b. standard 方案平增益直出: 无中和无增益, 暖偏与弱色度按模型原样保留;
   7. L=100 纯白 + 任意色度输出纯白（t≥0 钳制后无负系数外推）;
   8. 参考图迁移: 亮度保真 + 纸白保护 + strength=0 恒等;
   9. 白色前景救援: 封闭近白吃到模型色度（L 压低）, 纸白保持纯白;
@@ -100,17 +101,19 @@ def test_out_of_gamut_hue_and_luma():
 
 
 def test_knee_boosts_chroma():
+    # 膝点数学用 vivid-cel 验证（standard 2026-11-22 起平增益直出, 见
+    # test_standard_scheme_flat）。
     l1, a1, b1 = _lab_bytes([[60]], [[35]], [[20]])  # 柔和肤色类（色域内）
     ab = _ab_float(a1, b1)
     base = _out_chroma_hue(service._finish_bgr(l1, ab, _flat())[0, 0])[0]
     boosted = _out_chroma_hue(
-        service._finish_bgr(l1, ab, service._resolve_finish('standard'))[0, 0])[0]
+        service._finish_bgr(l1, ab, service._resolve_finish('vivid-cel'))[0, 0])[0]
     assert boosted > base, f'膝点增益未提升色度: {base} -> {boosted}'
 
 
 def test_gain_leaves_neutral_unchanged():
     l1, a1, b1 = _lab_bytes([[20, 60, 90]], [[0, 0, 0]], [[0, 0, 0]])
-    out = service._finish_bgr(l1, _ab_float(a1, b1), service._resolve_finish('standard'))
+    out = service._finish_bgr(l1, _ab_float(a1, b1), service._resolve_finish('vivid-cel'))
     rgb = cv2.cvtColor(out, cv2.COLOR_BGR2RGB).astype(np.int32)
     spread = rgb.max(axis=-1) - rgb.min(axis=-1)
     assert spread.max() <= 1, f'中性色被增益染色: max spread {spread.max()}'
@@ -123,12 +126,13 @@ def test_black_not_tinted():
 
 
 def test_paper_neutralization():
-    """纸白中和: L≥248 的暖偏像素输出回到中性白（偏黄修复）。"""
+    """纸白中和: L≥248 的暖偏像素输出回到中性白（偏黄修复; vivid-cel 载体,
+    standard 2026-11-22 起已删去中和）。"""
     # 模型纸白实测偏差量级: a≈+0.4, b≈+3.4。L=100 纯白在平收尾下也会被色域
     # 收缩成纯白（t≥0 钳制）, 中和开关要用半程亮度 L≈95 验证。
     l1, a1, b1 = _lab_bytes([[100.0, 95.0, 60.0, 60.0]], [[0.4, 0.4, 0.4, 0.4]],
                             [[3.4, 3.4, 3.4, 3.4]])
-    out = service._finish_bgr(l1, _ab_float(a1, b1), service._resolve_finish('standard'))
+    out = service._finish_bgr(l1, _ab_float(a1, b1), service._resolve_finish('vivid-cel'))
     lab = cv2.cvtColor(out, cv2.COLOR_BGR2LAB)[0].astype(np.float64)
     b_out = lab[:, 2] - 128.0
     assert abs(b_out[0]) <= 1.0, f'L=100 纸白未中和: b={b_out[0]}'
@@ -139,6 +143,27 @@ def test_paper_neutralization():
     out2 = service._finish_bgr(l1, _ab_float(a1, b1), _flat())
     b2 = cv2.cvtColor(out2, cv2.COLOR_BGR2LAB)[0].astype(np.float64)[:, 2] - 128.0
     assert abs(b2[1]) > 1.5, f'flat 收尾不应中和 L=95: b={b2[1]}'
+
+
+def test_standard_scheme_flat():
+    """standard 方案 = 平增益直出（2026-11-22 用户裁决: 删去偏黄偏灰修复）。
+
+    锁方案表语义: 无纸白中和、无膝点增益——暖偏纸白与弱色度按模型原样
+    保留, 色域映射与白色前景救援仍生效（由 rescue 参数与 _finish_bgr 固有
+    映射承担, 不随方案变化）。"""
+    assert service.FINISH_SCHEMES['standard'] == \
+        dict(gain=1.0, knee=0.0, neutral_paper=False), \
+        f'standard 方案不再是平增益直出: {service.FINISH_SCHEMES["standard"]}'
+    # 暖偏纸白保留（不再被中和）: L=95 的 b=+3.4 经收尾仍 ≥2
+    l1, a1, b1 = _lab_bytes([[95.0]], [[0.4]], [[3.4]])
+    out = service._finish_bgr(l1, _ab_float(a1, b1), service._resolve_finish('standard'))
+    b_out = cv2.cvtColor(out, cv2.COLOR_BGR2LAB)[0, 0, 2].astype(np.float64) - 128.0
+    assert b_out > 2.0, f'standard 仍在中和纸白暖偏: b={b_out}'
+    # 弱色度不被增益放大: C=10 输出色度仍 ≈10（±1 量化容差）
+    l2, a2, b2 = _lab_bytes([[60.0]], [[8.0]], [[6.0]])
+    out2 = service._finish_bgr(l2, _ab_float(a2, b2), service._resolve_finish('standard'))
+    mag, _ = _out_chroma_hue(out2[0, 0])
+    assert abs(mag - 10.0) <= 1.0, f'standard 仍在放大弱色度: C={mag:.2f}'
 
 
 def test_pure_white_no_negative_extrapolation():
@@ -160,7 +185,8 @@ def test_colorize_wiring():
     orig = service.colorize_single
     service.colorize_single = lambda _gray: rgb_stub
     try:
-        out = service.colorize(gray, service._resolve_finish('standard'))
+        # vivid-cel 载体（standard 平增益直出后无法演示「增益生效」）
+        out = service.colorize(gray, service._resolve_finish('vivid-cel'))
     finally:
         service.colorize_single = orig
     assert out.shape == (48, 64, 3) and out.dtype == np.uint8
@@ -176,7 +202,7 @@ def test_colorize_wiring():
     if exempt.any():
         assert diff[exempt].max() >= 3 or (l_ref[exempt] < 244).all(), \
             '救援像素既未压低 L 也不在无需压低的亮度'
-    # 增益生效: 标准方案输出色度高于平增益收尾
+    # 增益生效: vivid-cel 输出色度高于平增益收尾
     lab_stub = cv2.cvtColor(rgb_stub, cv2.COLOR_RGB2LAB)
     ab = lab_stub[..., 1:].astype(np.float32)
     out_g1 = service._finish_bgr(l_ref, ab, _flat())
@@ -232,7 +258,7 @@ def test_white_rescue_light_chroma():
     # 纸白停在模型暖偏噪声量级（b≈+1.4）, 封闭近白是浅暖色（b=+5, C=5）
     ab = np.full((24, 24, 2), 128.0, np.float32)
     ab[..., 1] = 128.0 + np.where(marks == 2, 5.0, 1.4)
-    opt = service._with_rescue(l_ref, ab, service._resolve_finish('standard'))
+    opt = service._with_rescue(l_ref, ab, service._resolve_finish('vivid-cel'))
     out = service._finish_bgr(l_ref, ab, opt)
     lab_out = cv2.cvtColor(out, cv2.COLOR_BGR2LAB).astype(np.float64)
     inner = out[10:14, 10:14].astype(np.int32)
@@ -466,6 +492,7 @@ if __name__ == '__main__':
     tests = [test_in_gamut_matches_cv2, test_out_of_gamut_hue_and_luma,
              test_knee_boosts_chroma, test_gain_leaves_neutral_unchanged,
              test_black_not_tinted, test_paper_neutralization,
+             test_standard_scheme_flat,
              test_pure_white_no_negative_extrapolation, test_colorize_wiring,
              test_white_rescue, test_white_rescue_light_chroma,
              test_dominant_hue_fill,

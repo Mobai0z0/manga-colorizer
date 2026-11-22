@@ -95,7 +95,7 @@ finish_golden.json`，由 `tool/colorizer_service/gen_finish_golden.py` 生成�
    经色域映射必然输出纯白，暖纸风格（昭和复古）只能在此施加。
 
 方案表 `FINISH_SCHEMES`（桌面）与 `kFinishSchemes`（core finish.dart）同表同值：
-standard（默认，修复偏黄偏灰）/ vivid-cel / soft-pastel / impasto / retro-showa，
+standard（默认；2026-11-22 起平增益直出——纸白中和与自适应色度仅其余方案启用）/ vivid-cel / soft-pastel / impasto / retro-showa，
 随 `/colorize_auto` 的 `scheme` 表单字段与移动端 job 消息下发。提示点融合与参考图
 路径的用户显式色走平增益收尾（不二次增益、不中和用户色）。
 参考图模式（`_process_reference` / 移动端 `reference_flow.dart` +

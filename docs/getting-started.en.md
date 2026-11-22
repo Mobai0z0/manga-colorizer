@@ -62,8 +62,8 @@ verified), or wait for the official APK in Releases.
    through downloading them (~300 MB, i.e. 286 MiB, one-time), with resume support and
    SHA-256 verification; the hf-mirror address in the manifest is reserved — this version
    always downloads from huggingface.co.
-3. Once ready, pick an image, choose a "Color scheme" (the default "Standard" already fixes
-   the yellow/gray cast), and start fully automatic colorization; results can be
+3. Once ready, pick an image, choose a "Color scheme" (the default "Standard" passes the
+   model colors through unchanged), and start fully automatic colorization; results can be
    shared/saved from inside the app.
 4. The "Reference colorization" card uses the same algorithm as the desktop reference mode
    (weights required): pick a source (line art) + a character color reference → model
@@ -85,14 +85,14 @@ pink in one panel, blue in another), they are unified toward the side with the l
 chroma mass; hatching areas flattened into gray patches are tinted with the surrounding
 dominant color instead of looking "uncolored". Then it always goes through "color
 finishing v2" (paper-white
-neutralization against the yellow cast + adaptive chroma against the gray look + gamut
-mapping) and ships with five style schemes — a dropdown in the desktop workbench when the
+white-rescue + gamut mapping; paper neutralization and adaptive chroma apply to the
+non-standard schemes) and ships with five style schemes — a dropdown in the desktop workbench when the
 mode is "Fully automatic", a selector in the mobile "Fully automatic" tab, both sent with
 the job:
 
 | Scheme | Description |
 |---|---|
-| Standard | Paper neutralization + moderate adaptive gain (default; fixes yellowish paper and muted output) |
+| Standard | Flat-gain passthrough: no paper neutralization, no chroma gain — model colors kept as-is (default) |
 | Vivid Cel | High-saturation, high-clarity popular cel-shading look |
 | Soft Pastel | Low-saturation pale colors, creamy white paper |
 | Impasto | Oil-painting-like richness, gains applied even to strong chroma, slightly warm |

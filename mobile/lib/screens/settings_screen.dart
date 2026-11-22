@@ -89,7 +89,8 @@ class SettingsPage extends StatelessWidget {
                     controller.update(s.copyWith(backgroundStyle: sel.first)),
               ),
               const SizedBox(height: 8),
-              Text('莫奈流动＝暖纸画布上三色球漫游；默认＝纯色画布，低端机或省电时更省 GPU。',
+              Text('莫奈流动＝三色球漫游画布（配色主题选「跟随系统」时随设备取色，'
+                  '其余主题为暖纸）；默认＝纯色画布，低端机或省电时更省 GPU。',
                   style: Theme.of(context).textTheme.bodySmall),
               const SizedBox(height: 24),
               Text('上色模型', style: Theme.of(context).textTheme.titleSmall),

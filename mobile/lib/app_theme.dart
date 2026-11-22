@@ -4,8 +4,9 @@
 //   - 衬线标题 / 无衬线正文（行高 1.6）/ 等宽数据三栈字体；
 //   - 玻璃令牌与莫奈色球经 ThemeExtension（WarmPalette）下发。
 //
-// [ThemePreset.dynamic]（跟随设备取色 / Material You）由 dynamic_color 包的
-// DynamicColorBuilder 提供设备调色板，经 [buildDynamicTheme] 套回暖纸中性底；
+// [ThemePreset.dynamic]（跟随设备取色 / Material You 莫奈取色）由 dynamic_color
+// 包的 DynamicColorBuilder 提供设备调色板，经 [buildDynamicTheme] 装配：家具
+// （浮层/玻璃/文字）套回暖纸中性底，背景（画布 + 莫奈三色球）跟随设备取色；
 // 不支持或未授权时回退赤陶暖纸（kDynamicFallbackAccent）。
 import 'package:flutter/material.dart';
 
@@ -94,10 +95,38 @@ ThemeData buildAppTheme(ThemePreset preset, Brightness brightness) {
   return _finalize(_warmScheme(accent, brightness), brightness);
 }
 
-/// Material You 分支：保留设备主色族，套回暖纸中性底、字体与组件主题，
-/// 保证「跟随系统」也只在家具上跟随，墙纸（画布/浮层）恒为暖纸。
-ThemeData buildDynamicTheme(ColorScheme deviceScheme, Brightness brightness) =>
-    _finalize(applyWarmNeutrals(deviceScheme, brightness), brightness);
+/// Material You 分支（莫奈取色）：家具（浮层/玻璃/文字）套回暖纸中性底，
+/// 但**背景跟随设备**——画布 surface 取设备值、莫奈三色球由设备 primary/
+/// secondary/tertiary 派生（2026-11-22 用户裁决：莫奈取色下背景不再恒为
+/// 暖色系），字体与组件主题与其他路径一致。
+ThemeData buildDynamicTheme(ColorScheme deviceScheme, Brightness brightness) {
+  final scheme =
+      applyWarmNeutrals(deviceScheme, brightness) // 家具仍为暖纸中性
+          .copyWith(surface: deviceScheme.surface); // 画布跟随设备取色
+  return _finalize(scheme, brightness, palette: _dynamicPalette(deviceScheme, brightness));
+}
+
+/// 设备调色板 → 莫奈三色球：取设备 primary/secondary/tertiary 的色相，
+/// 统一做「浅去饱和」柔化（饱和度 ×0.6 钳 0.38 上限、明度统一 0.70——与
+/// 暖纸 kMonet* 三球的定档思路同源；实际浓度再经 monetOpacity 稀释）。
+/// 三球明暗两套同值（与暖纸定值行为一致）。
+WarmPalette _dynamicPalette(ColorScheme device, Brightness b) {
+  final base =
+      b == Brightness.light ? const WarmPalette.light() : const WarmPalette.dark();
+  return base.copyWith(
+    monetTerracotta: _softBlobColor(device.primary),
+    monetSage: _softBlobColor(device.secondary),
+    monetSand: _softBlobColor(device.tertiary),
+  );
+}
+
+Color _softBlobColor(Color source) {
+  final hsl = HSLColor.fromColor(source);
+  return hsl
+      .withSaturation((hsl.saturation * 0.6).clamp(0.0, 0.38).toDouble())
+      .withLightness(0.70)
+      .toColor();
+}
 
 /// 把设备调色板的中性角色统一替换为暖纸值（保留其 primary 一家）。
 ColorScheme applyWarmNeutrals(ColorScheme scheme, Brightness b) =>
@@ -178,8 +207,9 @@ ColorScheme _warmScheme(WarmAccent accent, Brightness b) {
 }
 
 /// 统一装配：令牌 + 字体 + 组件主题。两条构建路径（固定预设 / Material You）
-/// 都必须经这里，保证外观完全一致。
-ThemeData _finalize(ColorScheme scheme, Brightness b) {
+/// 都必须经这里，保证外观完全一致。Material You 路径经 [palette] 覆写莫奈
+/// 三色球（背景跟随设备取色），其余路径用暖纸定值。
+ThemeData _finalize(ColorScheme scheme, Brightness b, {WarmPalette? palette}) {
   final base = ThemeData(
     useMaterial3: true,
     colorScheme: scheme,
@@ -189,9 +219,10 @@ ThemeData _finalize(ColorScheme scheme, Brightness b) {
     // 画布透明：露出 MaterialApp.builder 里垫底的莫奈流动背景。
     scaffoldBackgroundColor: Colors.transparent,
     extensions: [
-      b == Brightness.light
-          ? const WarmPalette.light()
-          : const WarmPalette.dark(),
+      palette ??
+          (b == Brightness.light
+              ? const WarmPalette.light()
+              : const WarmPalette.dark()),
     ],
     textTheme: _warmTextTheme(base.textTheme),
     // AppBar / 导航栏由玻璃组件（GlassAppBar / GlassBottomBar）接管外观，

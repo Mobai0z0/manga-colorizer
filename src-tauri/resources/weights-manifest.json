@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "version": "v6.1",
-  "updatedAt": "2026-11-21",
+  "version": "v6.2",
+  "updatedAt": "2026-11-22",
   "baseDir": "manga-light-colorizer",
   "source": {
     "license": "CC-BY-NC-SA-4.0",
@@ -29,6 +29,62 @@
       "sha256": "fee5f892879e3552885ecd18e04a3cb79a4537c10ba9e5b1a93116af0f8de423",
       "pathTemplate": "https://huggingface.co/deepghs/wd14_tagger_with_embeddings/resolve/main/SmilingWolf/wd-v1-4-moat-tagger-v2/model.onnx",
       "mirrorPathTemplate": "https://hf-mirror.com/deepghs/wd14_tagger_with_embeddings/resolve/main/SmilingWolf/wd-v1-4-moat-tagger-v2/model.onnx"
+    },
+    {
+      "name": "sana-manga-coloring-int8/encode.onnx",
+      "size": 1684246,
+      "sha256": "36406fa7e566523132c909d2c2227b9889d5773ae14db551f1276c490e33a8ad",
+      "optional": true,
+      "pathTemplate": "https://huggingface.co/masterofaudio2077/sana-manga-coloring-onnx-int8/resolve/main/encode.onnx",
+      "mirrorPathTemplate": "https://hf-mirror.com/masterofaudio2077/sana-manga-coloring-onnx-int8/resolve/main/encode.onnx"
+    },
+    {
+      "name": "sana-manga-coloring-int8/encode.onnx.data",
+      "size": 619772608,
+      "sha256": "c07cdc3be569c456351fbcc8daef4621bfd8a71fac8f4a27eca6693022841422",
+      "optional": true,
+      "pathTemplate": "https://huggingface.co/masterofaudio2077/sana-manga-coloring-onnx-int8/resolve/main/encode.onnx.data",
+      "mirrorPathTemplate": "https://hf-mirror.com/masterofaudio2077/sana-manga-coloring-onnx-int8/resolve/main/encode.onnx.data"
+    },
+    {
+      "name": "sana-manga-coloring-int8/decode.onnx",
+      "size": 1652808,
+      "sha256": "2e5efe4f86ffea2bce1cd36e7141644a713f735ac0f6ff0f37797801be992a53",
+      "optional": true,
+      "pathTemplate": "https://huggingface.co/masterofaudio2077/sana-manga-coloring-onnx-int8/resolve/main/decode.onnx",
+      "mirrorPathTemplate": "https://hf-mirror.com/masterofaudio2077/sana-manga-coloring-onnx-int8/resolve/main/decode.onnx"
+    },
+    {
+      "name": "sana-manga-coloring-int8/decode.onnx.data",
+      "size": 636892672,
+      "sha256": "2774d47d643e4c0c4ca7088c723e264c1e5332cf87134e65ca3284a08847fc58",
+      "optional": true,
+      "pathTemplate": "https://huggingface.co/masterofaudio2077/sana-manga-coloring-onnx-int8/resolve/main/decode.onnx.data",
+      "mirrorPathTemplate": "https://hf-mirror.com/masterofaudio2077/sana-manga-coloring-onnx-int8/resolve/main/decode.onnx.data"
+    },
+    {
+      "name": "sana-manga-coloring-int8/head.onnx",
+      "size": 63090112,
+      "sha256": "341859d3ae92965ea753410e789227b77c12b1a078b134e96a91179b0f04c5d5",
+      "optional": true,
+      "pathTemplate": "https://huggingface.co/masterofaudio2077/sana-manga-coloring-onnx-int8/resolve/main/head.onnx",
+      "mirrorPathTemplate": "https://hf-mirror.com/masterofaudio2077/sana-manga-coloring-onnx-int8/resolve/main/head.onnx"
+    },
+    {
+      "name": "sana-manga-coloring-int8/blocks.onnx",
+      "size": 1377207205,
+      "sha256": "a8d97706ad9dfdb57e3f3b72f31cad64fa2fa303faaa5682a848105c6ae2477a",
+      "optional": true,
+      "pathTemplate": "https://huggingface.co/masterofaudio2077/sana-manga-coloring-onnx-int8/resolve/main/blocks.onnx",
+      "mirrorPathTemplate": "https://hf-mirror.com/masterofaudio2077/sana-manga-coloring-onnx-int8/resolve/main/blocks.onnx"
+    },
+    {
+      "name": "sana-manga-coloring-int8/out.onnx",
+      "size": 153479,
+      "sha256": "cbed3ec81262bbff1aa8c7ea103087db4a4238194821c99a0f3501cf5ba93317",
+      "optional": true,
+      "pathTemplate": "https://huggingface.co/masterofaudio2077/sana-manga-coloring-onnx-int8/resolve/main/out.onnx",
+      "mirrorPathTemplate": "https://hf-mirror.com/masterofaudio2077/sana-manga-coloring-onnx-int8/resolve/main/out.onnx"
     }
   ]
 }

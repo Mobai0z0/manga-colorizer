@@ -111,9 +111,18 @@ significantly slower (MNN built once per ABI). After cloning, run
   consistency). Performance: CPU int8 20 steps ≈ 55-75s/page (4 threads;
   cache=0.15 step cache ≈1.6x), DirectML fp16 conversion is the future
   perf mainline. Weights ~2.7GB (encode/decode/head/blocks/out) live in
-  `models/manga-light-colorizer/sana-manga-coloring-int8/`; downloader
-  manifest wiring and a settings engine selector are next; hints/reference
-  still run on v6. Acceptance: start with `COLORIZER_ENGINE=sana` and compare
+  `models/manga-light-colorizer/sana-manga-coloring-int8/`.
+  Follow-up (2026-11-22): the settings page gained a "Color model" switch
+  (same semantics as mobile) — the service hot-switches via settings.json
+  `engine` (releases both session sets; v6 re-preloads, the five Sana
+  sessions are not kept resident and lazy-load on first colorize), and
+  `COLORIZER_ENGINE` only defines the startup default. The downloader manifest
+  wires the Sana weights as `optional: true` entries (boot download skips
+  optional files; allReady covers required only), and a settings-page
+  "Download Sana weights" button triggers them on demand
+  (`cmd_start_optional_download`, reusing resume/verify/mirror). The semantic
+  base of hints/reference routes through colorize() with the current engine
+  as well. Acceptance: start with `COLORIZER_ENGINE=sana` and compare
   /colorize_auto output against v6 zeros — natural skin / dark hair retained /
   clean backgrounds / no yellow-green wash; known variance: palette shifts
   with the noise seed (fixed seed = reproducible), a "re-color" button is

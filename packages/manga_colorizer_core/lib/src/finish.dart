@@ -62,8 +62,10 @@ class FinishOptions {
 /// 内置色彩方案（id 稳定，跨端共用；桌面 service.py FINISH_SCHEMES 同表）。
 /// 参数经 tmp 调参实验在样张上定档（2026-10-10）。
 const Map<String, FinishOptions> kFinishSchemes = {
-  // 标准：纸白中和 + 适度自适应增益——修复偏黄偏灰的新默认。
-  'standard': FinishOptions(gain: 1.40, knee: 16.0, neutralPaper: true),
+  // 标准：平增益直出（2026-11-22 用户裁决：删去偏黄偏灰修复——不做纸白
+  // 中和、不做色度增益，保留模型原生色彩；白色前景救援与色域映射仍生效，
+  // 由调用方注入的 rescue 参数与 labToRgbFinish 固有的映射承担）。
+  'standard': FinishOptions(gain: 1.0, knee: 0.0, neutralPaper: false),
   // 鲜明赛璐璐：高饱和高清晰的人气赛璐璐投稿感。
   'vivid-cel': FinishOptions(gain: 1.80, knee: 24.0, neutralPaper: true),
   // 柔和淡彩：ふんわり低饱和淡色，奶油白纸面。

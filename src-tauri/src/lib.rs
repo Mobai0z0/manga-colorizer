@@ -103,6 +103,7 @@ fn weights_status(state: &AppState) -> WeightsStatus {
             dir: downloader::app_data_dir(),
             manifestVersion: "unknown".into(),
             allReady: false,
+            optionalReady: false,
             totalBytes: 0,
             doneBytes: 0,
             files: vec![],
@@ -206,125 +207,162 @@ fn cmd_start_download(app: AppHandle, state: tauri::State<AppState>) -> Result<b
     })?;
     // 下载源由设置页写入 settings.json；boot 页不需要传参，首次启动缺省 auto。
     let mode = normalize_source(&read_shell_settings().download_source);
+    // boot 下载只取必需文件（可选组件如 Sana 2.7GB 由设置页按需触发）。
+    let entries: Vec<_> = manifest.files.iter().filter(|f| !f.optional).cloned().collect();
     *state.downloading.lock().unwrap() = true;
     let app2 = app.clone();
+    thread::spawn(move || download_entries(app2, manifest, entries, &mode, true));
+    Ok(true)
+}
 
-    thread::spawn(move || {
+/// 设置页按需下载可选权重（当前 = Sana 上色模型）。只取尚未校验通过的可选
+/// 条目；完成/失败仅广播 weights-status，不重启 sidecar（service 端懒加载，
+/// 权重落盘即可用）。
+#[tauri::command]
+fn cmd_start_optional_download(app: AppHandle, state: tauri::State<AppState>) -> Result<bool, String> {
+    let already = *state.downloading.lock().unwrap();
+    if already {
+        return Ok(false);
+    }
+    let manifest = state.manifest.clone().ok_or_else(|| {
+        state.manifest_error.clone().unwrap_or_else(|| "权重清单未加载".into())
+    })?;
+    let mode = normalize_source(&read_shell_settings().download_source);
+    // 已就绪的可选文件跳过（避免每次点击都重新 sha256 全量 2.7GB）。
+    let st = weights_status(&state);
+    let entries: Vec<_> = manifest
+        .files
+        .iter()
+        .filter(|f| f.optional && !st.files.iter().any(|s| s.name == f.name && s.verified))
+        .cloned()
+        .collect();
+    if entries.is_empty() {
+        return Ok(false);
+    }
+    *state.downloading.lock().unwrap() = true;
+    let app2 = app.clone();
+    thread::spawn(move || download_entries(app2, manifest, entries, &mode, false));
+    Ok(true)
+}
+
+/// 下载一批清单条目（断点续传 + 主/镜像回退），进度经 download-progress 广播。
+/// boot=true 时完成后拉起 sidecar 并回主窗口（首次启动流程）；否则只广播
+/// weights-status（设置页按需下载场景）。
+fn download_entries(app2: AppHandle, manifest: Manifest, entries: Vec<downloader::ManifestEntry>,
+                    mode: &str, boot: bool) {
+    {
         let _ = app2.emit("download-progress", UiProgress {
             phase: "downloading".into(),
             currentFile: String::new(),
             fileBytesDone: 0,
             fileBytesTotal: 0,
             totalBytesDone: 0,
-            totalBytes: manifest.files.iter().map(|f| f.size).sum(),
+            totalBytes: entries.iter().map(|f| f.size).sum(),
             message: None,
             resumedFrom: 0,
         });
+    }
 
-        let manifest_total: u64 = manifest.files.iter().map(|f| f.size).sum();
-        let mut aborted = false;
-        let mut last_err: Option<String> = None;
-        let files_total = manifest.files.len();
-        let mut completed_bytes: u64 = 0;
+    let manifest_total: u64 = entries.iter().map(|f| f.size).sum();
+    let mut aborted = false;
+    let mut last_err: Option<String> = None;
+    let mut completed_bytes: u64 = 0;
 
-        for (idx, entry) in manifest.files.iter().enumerate() {
-            let mut use_mirror = mode == "mirror";
-            let allow_fallback = mode == "auto";
-            let mut attempt = 0;
-            loop {
-                attempt += 1;
-                let app_ev = app2.clone();
-                let entry_clone = entry.clone();
-                let manifest_clone = manifest.clone();
-                let idx_done = completed_bytes;
-                let res = std::thread::spawn(move || {
-                    downloader::download_one(&manifest_clone, &entry_clone, use_mirror, move |ev: DownloadEvent| {
-                        let _ = app_ev.emit("download-progress", UiProgress {
-                            phase: ev.phase.clone(),
-                            currentFile: ev.name.clone(),
-                            fileBytesDone: ev.bytesDone,
-                            fileBytesTotal: ev.totalBytes,
-                            totalBytesDone: idx_done + ev.bytesDone,
-                            totalBytes: manifest_total,
-                            message: ev.error.clone(),
-                            resumedFrom: ev.resumedFrom,
-                        });
-                    })
-                });
-                match res.join() {
-                    Ok(Ok(_)) => {
-                        completed_bytes += entry.size;
-                        break;
+    for entry in entries.iter() {
+        let mut use_mirror = mode == "mirror";
+        let allow_fallback = mode == "auto";
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let app_ev = app2.clone();
+            let entry_clone = entry.clone();
+            let manifest_clone = manifest.clone();
+            let idx_done = completed_bytes;
+            let res = std::thread::spawn(move || {
+                downloader::download_one(&manifest_clone, &entry_clone, use_mirror, move |ev: DownloadEvent| {
+                    let _ = app_ev.emit("download-progress", UiProgress {
+                        phase: ev.phase.clone(),
+                        currentFile: ev.name.clone(),
+                        fileBytesDone: ev.bytesDone,
+                        fileBytesTotal: ev.totalBytes,
+                        totalBytesDone: idx_done + ev.bytesDone,
+                        totalBytes: manifest_total,
+                        message: ev.error.clone(),
+                        resumedFrom: ev.resumedFrom,
+                    });
+                })
+            });
+            match res.join() {
+                Ok(Ok(_)) => {
+                    completed_bytes += entry.size;
+                    break;
+                }
+                Ok(Err(e)) => {
+                    last_err = Some(e.clone());
+                    // auto: one retry on primary, then one via mirror, then give up.
+                    // primary/mirror: the user picked a single source, no fallback.
+                    if allow_fallback && attempt == 1 && !use_mirror {
+                        use_mirror = true;
+                        continue;
                     }
-                    Ok(Err(e)) => {
-                        last_err = Some(e.clone());
-                        // auto: one retry on primary, then one via mirror, then give up.
-                        // primary/mirror: the user picked a single source, no fallback.
-                        if allow_fallback && attempt == 1 && !use_mirror {
-                            use_mirror = true;
-                            continue;
-                        }
-                        aborted = true;
-                        break;
+                    aborted = true;
+                    break;
+                }
+                Err(_) => {
+                    last_err = Some("下载线程异常崩溃".into());
+                    if allow_fallback && attempt == 1 && !use_mirror {
+                        use_mirror = true;
+                        continue;
                     }
-                    Err(_) => {
-                        last_err = Some("下载线程异常崩溃".into());
-                        if allow_fallback && attempt == 1 && !use_mirror {
-                            use_mirror = true;
-                            continue;
-                        }
-                        aborted = true;
-                        break;
-                    }
+                    aborted = true;
+                    break;
                 }
             }
-            let _ = idx;
-            let _ = files_total;
-            if aborted {
-                break;
-            }
         }
-
-        {
-            let st = app2.state::<AppState>();
-            *st.downloading.lock().unwrap() = false;
-        }
-        let st = {
-            let state_any = app2.state::<AppState>();
-            weights_status(&state_any)
-        };
-
         if aborted {
-            let _ = app2.emit("download-progress", UiProgress {
-                phase: "failed".into(),
-                currentFile: last_err.clone().unwrap_or_default(),
-                fileBytesDone: 0,
-                fileBytesTotal: 0,
-                totalBytesDone: st.doneBytes,
-                totalBytes: st.totalBytes,
-                message: last_err,
-                resumedFrom: 0,
-            });
-        } else {
-            let _ = app2.emit("download-progress", UiProgress {
-                phase: "done".into(),
-                currentFile: String::new(),
-                fileBytesDone: 0,
-                fileBytesTotal: 0,
-                totalBytesDone: st.totalBytes,
-                totalBytes: st.totalBytes,
-                message: None,
-                resumedFrom: 0,
-            });
+            break;
+        }
+    }
+
+    {
+        let st = app2.state::<AppState>();
+        *st.downloading.lock().unwrap() = false;
+    }
+    let st = {
+        let state_any = app2.state::<AppState>();
+        weights_status(&state_any)
+    };
+
+    if aborted {
+        let _ = app2.emit("download-progress", UiProgress {
+            phase: "failed".into(),
+            currentFile: last_err.clone().unwrap_or_default(),
+            fileBytesDone: 0,
+            fileBytesTotal: 0,
+            totalBytesDone: st.doneBytes,
+            totalBytes: st.totalBytes,
+            message: last_err,
+            resumedFrom: 0,
+        });
+    } else {
+        let _ = app2.emit("download-progress", UiProgress {
+            phase: "done".into(),
+            currentFile: String::new(),
+            fileBytesDone: 0,
+            fileBytesTotal: 0,
+            totalBytesDone: manifest_total,
+            totalBytes: manifest_total,
+            message: None,
+            resumedFrom: 0,
+        });
+        let _ = app2.emit("weights-status", st.clone());
+        if boot {
             // weights ready -> (re)start sidecar now
-            let _ = app2.emit("weights-status", st);
             let _ = sidecar_mgr::spawn(&app2);
             sidecar_mgr::watch(app2.clone());
             reload_main_window(&app2);
         }
-    });
-
-    Ok(true)
+    }
 }
 
 
@@ -423,6 +461,7 @@ pub fn run() {
             cmd_delete_weights,
             cmd_open_weights_dir,
             cmd_start_download,
+            cmd_start_optional_download,
             cmd_get_download_source,
             cmd_set_download_source,
             cmd_sidecar_status,

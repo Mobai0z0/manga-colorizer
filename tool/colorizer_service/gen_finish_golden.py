@@ -56,7 +56,9 @@ def gen_finish() -> None:
     cases['flat'] = dict(service._FLAT_FINISH)
     # 白色前景救援用例: 固定门限参数（生产窄门限 c0=3.0/c1=5.0 的代表值）
     # + 确定性掩码（每第 3 个像素, 值 2 = 封闭近白标记; 纸白标记 1 不救援）
-    cases['rescue'] = dict(service._resolve_finish('standard'),
+    # 载体用 vivid-cel（2026-11-22 standard 平增益直出后, 救援的「整体豁免
+    # 纸白中和」路径需要带中和的方案才有区分度）。
+    cases['rescue'] = dict(service._resolve_finish('vivid-cel'),
                            rescue_c0=3.0, rescue_c1=5.0, rescue_dl=16.0)
     for name, opt in cases.items():
         l_all, ab_all, bgr_all, mask_all = [], [], [], []

@@ -128,7 +128,8 @@ order:
    step, so warm-paper styles (Retro Showa) can only be applied here.
 
 The scheme table `FINISH_SCHEMES` (desktop) and `kFinishSchemes` (core finish.dart) hold the
-same values: standard (default; fixes the yellow/gray cast) / vivid-cel / soft-pastel /
+same values: standard (default; flat-gain passthrough since 2026-11-22 — paper neutralization
+and adaptive chroma remain available to the other schemes) / vivid-cel / soft-pastel /
 impasto / retro-showa, selected per request via the `scheme` form field of `/colorize_auto`
 and the mobile job message. User-explicit paths (hint merge, reference transfer) use the flat
 finish (no double gain, no neutralization of user colors).

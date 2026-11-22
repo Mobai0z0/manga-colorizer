@@ -48,7 +48,9 @@ smoothstep 把近白像素色度收向中性, 去除模型对纸白的系统性�
 ③方案色温 →④超 sRGB 色域像素按「亮度不变、色度等比收缩」做色域映射
 （替代 cv2 LAB2BGR 逐通道硬截断——截断拉偏色相, 是发灰发闷主因）→
 ⑤（可选）纸色渲染。方案表 FINISH_SCHEMES 与移动端 core finish.dart 同表,
-默认 standard。COLORIZER_CHROMA_GAIN 环境变量可覆写 standard 方案的增益。
+默认 standard——2026-11-22 用户裁决 standard 平增益直出（①②已删去, 保留
+模型原生色彩）, 中和/增益仅其余方案启用。COLORIZER_CHROMA_GAIN 环境变量
+可覆写 standard 方案的增益。
 
 启动: cd tool/colorizer_service && python -m uvicorn service:app --port 8788
 """
@@ -152,14 +154,46 @@ _mnn_failed = False  # MNN 加载失败后置位：本进程内固定走 ONNX，
 # sana 取证（用户画廊 8 页 0001-0008, tmp/sana_p000*.png）: 自然肤色+深发保留+
 # 干净背景+tag 可控氛围, 完胜 v6 的两条路径（zeros 灰淡 / 自举黄绿泛染——已回退
 # 默认关闭）。sana 整页 i2i 无分块, CPU int8 20 步 ≈ 70s/页（cache=0.15 ≈45s）,
-# DirectML fp16 转换为后续性能主线。hints/reference 仍走 v6（提示点引擎独立,
-# 参考迁移是 Lab 统计, 与基底无关）。
+# DirectML fp16 转换为后续性能主线。auto/hints/reference 的语义基底统一经
+# colorize() 按当前引擎路由（与移动端设置页「上色模型」同语义: 模型决定画风,
+# 计算设备 CPU/GPU 与之正交）。
+# 运行时切换（2026-11-22）: 设置页「上色模型」写 settings.json 'engine' →
+# POST /api/v1/settings 热切换（释放两会话集, v6 重新预热; sana 五会话 ~2.7GB
+# 不常驻预热, 首次上色懒加载）。COLORIZER_ENGINE 环境变量只定启动默认,
+# settings.json 里已存的合法值优先生效。
 ENGINE = os.environ.get('COLORIZER_ENGINE', 'v6').lower()
 if ENGINE not in ('v6', 'sana'):
     raise ValueError('COLORIZER_ENGINE must be v6 or sana')
 SANA_DIR = Path(os.environ.get('COLORIZER_SANA_DIR',
                                str(MODEL_DIR / 'sana-manga-coloring-int8')))
+_SANA_WEIGHT_FILES = ('encode.onnx', 'decode.onnx', 'head.onnx',
+                      'blocks.onnx', 'out.onnx')
 _sana_state = {'c': None}
+# 运行时引擎（settings.json 覆盖 env 默认; None = 用 ENGINE）。
+_runtime_engine = {'value': None}
+
+
+def _engine() -> str:
+    """当前生效引擎: 设置覆盖值, 缺省 env/COLORIZER_ENGINE。"""
+    return _runtime_engine['value'] or ENGINE
+
+
+def _sana_ready() -> bool:
+    """Sana 五会话权重是否就绪（五个 .onnx; 外部数据 .onnx.data 随主文件校验）。"""
+    return all((SANA_DIR / f).is_file() for f in _SANA_WEIGHT_FILES)
+
+
+# 启动即读 settings.json 的 engine（设置页持久选择优先于 env 默认）;
+# sana 权重未就绪时回退默认并告警（设置值保留, 权重就绪后下次启动生效）。
+_startup_engine = _load_settings().get('engine')
+if _startup_engine in ('v6', 'sana') and (_startup_engine == 'v6' or _sana_ready()):
+    if _startup_engine != ENGINE:
+        logging.info('按 settings.json 使用引擎 %s（env 默认 %s）',
+                     _startup_engine, ENGINE)
+    _runtime_engine['value'] = _startup_engine
+elif _startup_engine == 'sana':
+    logging.warning('settings.json 指定 sana 但权重未就绪（%s），回退 %s',
+                    SANA_DIR, ENGINE)
 
 
 def _sana_colorizer():
@@ -167,9 +201,7 @@ def _sana_colorizer():
     with _session_lock:
         if _sana_state['c'] is None:
             from sana_engine import SanaColorizer
-            if not all((SANA_DIR / f).is_file() for f in
-                       ('encode.onnx', 'decode.onnx', 'head.onnx',
-                        'blocks.onnx', 'out.onnx')):
+            if not _sana_ready():
                 raise RuntimeError(
                     'Sana 权重未就绪：需要 '
                     f'{SANA_DIR}/{{encode,decode,head,blocks,out}}.onnx'
@@ -215,8 +247,11 @@ WD14_THREADS = max(1, int(os.environ.get('COLORIZER_WD14_THREADS', '4')))
 # 定点去除, 偏灰用自适应软膝增益修复(平坦增益会把已鲜艳的强色一起放大)。
 DEFAULT_SCHEME = 'standard'
 FINISH_SCHEMES: dict[str, dict] = {
-    # 标准: 纸白中和 + 适度自适应增益——修复偏黄偏灰的新默认。
-    'standard': dict(gain=1.40, knee=16.0, neutral_paper=True),
+    # 标准: 平增益直出（2026-11-22 用户裁决: 删去偏黄偏灰修复——不做纸白中和、
+    # 不做色度增益, 保留模型原生色彩; 白色前景救援与色域映射仍生效）。
+    # COLORIZER_CHROMA_GAIN 环境变量仍可在此方案上覆写增益（knee=0 → 平增益,
+    # 即 v2 之前的旧行为）。
+    'standard': dict(gain=1.0, knee=0.0, neutral_paper=False),
     # 鲜明赛璐璐: 高饱和高清晰的人气赛璐璐投稿感。
     'vivid-cel': dict(gain=1.80, knee=24.0, neutral_paper=True),
     # 柔和淡彩: ふんわり低饱和淡色, 奶油白纸面。
@@ -669,6 +704,8 @@ def _preload_worker():
 def _start_preload():
     if not PRELOAD:
         return
+    if _engine() == 'sana':
+        return  # sana 五会话 ~2.7GB + 20 步 diffusion：不常驻预热, 首次上色懒加载
     if BACKEND == 'mnn':
         ready = GENERATOR_MNN.is_file() and SAM_ENCODER_MNN.is_file()
     else:
@@ -1352,12 +1389,12 @@ def colorize_tiled(gray: np.ndarray, opt: dict, tile: int = 1024, overlap: int =
 def colorize(gray: np.ndarray, opt: dict, scheme: str = DEFAULT_SCHEME) -> np.ndarray:
     """灰度 uint8 [H,W] → BGR uint8 [H,W,3]。
 
-    ENGINE=sana: 整页 i2i（短边 512、32 倍数）, 输出自带明度（不做 L 回写/
+    引擎=sana: 整页 i2i（短边 512、32 倍数）, 输出自带明度（不做 L 回写/
     收尾/一致性——Sana 的手涂质感与跨格协调由模型条件端承担）, 方案映射为
     tag 预设（sana_engine.SANA_SCHEMES）。
-    ENGINE=v6（默认）: 长边 >1024 自动分块, opt=收尾方案。
+    引擎=v6（默认）: 长边 >1024 自动分块, opt=收尾方案。
     """
-    if ENGINE == 'sana':
+    if _engine() == 'sana':
         return colorize_sana(gray, scheme)
     if max(gray.shape) > INFER_SIZE:
         return colorize_tiled(gray, opt)
@@ -1451,6 +1488,9 @@ def health():
         'weights_present': weights_present,
         'generator_loaded': _state['gen'] is not None,
         'sam_loaded': _state['sam'] is not None,
+        'engine': _engine(),
+        'sana_ready': _sana_ready(),
+        'sana_dir': str(SANA_DIR),
         'wd14': {'enabled': WD14_ENABLED, 'tagger_present': TAGGER.is_file(),
                  'active': _tagger_state['sess'] is not None},
         'model_status': _load_state['status'],
@@ -1470,7 +1510,7 @@ def capabilities():
         'modes': ['auto', 'hints', 'reference'],
         'endpoints': {'auto': '/colorize_auto', 'hints': '/colorize_hints',
                       'reference': '/colorize_reference'},
-        'engine': ENGINE,
+        'engine': _engine(),
         'schemes': {k: v['gain'] for k, v in FINISH_SCHEMES.items()},
         'default_scheme': DEFAULT_SCHEME,
         'ref_methods': ['reinhard', 'histogram'],
@@ -1939,7 +1979,7 @@ def gallery_file(name: str):
                     headers={'Cache-Control': 'max-age=86400'})
 
 
-# ---- 设置: 模式 / 处理器 / 免责声明 (本地持久化 settings.json) ----
+# ---- 设置: 模式 / 处理器 / 上色模型 / 免责声明 (本地持久化 settings.json) ----
 @app.get('/api/v1/settings')
 def settings_get():
     return _load_settings()
@@ -1948,7 +1988,8 @@ def settings_get():
 @app.post('/api/v1/settings')
 async def settings_set(request: Request):
     body = await request.json()
-    allowed = {'mode', 'device', 'disclaimer_accepted', 'theme', 'scheme', 'ref_method', 'ref_strength'}
+    allowed = {'mode', 'device', 'disclaimer_accepted', 'theme', 'scheme', 'ref_method',
+               'ref_strength', 'engine'}
     patch = {k: v for k, v in (body or {}).items() if k in allowed}
     if 'device' in patch:
         if patch['device'] not in ('cpu', 'gpu', 'auto'):
@@ -1976,6 +2017,14 @@ async def settings_set(request: Request):
         return JSONResponse({'error': 'disclaimer_accepted 必须是布尔值'}, status_code=400)
     if 'theme' in patch and patch['theme'] not in ('dark', 'light', None):
         return JSONResponse({'error': 'theme 必须是 dark/light/null'}, status_code=400)
+    if 'engine' in patch:
+        if patch['engine'] not in ('v6', 'sana'):
+            return JSONResponse({'error': 'engine 必须是 v6/sana'}, status_code=400)
+        if patch['engine'] == 'sana' and not _sana_ready():
+            return JSONResponse(
+                {'error': f'Sana 权重未就绪：需要 '
+                          f'{SANA_DIR}/{{encode,decode,head,blocks,out}}.onnx（含 .onnx.data）'},
+                status_code=400)
     old_dev = _runtime_device.get('value')
     data = _save_settings(patch)
     new_dev = data.get('device', 'auto')
@@ -1985,6 +2034,20 @@ async def settings_set(request: Request):
         with _session_lock:
             _state.update(gen=None, sam=None, providers=None)
         logging.info('处理器切换: %s (预热新设备)', mapped)
+        _start_preload()
+    # 上色模型热切换: 释放两会话集（v6/sana 不同时驻留——16GB 机器放不下两套）,
+    # 新引擎下次上色时按需加载（v6 另起预热线程, sana 懒加载）。
+    new_engine = data.get('engine')
+    if new_engine in ('v6', 'sana') and new_engine != _engine():
+        old_engine = _engine()
+        _runtime_engine['value'] = new_engine
+        _release_models()
+        if new_engine == 'sana':
+            # sana 不预热: 会话已释放且无预热线程, 置 idle 让 /health 徽标显示
+            # 「休眠中 · 上色时自动唤醒」而不是停在「预热中」。
+            _load_state['status'] = 'idle'
+        logging.info('上色模型切换: %s → %s（新引擎下次上色生效）%s',
+                     old_engine, new_engine, _mem_suffix())
         _start_preload()
     return data
 

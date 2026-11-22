@@ -873,7 +873,7 @@ class _AutoTabState extends State<AutoTab> {
         initialValue: _scheme,
         decoration: InputDecoration(
           labelText: '色彩方案',
-          hintText: '标准＝修复偏黄偏灰的默认收尾',
+          hintText: '标准＝模型原生色彩直出（其余方案做收尾调色）',
           // 圆角填充、无描边无阴影：扁平卡片观感。
           filled: true,
           fillColor: Theme.of(context).colorScheme.surfaceContainerHighest,
