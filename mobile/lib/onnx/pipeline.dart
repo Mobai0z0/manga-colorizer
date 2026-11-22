@@ -177,8 +177,9 @@ Uint8List _crop(Uint8List g, int gw, int x0, int y0, int w, int h) {
   return o;
 }
 
-/// 一块的完整推理：缩 infer²（INTER_AREA 语义）→ SAM+generator →
-/// clip 反归一化 → 放大回块尺寸（INTER_CUBIC 语义）→ 块原始分辨率 RGB。
+/// 一块的完整推理：缩 infer²（INTER_AREA 语义）→ SAM+generator（后端支持
+/// tagger 时走 512 语义自举，输出 infer/2²）→ clip 反归一化 → 放大回块尺寸
+/// （INTER_CUBIC 语义）→ 块原始分辨率 RGB。
 /// 对应桌面 colorize_single（service.py:346-373）；GPU 回退是绑定层的事，不在这里。
 Future<Uint8List> _inferPatch(Uint8List patch, int pw, int ph, int infer,
     OnnxBackend b,
@@ -186,9 +187,10 @@ Future<Uint8List> _inferPatch(Uint8List patch, int pw, int ph, int infer,
   // 浮点张量只被推理本身需要：chw/grayPlane/sam 特征/输出（1024² 时 ~50MB）
   // 全部收敛在 _inferToRgb8 的栈帧里，返回 8bit 后即不可达——否则它们会活到
   // 下面的 cubic 放大与取回拷贝全程，白叠一个同量级的峰值。
-  final rgb8 = await _inferToRgb8(patch, pw, ph, infer, b, onLog: onLog);
+  final (rgb8, size) =
+      await _inferToRgb8(patch, pw, ph, infer, b, onLog: onLog);
   final mid = imglib.Image.fromBytes(
-      width: infer, height: infer, bytes: rgb8.buffer, numChannels: 3);
+      width: size, height: size, bytes: rgb8.buffer, numChannels: 3);
   final big = imglib.copyResize(mid,
       width: pw,
       height: ph,
@@ -203,14 +205,25 @@ Future<Uint8List> _inferPatch(Uint8List patch, int pw, int ph, int infer,
   return big.getBytes();
 }
 
-/// 推理到 8bit RGB（infer²×3）：缩放/归一化/双 session/clip 反归一化。
+/// 语义自举的生成器推理分辨率：FiLM 语义通路仅在训练分辨率 512 有效
+/// （桌面 2026-11-21 取证，service.py `WD14_INFER_SIZE` 同值同注释）。
+const kBootstrapInfer = 512;
+
+/// 推理到 8bit RGB（返回 (rgb8, 边长)——语义自举路径输出 kBootstrapInfer²，
+/// 否则 infer²）：缩放/归一化/双 session（+tagger）/clip 反归一化。
 /// 所有浮点中间量（chw、grayPlane、sam 特征、rgb_pred）都是本函数局部量，
 /// 返回即出作用域——这是「每块峰值」与「放大阶段」不叠加的保证。
 /// [onLog] 逐阶段心跳（SAM 编码/生成开始）：真机推理中途进程死亡时，日志页
 /// 的时间戳据此定位死在哪个模型（v0.5.11 真机「加载完 ~48s 断连、无任何块
 /// 日志」的取证缺口）。
-Future<Uint8List> _inferToRgb8(Uint8List patch, int pw, int ph, int infer,
-    OnnxBackend b,
+///
+/// 语义自举（后端 supportsTagger 时，桌面 service.py `_run_pair` 同配方）:
+/// SAM 特征共享 → gen@512 zeros 出图 → 去网点+白底补方 448² 喂 tagger 得
+/// 嵌入 → gen@512 带嵌入出图（输出 512²，放大回块由 _inferPatch 承担）。
+/// tagger 返回 null 或自举任一步抛错 → 回退 zeros@infer 旧路径（整块降级，
+/// 不失败）。MNN 后端 supportsTagger 恒 false，走旧路径。
+Future<(Uint8List, int)> _inferToRgb8(Uint8List patch, int pw, int ph,
+    int infer, OnnxBackend b,
     {void Function(String line)? onLog}) async {
   // image 包 Interpolation.average：目标像素＝源像素整数窗口均值，
   // 与 cv2 INTER_AREA 同族（非整数比例时 cv2 按面积加权、这里有微小出入，
@@ -239,6 +252,16 @@ Future<Uint8List> _inferToRgb8(Uint8List patch, int pw, int ph, int infer,
   }
   onLog?.call('SAM 编码开始${rssSuffix()}');
   final (s0, s1) = await b.runSam(chw, infer);
+  if (kSemanticBootstrapEnabled && b.supportsTagger) {
+    try {
+      final (rgb8, size) = await _bootstrapToRgb8(
+          src, plane, infer, (s0, s1), b, onLog: onLog);
+      return (rgb8, size);
+    } on Object catch (e) {
+      // 自举中途失败（真机 OOM 等）整块降级 zeros 路径：宁可灰不可黑屏。
+      onLog?.call('语义自举失败，本块回退 zeros 路径: $e');
+    }
+  }
   // runGen 契约：返回行优先 HWC 的 rgb_pred 原样浮点（后端已 CHW→HWC，不再转置）。
   onLog?.call('生成开始');
   final out = await b.runGen(grayPlane, infer, s0, s1);
@@ -247,5 +270,89 @@ Future<Uint8List> _inferToRgb8(Uint8List patch, int pw, int ph, int infer,
     // clip((y+1)*127.5, 0, 255).astype(uint8)：截断取整，与桌面 astype 一致。
     rgb8[i] = ((out[i] + 1) * 127.5).clamp(0.0, 255.0).toInt();
   }
-  return rgb8;
+  return (rgb8, infer);
+}
+
+/// 语义自举单块：gen@512 zeros → tagger（去网点输入）→ gen@512 带嵌入。
+/// 返回 (512²×3 RGB8, 512)。SAM 特征（[runSam] 原样，64²/32²）逐通道双线性
+/// 缩到 32²/16²（桌面 `_feat_resize` 同语义, cv2.INTER_LINEAR≈双线性）。
+Future<(Uint8List, int)> _bootstrapToRgb8(
+    imglib.Image src,
+    Uint8List plane,
+    int infer,
+    ((Float32List, List<int>), (Float32List, List<int>)) feats,
+    OnnxBackend b,
+    {void Function(String line)? onLog}) async {
+  final r = kBootstrapInfer;
+  final small512 = imglib.copyResize(src,
+      width: r, height: r, interpolation: imglib.Interpolation.average);
+  final plane512 = small512.getBytes();
+  final gray512 = Float32List(r * r);
+  for (var i = 0; i < gray512.length; i++) {
+    gray512[i] = plane512[i] / 127.5 - 1.0;
+  }
+  final (s0, s1) = feats;
+  final f0r = _resizeFeatures(s0, r ~/ 16, r ~/ 16);
+  final f1r = _resizeFeatures(s1, r ~/ 32, r ~/ 32);
+
+  Future<Float32List> gen(Float32List? wd14) async {
+    onLog?.call('生成开始（512 语义自举${wd14 == null ? ' zeros' : ''}）');
+    return b.runGen(gray512, r, f0r, f1r, wd14: wd14);
+  }
+
+  var out = await gen(null);
+  var rgb8 = Uint8List(3 * r * r);
+  for (var i = 0; i < rgb8.length; i++) {
+    rgb8[i] = ((out[i] + 1) * 127.5).clamp(0.0, 255.0).toInt();
+  }
+  // tagger 输入：去网点（核心修复——网点高频污染嵌入，桌面 2026-11-21 取证）
+  // → 白底补方 448² → BGR NHWC float32（0-255 原值）。
+  final descreened = descreenRgb3x3(rgb8, r, r);
+  final tagIn = taggerInputFromRgb(descreened, r, r, 448);
+  final emb = await b.runTagger(tagIn, 448);
+  if (emb == null) {
+    // 竞态：supportsTagger 为真但会话刚被释放（空闲卸载）——保持 zeros 结果。
+    onLog?.call('tagger 会话不可用，本块保持 zeros 结果');
+    return (rgb8, r);
+  }
+  out = await gen(emb);
+  for (var i = 0; i < rgb8.length; i++) {
+    rgb8[i] = ((out[i] + 1) * 127.5).clamp(0.0, 255.0).toInt();
+  }
+  return (rgb8, r);
+}
+
+/// SAM 特征逐通道双线性缩放（桌面 `_feat_resize` 同语义：cv2.INTER_LINEAR
+/// ≈双线性；特征平滑，插值族差异可忽略）。planar [1,C,H,W] → [1,C,th,tw]。
+(Float32List, List<int>) _resizeFeatures(
+    (Float32List, List<int>) f, int tw, int th) {
+  final (data, shape) = f;
+  final c = shape[1];
+  final h = shape[2];
+  final w = shape[3];
+  final out = Float32List(c * th * tw);
+  final sx = w / tw;
+  final sy = h / th;
+  for (var ch = 0; ch < c; ch++) {
+    final base = ch * h * w;
+    final obase = ch * th * tw;
+    for (var ty = 0; ty < th; ty++) {
+      final fyv = (ty + 0.5) * sy - 0.5;
+      final y0 = fyv <= 0 ? 0 : (fyv >= h - 1 ? h - 2 : fyv.floor());
+      final fy = (fyv - y0).clamp(0.0, 1.0);
+      for (var tx = 0; tx < tw; tx++) {
+        final fxv = (tx + 0.5) * sx - 0.5;
+        final x0 = fxv <= 0 ? 0 : (fxv >= w - 1 ? w - 2 : fxv.floor());
+        final fx = (fxv - x0).clamp(0.0, 1.0);
+        final p00 = base + y0 * w + x0;
+        final p01 = p00 + 1;
+        final p10 = p00 + w;
+        final p11 = p10 + 1;
+        final top = data[p00] * (1 - fx) + data[p01] * fx;
+        final bot = data[p10] * (1 - fx) + data[p11] * fx;
+        out[obase + ty * tw + tx] = top * (1 - fy) + bot * fy;
+      }
+    }
+  }
+  return (out, [1, c, th, tw]);
 }

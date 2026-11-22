@@ -28,6 +28,10 @@ Uint8List rgbaToRgbBytes(Uint8List rgba) {
 /// 模型语义色 [autoRgb]（engine.colorize 产物）⊕ 参考图迁移色（
 /// [transferReference]，[method]/[strength] 与桌面端选项同语义）在 Lab a/b
 /// 上 5:5 融合，L 恒取 [srcGray]（原稿灰度，[grayToLabL] 转 Lab L）。
+/// 迁移源 2026-11-21 起与桌面同步改为 [autoRgb]（模型真实色度场）：旧实现
+/// 迁移作用在灰度原稿上，灰度 ink 区 a/b 标准差仅 1-3（扫描噪声），Reinhard
+/// 的 ref_std/src_std 会把参考图色度放大 5-8 倍成随机噪声，融合后把语义色
+/// 稀释成灰洗。作用在 auto 上则是对语义色做朝参考图统计的重调色，结构保留。
 /// 迁移与融合整个在一个工作 isolate 完成——闭包为顶层作用域，无 this 可捕
 /// （unsendable 纪律同 v0.5.1 教训）。
 Future<Uint8List> referenceColorizeInIsolate({
@@ -35,15 +39,17 @@ Future<Uint8List> referenceColorizeInIsolate({
   required Uint8List refRgb,
   required Uint8List autoRgb,
   required Uint8List srcGray,
+  required int width,
+  required int height,
   ReferenceMethod method = ReferenceMethod.reinhard,
   double strength = 1.0,
 }) {
   final pixels = srcRgb.length ~/ 3;
   return Isolate.run(() {
     final styled = transferReference(
-      srcRgb: srcRgb,
+      srcRgb: autoRgb,
       refRgb: refRgb,
-      srcPixels: pixels,
+      srcPixels: autoRgb.length ~/ 3,
       refPixels: refRgb.length ~/ 3,
       method: method,
       strength: strength,
@@ -53,6 +59,8 @@ Future<Uint8List> referenceColorizeInIsolate({
       styledRgb: styled,
       srcLBytes: grayToLabL(srcGray),
       pixels: pixels,
+      width: width,
+      height: height,
     );
   });
 }

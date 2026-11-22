@@ -22,6 +22,40 @@ enum BackgroundStyle { plain, monet }
 /// 切换在下一次引擎启动时生效（重新进入全自动页即可）。
 enum InferenceBackend { auto, ort, mnn }
 
+/// 上色模型（全自动/提示点/参考图共用；2026-11-22 起作为设置项暴露）。
+/// 当前唯一选项是 manga-light-colorizer v6（本次对话之前的模型）；枚举结构
+/// 为后续模型迁移（桌面已验证的 Sana-manga-coloring 等）留位——新模型接入
+/// 时在此加值 + [ColorModelExt] 补 label/description，设置页/下载清单随之
+/// 扩展即可。
+enum ColorModel { mangaLightV6 }
+
+extension ColorModelExt on ColorModel {
+  /// 设置页展示名。
+  String get label => switch (this) {
+        ColorModel.mangaLightV6 => 'v6 轻量端侧',
+      };
+
+  /// 模型描述（设置页展示）。
+  String get description => switch (this) {
+        ColorModel.mangaLightV6 =>
+          'manga-light-colorizer v6：FastViT 编码 + SAM 特征引导 + UNet 解码'
+          '（GAN），权重约 300MB（generator + SAM encoder），CC BY-NC-SA 4.0'
+          ' 非商用。特点：轻量端侧、整页/分块推理秒级（DirectML 约 4s/页），'
+          '色彩淡雅偏保守；线稿结构与文字气泡保留好。与「推理后端」（ORT/MNN）'
+          '正交：模型决定画什么风格，后端决定用什么运行时跑。',
+      };
+
+  /// 持久化 id。
+  String get id => switch (this) {
+        ColorModel.mangaLightV6 => 'manga_light_v6',
+      };
+
+  static ColorModel fromId(String id) => switch (id) {
+        'manga_light_v6' => ColorModel.mangaLightV6,
+        _ => ColorModel.mangaLightV6,
+      };
+}
+
 class AppSettings {
   const AppSettings({
     this.downloadSource = DownloadSource.auto,
@@ -33,6 +67,7 @@ class AppSettings {
     this.customHintColors = const [],
     this.backgroundStyle = BackgroundStyle.monet,
     this.inferenceBackend = InferenceBackend.auto,
+    this.colorModel = ColorModel.mangaLightV6,
     this.disclaimerAccepted = false,
   });
 
@@ -66,6 +101,10 @@ class AppSettings {
   /// 全自动推理后端，见 [InferenceBackend]。默认 auto。
   final InferenceBackend inferenceBackend;
 
+  /// 上色模型，见 [ColorModel]。当前仅 v6（设置项结构与描述先行，
+  /// 为模型迁移留位；切换行为随新模型接入而生效）。
+  final ColorModel colorModel;
+
   /// 合规免责声明是否已接受（与桌面 `disclaimer_accepted` 同语义）：
   /// 未接受时上色 / 全自动 / 参考图上色的运行入口保持禁用。
   final bool disclaimerAccepted;
@@ -86,6 +125,7 @@ class AppSettings {
       listEquals(other.customHintColors, customHintColors) &&
       other.backgroundStyle == backgroundStyle &&
       other.inferenceBackend == inferenceBackend &&
+      other.colorModel == colorModel &&
       other.disclaimerAccepted == disclaimerAccepted;
 
   @override
@@ -98,6 +138,7 @@ class AppSettings {
       refStrength,
       backgroundStyle,
       inferenceBackend,
+      colorModel,
       disclaimerAccepted,
       Object.hashAll(customHintColors));
 
@@ -111,6 +152,7 @@ class AppSettings {
     List<int>? customHintColors,
     BackgroundStyle? backgroundStyle,
     InferenceBackend? inferenceBackend,
+    ColorModel? colorModel,
     bool? disclaimerAccepted,
   }) =>
       AppSettings(
@@ -123,6 +165,7 @@ class AppSettings {
         customHintColors: customHintColors ?? this.customHintColors,
         backgroundStyle: backgroundStyle ?? this.backgroundStyle,
         inferenceBackend: inferenceBackend ?? this.inferenceBackend,
+        colorModel: colorModel ?? this.colorModel,
         disclaimerAccepted: disclaimerAccepted ?? this.disclaimerAccepted,
       );
 
@@ -136,6 +179,7 @@ class AppSettings {
         'customHintColors': customHintColors,
         'backgroundStyle': backgroundStyle.name,
         'inferenceBackend': inferenceBackend.name,
+        'colorModel': colorModel.id,
         'disclaimerAccepted': disclaimerAccepted,
       };
 
@@ -154,6 +198,9 @@ class AppSettings {
             BackgroundStyle.values, BackgroundStyle.monet),
         inferenceBackend: _enumFrom(json['inferenceBackend'],
             InferenceBackend.values, InferenceBackend.auto),
+        colorModel: json['colorModel'] is String
+            ? ColorModelExt.fromId(json['colorModel'] as String)
+            : ColorModel.mangaLightV6,
         // 仅接受布尔 true：损坏值（字符串/数字）一律回退未接受。
         disclaimerAccepted: json['disclaimerAccepted'] == true,
       );

@@ -23,11 +23,18 @@ import 'lab.dart';
 /// 前景（白衣等）才看得见; 旧值 18 对 C<10 的浅色等于不救援。
 const double kRescueGateWidth = 2.0;
 
+/// 救援 L 压低上限（桌面 _RESCUE_DL 同值）: 255→239 ≈ Lab 93.7, 淡色足够。
+const double kRescueDl = 16.0;
+
 /// 白色前景救援标记: 0=非近白 1=纸白(连通边缘) 2=封闭近白(救援候选)。
 /// [gray] 为原稿灰度 w*h（1B/px），内部经 [grayToLabL] 转 L 字节。
-Uint8List whiteRescueMarks(Uint8List gray, int width, int height) {
+Uint8List whiteRescueMarks(Uint8List gray, int width, int height) =>
+    whiteRescueMarksFromL(grayToLabL(gray), width, height);
+
+/// [whiteRescueMarks] 的 L 字节入口：调用方已有 grayToLabL 产物（如参考图
+/// 融合的 srcLBytes）时免二次转换，数学与灰度入口逐值一致。
+Uint8List whiteRescueMarksFromL(Uint8List lBytes, int width, int height) {
   final n = width * height;
-  final lBytes = grayToLabL(gray);
   final marks = Uint8List(n);
   var nearCount = 0;
   for (var i = 0; i < n; i++) {

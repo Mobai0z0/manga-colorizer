@@ -137,7 +137,8 @@ class MnnFfiBackend implements OnnxBackend {
 
   @override
   Future<Float32List> runGen(Float32List grayPlane, int s,
-      (Float32List, List<int>) sam0, (Float32List, List<int>) sam1) async {
+      (Float32List, List<int>) sam0, (Float32List, List<int>) sam1,
+      {Float32List? wd14}) async {
     final gen = _genLoaded();
     requireGrayPlane(grayPlane, s);
     requirePlanar(sam0, _kSam0);
@@ -147,7 +148,9 @@ class MnnFfiBackend implements OnnxBackend {
       _kLbw: (grayPlane, [1, 1, s, s]),
       _kSam0: sam0,
       _kSam1: sam1,
-      _kWd14: (Float32List(1024), [1, 1024]),
+      // MNN 后端没有 tagger 会话（runTagger 恒 null），嵌入只可能是外部
+      // 注入（未来参考图引导）；缺省 zeros 与桌面 zeros 路径同语义。
+      _kWd14: (wd14 ?? Float32List(1024), [1, 1024]),
     };
     backendLog('生成 Run 开始（s=$s，feed=${feed.length} 张量，mnn）'
         '${rssSuffix()}');
@@ -161,6 +164,14 @@ class MnnFfiBackend implements OnnxBackend {
     }
     return rgbChwToHwc(chw, s);
   }
+
+  // 不承载 tagger 会话（语义自举仅插件版 ORT 实现）：runTagger 恒 null，
+  // 管线自动回退 zeros 路径。
+  @override
+  Future<Float32List?> runTagger(Float32List nhwc, int s) async => null;
+
+  @override
+  bool get supportsTagger => false;
 
   @override
   Future<void> dispose() async {

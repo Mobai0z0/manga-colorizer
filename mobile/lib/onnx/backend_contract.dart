@@ -35,6 +35,20 @@ void requirePlanar((Float32List, List<int>) t, String label) {
   }
 }
 
+/// WD14 tagger 的输入契约：[1,S,S,3] NHWC、值域 0-255（模型内置归一化，
+/// 输入端不再缩放——桌面 `_tagger_input` 同约定）。
+void requireTaggerInput(Float32List nhwc, int s) {
+  if (nhwc.length != 3 * s * s) {
+    throw ArgumentError('runTagger 需要 $s²×3 浮点，实得 ${nhwc.length}');
+  }
+  for (final v in nhwc) {
+    if (v < 0.0 || v > 255.0) {
+      throw ArgumentError('runTagger 输入值越界 [0,255]: $v（应喂 0-255 原值，'
+          '归一化在模型内置）');
+    }
+  }
+}
+
 /// 输出名解析：只按名字命中。唯一的退化条件是绑定**完全没给名字**（键数量与期望
 /// 输出 1:1 且全为空串），此时按下标取是唯一可行的选择。
 ///

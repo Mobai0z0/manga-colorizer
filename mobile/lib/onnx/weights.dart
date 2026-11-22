@@ -63,6 +63,22 @@ const kWeightFiles = <WeightFile>[
   ),
 ];
 
+/// WD14 tagger 权重（2026-11-21 语义自举的可选组件）：SmilingWolf
+/// wd-v1-4-moat-tagger-v2 的 deepghs ONNX 转换（Apache-2.0，1024 维 hidden
+/// state＝输出第 2 项）。**可选**：不在 [kWeightFiles] 必需集里（`ready` 门控
+/// 不阻塞主权重），仅满配资源档（[ResourceTier.hostTagger]）在主权重就绪后
+/// 顺手下载；文件缺失/损坏时后端回退 zeros 路径（桌面同语义）。
+/// size/sha256 与桌面 weights-manifest.json v6.1 同源逐字定值。
+const kTaggerWeightFile = WeightFile(
+  name: 'wd14_tagger_moat.onnx',
+  size: 326197413,
+  sha256: 'fee5f892879e3552885ecd18e04a3cb79a4537c10ba9e5b1a93116af0f8de423',
+  url:
+      'https://huggingface.co/deepghs/wd14_tagger_with_embeddings/resolve/main/SmilingWolf/wd-v1-4-moat-tagger-v2/model.onnx',
+  mirrorUrl:
+      'https://hf-mirror.com/deepghs/wd14_tagger_with_embeddings/resolve/main/SmilingWolf/wd-v1-4-moat-tagger-v2/model.onnx',
+);
+
 /// MNN 后端（v0.6.x Stage 2）的 fp32 .mnn 权重：由 tool/mnn/convert_models.py
 /// 从修复图（v6_*.fix.onnx）转换（Stage 0 实测：If 内联 + pads 常量化 +
 /// InstanceNorm 分解，见 docs/mnn-research.zh.md 附录 A）。size/sha256 逐字定值，

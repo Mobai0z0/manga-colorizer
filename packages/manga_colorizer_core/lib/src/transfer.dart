@@ -14,6 +14,7 @@ import 'dart:typed_data';
 
 import 'finish.dart';
 import 'lab.dart';
+import 'white_rescue.dart';
 
 /// 迁移算法。
 enum ReferenceMethod { reinhard, histogram }
@@ -88,14 +89,21 @@ Uint8List transferReference({
 /// `_blend_reference_auto` 的 Dart 镜像）：模型语义色 [autoRgb] 与参考图
 /// 迁移结果 [styledRgb]（[transferReference] 产物）在 Lab a/b 上按 [blend]
 /// 混合（桌面固定 0.5）；L 恒取 [srcLBytes]（原稿 Lab L 字节，[grayToLabL]
-/// 产物）；输出经平增益色域映射（[labToRgbGamut] gain=1，与桌面 `_finish_bgr`
-/// 缺省 opt 同一套数学：不中和纸白、不二次增益、不做纸色渲染）。
+/// 产物）；输出经平增益色域映射（gain=1，与桌面 `_finish_bgr` 缺省 opt
+/// 同一套数学：不中和纸白、不二次增益、不做纸色渲染）。
+/// 白色前景救援与 auto 路径同套（2026-11-21 两端同步修复）：漫画网点衣服区
+/// 在原稿里是封闭近白（L=255 基底），L=100 处色域映射必然把色度坍缩成纯白，
+/// 不带救援的融合会把语义色的鲜艳网点色抹掉。标记由 [srcLBytes] 计算
+/// （[whiteRescueMarksFromL]），门限 c0 用融合后色度场的纸白中位数
+/// （[whiteRescueC0]，与桌面 `_with_rescue` 同公式）。
 /// 返回 RGB n*3。金样对拍见 `test/reference_blend_golden_test.dart`。
 Uint8List blendReferenceAuto({
   required Uint8List autoRgb,
   required Uint8List styledRgb,
   required Uint8List srcLBytes,
   required int pixels,
+  required int width,
+  required int height,
   double blend = 0.5,
 }) {
   if (autoRgb.length != pixels * 3) {
@@ -106,6 +114,9 @@ Uint8List blendReferenceAuto({
   }
   if (srcLBytes.length != pixels) {
     throw ArgumentError('srcLBytes 长度 (${srcLBytes.length}) 与 $pixels 像素不符');
+  }
+  if (width * height != pixels) {
+    throw ArgumentError('width×height ($width×$height) 与 $pixels 像素不符');
   }
   final t = blend.clamp(0.0, 1.0);
   final labAuto = rgbToLab(autoRgb, pixels);
@@ -120,7 +131,13 @@ Uint8List blendReferenceAuto({
     lab[i * 3 + 1] = (aa + (as - aa) * t).round().clamp(0, 255);
     lab[i * 3 + 2] = (ba + (bs - ba) * t).round().clamp(0, 255);
   }
-  return labToRgbGamut(lab, pixels);
+  final marks = whiteRescueMarksFromL(srcLBytes, width, height);
+  final c0 = whiteRescueC0(lab, marks, pixels);
+  return labToRgbFinish(lab, pixels, const FinishOptions(),
+      rescue: marks,
+      rescueC0: c0,
+      rescueC1: c0 + kRescueGateWidth,
+      rescueDl: kRescueDl);
 }
 
 double _smoothstep01(double e0, double e1, double x) {

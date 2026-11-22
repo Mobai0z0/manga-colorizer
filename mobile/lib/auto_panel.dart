@@ -23,6 +23,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 import 'onnx/auto_service.dart';
+import 'onnx/backend_api.dart';
 import 'onnx/serving_seams.dart' show resolveBackendChoice;
 import 'onnx/weights.dart';
 import 'image_cap.dart';
@@ -343,6 +344,43 @@ class _AutoTabState extends State<AutoTab> {
         }
         widget.logs.info('weights', '权重 ${f.name} 下载完成（${f.size} 字节）');
       }
+      // WD14 tagger（语义自举可选组件）：2026-11-22 默认不下载——真机 8 页
+      // 回归证实全强度自举在典型漫画页比 zeros 旧路径差（桌面
+      // kSemanticBootstrapEnabled=false 同源决策），不再给用户推 326MB。
+      // 机制保留：kSemanticBootstrapEnabled=true 时恢复满配档下载。
+      final tier = await ResourceTier.detect();
+      if (kSemanticBootstrapEnabled &&
+          tier.hostTagger &&
+          !store.readyFor(kTaggerWeightFile)) {
+        if (mounted) {
+          setState(() {
+            _status = '正在下载 ${kTaggerWeightFile.name}（语义自举）…';
+            _dlPct = null;
+          });
+        }
+        try {
+          int? lastPct;
+          void onTagProgress(int done, int total) {
+            final next = nextDownloadPercent(done, total, lastPct);
+            if (next == null) return;
+            lastPct = next;
+            if (mounted) setState(() => _dlPct = next);
+          }
+
+          final injected = widget.downloadOne;
+          if (injected != null) {
+            await injected(kTaggerWeightFile, onTagProgress);
+          } else {
+            await store.download(kTaggerWeightFile, onProgress: onTagProgress);
+          }
+          widget.logs.info('weights',
+              '权重 ${kTaggerWeightFile.name} 下载完成（语义自举开启）');
+        } on WeightsException catch (e) {
+          widget.logs.warn('weights',
+              'tagger ${kTaggerWeightFile.name} 下载失败（非致命，语义自举关闭）:'
+              ' ${e.message}');
+        }
+      }
       if (mounted) {
         setState(() {
           _weightsMissing = false;
@@ -657,6 +695,8 @@ class _AutoTabState extends State<AutoTab> {
           refRgb: ref,
           autoRgb: autoRgb,
           srcGray: srcGray,
+          width: _refSrcW,
+          height: _refSrcH,
           method: _refMethod,
           strength: _refStrength);
       if (!mounted) return;

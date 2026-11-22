@@ -15,6 +15,7 @@ class ResourceTier {
       {required this.maxPickSide,
       required this.intraThreads,
       required this.useArena,
+      this.hostTagger = false,
       this.idleRelease = const Duration(seconds: 60)});
 
   /// 选图长边上限（像素）：贯通 image_picker 的 maxWidth/maxHeight 与
@@ -38,10 +39,19 @@ class ResourceTier {
   /// [fallback] 保持 60s（探测失败=未知设备，保守）。
   final Duration idleRelease;
 
+  /// 是否允许承载 WD14 tagger 会话（语义自举, 2026-11-21）：tagger 原生会话
+  /// 在 gen+sam 之上再加 ~300-500MB 常驻，只有满配档（≥6GB）敢开。低/中档与
+  /// 探测失败的 fallback 一律 false——tagger 权重也不给这些档下载（下载门控
+  /// 同此字段），文件缺失时后端自动走 zeros 路径（语义同桌面）。
+  final bool hostTagger;
+
   /// 与 v0.5.4 相同的默认档：无探测数据时的安全回退。arena 跟随高档关闭
   /// （v0.5.14）：探测失败=未知设备，保守取「单块峰值最低」的分配策略。
   static const ResourceTier fallback = ResourceTier(
-      maxPickSide: kMaxPickSide, intraThreads: 4, useArena: false);
+      maxPickSide: kMaxPickSide,
+      intraThreads: 4,
+      useArena: false,
+      hostTagger: false);
 
   /// 档位表（纯函数，宿主测试直测）：<4GB 或系统 lowRam 标记 → 最低档；
   /// 4–6GB → 中档；≥6GB → 满配。内存越紧，越偏向「峰值最低」的 arena 关闭
@@ -53,6 +63,7 @@ class ResourceTier {
           maxPickSide: 1280,
           intraThreads: 2,
           useArena: false,
+          hostTagger: false,
           idleRelease: Duration(seconds: 60));
     }
     if (totalMemBytes < 6 << 30) {
@@ -60,6 +71,7 @@ class ResourceTier {
           maxPickSide: 1536,
           intraThreads: 4,
           useArena: false,
+          hostTagger: false,
           idleRelease: Duration(minutes: 2));
     }
     // ≥6GB 满配档同样关闭 arena（v0.5.14）：桌面标定实证 arena+shrinkage
@@ -70,6 +82,7 @@ class ResourceTier {
         maxPickSide: kMaxPickSide,
         intraThreads: 4,
         useArena: false,
+        hostTagger: true,
         idleRelease: Duration(minutes: 5));
   }
 

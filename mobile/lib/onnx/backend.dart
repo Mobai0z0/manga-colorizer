@@ -27,6 +27,7 @@
 // pickOutputKey/flattenToFloat32/rgbChwToHwc）已提升到 backend_contract.dart
 // ——FFI 后端 backend_ffi.dart 与宿主测试替身同用一份；本文件经 import+export
 // 保持既有使用点（backend_test/fake_backend）不变。
+import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter_onnxruntime/flutter_onnxruntime.dart';
 import '../mem_info.dart';
@@ -78,6 +79,7 @@ class OrtOnnxBackend implements OnnxBackend {
 
   OrtSession? _sam;
   OrtSession? _gen;
+  OrtSession? _tagger;
 
   @override
   Future<void> load() async {
@@ -106,6 +108,30 @@ class OrtOnnxBackend implements OnnxBackend {
       _sam = null;
       _gen = null;
       rethrow;
+    }
+    await _loadTagger(ort);
+  }
+
+  /// WD14 tagger 会话（可选）：权重文件缺失（未下载——只有满配资源档才会
+  /// 下载）或加载失败（低内存设备 OOM 等）都只记日志并回退 zeros 路径，
+  /// 绝不影响主链路可用性。tagger 恒 CPU 4 线程（448² 单次 ~1s 量级），
+  /// 不吃 arena 策略（输入小、原生峰值有限）。
+  Future<void> _loadTagger(OnnxRuntime ort) async {
+    final w = kTaggerWeightFile;
+    final path = _store.pathOf(w);
+    if (!File(path).existsSync() || File(path).lengthSync() != w.size) {
+      backendLog('WD14 tagger 权重缺失，语义自举关闭（zeros 路径）');
+      return;
+    }
+    try {
+      final sw = Stopwatch()..start();
+      _tagger = await ort.createSession(path,
+          options: OrtSessionOptions(intraOpNumThreads: intraThreads));
+      backendLog('WD14 tagger session 创建完成（${sw.elapsedMilliseconds}ms）'
+          '${rssSuffix()}');
+    } on Object catch (e) {
+      _tagger = null;
+      backendLog('WD14 tagger 加载失败（$e），语义自举关闭（zeros 路径）');
     }
   }
 
@@ -166,7 +192,8 @@ class OrtOnnxBackend implements OnnxBackend {
 
   @override
   Future<Float32List> runGen(Float32List grayPlane, int s,
-      (Float32List, List<int>) sam0, (Float32List, List<int>) sam1) async {
+      (Float32List, List<int>) sam0, (Float32List, List<int>) sam1,
+      {Float32List? wd14}) async {
     final gen = _genLoaded();
     requireGrayPlane(grayPlane, s);
     requirePlanar(sam0, _kSam0);
@@ -190,7 +217,7 @@ class OrtOnnxBackend implements OnnxBackend {
         _kLbw: await make(grayPlane, [1, 1, s, s]),
         _kSam0: await make(sam0.$1, sam0.$2),
         _kSam1: await make(sam1.$1, sam1.$2),
-        _kWd14: await make(Float32List(1024), [1, 1024]),
+        _kWd14: await make(wd14 ?? Float32List(1024), [1, 1024]),
       };
       backendLog('生成 Run 开始（s=$s，feed=${created.length} 张量）'
           '${rssSuffix()}');
@@ -219,9 +246,11 @@ class OrtOnnxBackend implements OnnxBackend {
   Future<void> dispose() async {
     final sam = _sam;
     final gen = _gen;
+    final tagger = _tagger;
     _sam = null;
     _gen = null;
-    // 两个都要关掉：单个 close 抛错时也不能把另一个留成孤儿 session。
+    _tagger = null;
+    // 全部都要关掉：单个 close 抛错时也不能把其余的留成孤儿 session。
     Object? first;
     if (sam != null) {
       try {
@@ -237,7 +266,60 @@ class OrtOnnxBackend implements OnnxBackend {
         first ??= e;
       }
     }
+    if (tagger != null) {
+      try {
+        await tagger.close();
+      } on Object catch (e) {
+        first ??= e;
+      }
+    }
     if (first != null) throw first;
+  }
+
+  @override
+  bool get supportsTagger => _tagger != null;
+
+  @override
+  Future<Float32List?> runTagger(Float32List nhwc, int s) async {
+    final tagger = _tagger;
+    if (tagger == null) return null;
+    requireTaggerInput(nhwc, s);
+    final created = <OrtValue>[];
+    Map<String, OrtValue>? outputs;
+    final sw = Stopwatch()..start();
+    try {
+      final input = await OrtValue.fromList(nhwc, [1, s, s, 3]);
+      created.add(input);
+      // 输入名用绑定名（TF 导出风格 `input_1:0`，防名漂移同 runSam）。
+      final names = tagger.inputNames;
+      if (names.isEmpty) throw StateError('tagger session 没有输入名，绑定异常');
+      outputs = await tagger.run({names.first: input});
+      backendLog('tagger Run 完成（${sw.elapsedMilliseconds}ms）${rssSuffix()}');
+      // 嵌入输出按形状定位：tagger 有两个输出（标签分 [1,9083] 与嵌入
+      // [1,1024]），嵌入名是 TF 导出的图内部名（`StatefulPartitionedCall/…`）
+      // 且跨导出不稳定——pickOutputKey 的按名/index 回退都不适用，逐输出
+      // 回传后按 1024 维命中（两个输出都是小张量，双回传代价可忽略）。
+      Float32List? emb;
+      for (final key in outputs.keys) {
+        final (data, shape) = await _flattenTimed(outputs[key]!, key);
+        if (shape.length == 2 && shape[1] == 1024) {
+          emb = data;
+          break;
+        }
+      }
+      if (emb == null) {
+        throw StateError('tagger 输出未找到 [1,1024] 嵌入'
+            '（实得 ${outputs.keys.toList()}）');
+      }
+      return emb;
+    } finally {
+      for (final v in created) {
+        await v.dispose();
+      }
+      for (final v in outputs?.values ?? const <OrtValue>[]) {
+        await v.dispose();
+      }
+    }
   }
 
   OrtSession _samLoaded() {
