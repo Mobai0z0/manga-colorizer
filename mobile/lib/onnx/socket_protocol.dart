@@ -5,7 +5,7 @@
 //   payload = u8(type) | u32(jobId, LE) | u32(jsonLen, LE) | json(utf8) | binary
 //
 //   · json 是 Map<String, Object?>（控制字段：version/dir/threads/arena/
-//     width/height/p/line/message）；binary 是大块载荷（job 的 gray、result
+//     width/height/scheme/lineClean/p/line/level/message）；binary 是大块载荷（job 的 gray、result
 //     的 rgb8）——两者分离让控制面永远只经 JSON、数据面零重组地传引用切片。
 //   · 张量走 127.0.0.1 TCP 是有意的：Binder 事务限 1MB，而 gray/result 单帧
 //     4–17MB；loopback 吞吐 GB/s 级，一块图 50ms 量级，不构成瓶颈。
@@ -26,9 +26,9 @@ enum FrameType {
   hello, // client→server {version}
   helloOk, // server→client {version}
   config, // client→server {dir, threads, arena}
-  job, // client→server {width, height} + binary=gray(w*h)
+  job, // client→server {width, height, scheme?, lineClean?} + binary=gray(w*h)
   progress, // server→client {p}
-  log, // server→client {line}
+  log, // server→client {line, level?}
   result, // server→client {} + binary=rgb8(w*h*3)
   error, // server→client {message}
 }

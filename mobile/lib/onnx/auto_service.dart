@@ -1,11 +1,11 @@
 // 全自动推理的 isolate 门面：模型加载/推理都在工作 isolate；空闲 60s 释放后端归还内存。
 // 事件协议（worker→main）: ['progress', double] | ['result', Uint8List?] |
-//   ['error', String] | ['log', String]（worker 侧内存/耗时观测 → LogBus，
+//   ['error', String] | ['log', String] | ['warn', String]（worker 侧观测 → LogBus，
 //   工作 isolate 是新堆拿不到 LogBus 引用，只能走事件）|
 //   ['stopped']（优雅收尾 ack：dispose() 完成即回，然后 worker 退出）
 // 命令协议（main→worker）: ['dir', String, int threads, bool useArena] |
-//   ['job', Uint8List, int, int, String scheme] | ['stop']
-//   （job 的 scheme 第 5 位可选：色彩收尾方案 id，缺省 standard）
+//   ['job', Uint8List, int, int, String scheme, bool lineClean] | ['stop']
+//   （scheme 第 5 位、lineClean 第 6 位可选：缺省 standard/关闭）
 // spawn 引导（main→worker 首条消息）: _WorkerBoot(RootIsolateToken, SendPort)——
 // worker 进口先 BackgroundIsolateBinaryMessenger.ensureInitialized，平台通道才可用。
 //
@@ -47,6 +47,7 @@ import '../logs/log_bus.dart';
 import '../mem_info.dart';
 import 'backend.dart';
 import 'backend_log.dart';
+import 'line_cleaner.dart';
 import 'pipeline.dart';
 import 'serving_seams.dart';
 
@@ -220,6 +221,17 @@ Future<void> _runAutoWorker(ReceivePort rx, SendPort main) async {
     if (jobInFlight) return; // 并发守卫：引擎保证并发 1，此处防畸形序列
     jobInFlight = true;
     try {
+      final inputGray = await maybeCleanLineArt(
+        enabled: m.length > 5 && m[5] == true,
+        gray: m[1] as Uint8List,
+        width: m[2] as int,
+        height: m[3] as int,
+        weightsDir: dirPath!,
+        intraThreads: intraThreads,
+        open: lineCleanSessionFactory,
+        onWarning: (line) => main.send(['warn', line]),
+        onLog: (line) => main.send(['log', line]),
+      );
       final backend = b ??= await loadBackendWithFallback(
           choice: backendChoice,
           weightsDir: dirPath!,
@@ -236,7 +248,7 @@ Future<void> _runAutoWorker(ReceivePort rx, SendPort main) async {
             '${rssSuffix()}'
       ]);
       final out = await autoColorize(
-        gray: m[1] as Uint8List,
+        gray: inputGray,
         width: m[2] as int,
         height: m[3] as int,
         backend: backend,
@@ -312,6 +324,7 @@ class AutoEngine {
   Uint8List? _pendingGray;
   int _pendingW = 0, _pendingH = 0;
   String _pendingScheme = kDefaultFinishScheme;
+  bool _pendingLineClean = false;
 
   /// 优雅停止的宽限：覆盖「当前块跑完 + dispose()」。原生运行不可中断，真机
   /// 上一块可达 10–30s、load() 可达 10–20s，90s 已是宽裕上限；超时意味着
@@ -394,6 +407,8 @@ class AutoEngine {
       // 拆机期：只认 log（块耗时观测仍有价值）与 stopped ack；其余事件属于
       // 已被 null 完结的旧 job，一律丢弃。
       switch (m[0]) {
+        case 'warn':
+          _logBus?.warn('auto', m[1] as String);
         case 'log':
           _logBus?.info('auto', m[1] as String);
         case 'stopped':
@@ -403,6 +418,8 @@ class AutoEngine {
       return;
     }
     switch (m[0]) {
+      case 'warn':
+        _logBus?.warn('auto', m[1] as String);
       case 'log':
         // worker 侧观测（加载完成/每块耗时+RSS）：worker 是新堆拿不到
         // LogBus 引用，只能走事件；bus 缺失（宿主测试）时静默丢弃。
@@ -428,19 +445,23 @@ class AutoEngine {
 
   Future<Uint8List?> colorize(Uint8List gray, int w, int h,
       {void Function(double)? onProgress,
-      String scheme = kDefaultFinishScheme}) async {
+      String scheme = kDefaultFinishScheme,
+      bool lineClean = false}) async {
     // 保持 async：守卫错误以失败 Future 出现（调用方/测试按 await 或
     // expectLater(future, throwsA) 消费，同步抛出会破坏该契约）。
     if (!alive) throw StateError('先 ensureStarted');
     if (_job != null) throw StateError('并发 1：已有任务在跑');
     _reviveAttempt = 0; // 新的用户任务：死亡重试预算重置
-    return _sendJob(gray, w, h, scheme: scheme, onProgress: onProgress);
+    return _sendJob(gray, w, h,
+        scheme: scheme, lineClean: lineClean, onProgress: onProgress);
   }
 
   /// 下发 job（colorize 与死亡自动重试共用）：重试路径**不得**重置重试预算，
   /// 否则「加载→推理→死亡」的确定性循环会无限复活。
   Future<Uint8List?> _sendJob(Uint8List gray, int w, int h,
-      {String scheme = kDefaultFinishScheme, void Function(double)? onProgress}) {
+      {String scheme = kDefaultFinishScheme,
+      bool lineClean = false,
+      void Function(double)? onProgress}) {
     _idle?.cancel();
     _onProgress = onProgress;
     final job = Completer<Uint8List?>();
@@ -449,7 +470,8 @@ class AutoEngine {
     _pendingW = w;
     _pendingH = h;
     _pendingScheme = scheme;
-    _to!.send(['job', gray, w, h, scheme]);
+    _pendingLineClean = lineClean;
+    _to!.send(['job', gray, w, h, scheme, lineClean]);
     return job.future;
   }
 
@@ -517,7 +539,9 @@ class AutoEngine {
         return;
       }
       final out = await _sendJob(gray, w, h,
-          scheme: _pendingScheme, onProgress: onProgress);
+          scheme: _pendingScheme,
+          lineClean: _pendingLineClean,
+          onProgress: onProgress);
       job.complete(out);
     } on Object catch (e) {
       job.completeError(Exception('自动重启重试失败: $e'));

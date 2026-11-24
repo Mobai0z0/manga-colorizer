@@ -513,7 +513,7 @@ class _AutoTabState extends State<AutoTab> {
           backend: backend);
       widget.logs.info('auto', '色彩方案：$_scheme');
       final out = await widget.engine.colorize(gray, _w, _h, scheme: _scheme,
-          onProgress: (p) {
+          lineClean: widget.controller.settings.lineClean, onProgress: (p) {
         if (!mounted) return;
         setState(() {
           _inferPct = p;
@@ -679,7 +679,8 @@ class _AutoTabState extends State<AutoTab> {
           idleRelease: tier.idleRelease,
           backend: backend);
       final autoRgb = await widget.engine.colorize(srcGray, _refSrcW, _refSrcH,
-          scheme: kDefaultFinishScheme, onProgress: (p) {
+          scheme: kDefaultFinishScheme,
+          lineClean: widget.controller.settings.lineClean, onProgress: (p) {
         if (!mounted) return;
         setState(() => _status = '模型上色中 ${(p * 100).round()}%');
       });

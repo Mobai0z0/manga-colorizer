@@ -17,6 +17,7 @@ import 'package:manga_colorizer_core/manga_colorizer_core.dart'
 import '../mem_info.dart';
 import '../onnx/backend.dart';
 import '../onnx/backend_log.dart';
+import '../onnx/line_cleaner.dart';
 import '../onnx/pipeline.dart';
 import '../onnx/serving_seams.dart';
 import '../onnx/socket_protocol.dart';
@@ -92,10 +93,13 @@ class InferenceServerCore {
     // （logcat 可检索 `[manga-inference]`；进程死亡后这是唯一取证来源）。
     // 前一条日志带时间戳，配合下一帧的间隔能把「死亡发生在哪两步之间」
     // 钉死到具体阶段（Run 内/回传拷贝/dispose）。
-    void jobLog(String line) {
+    void jobLog(String line, {String? level}) {
       final stamped = '[backend] $line';
       stderr.writeln('[manga-inference] $stamped');
-      send(Frame(FrameType.log, jobId: f.jobId, data: {'line': stamped}));
+      send(Frame(FrameType.log, jobId: f.jobId, data: {
+        'line': stamped,
+        if (level != null) 'level': level,
+      }));
     }
 
     backendLogSink = jobLog;
@@ -109,6 +113,17 @@ class InferenceServerCore {
             'job 缺 gray 或尺寸不符: ${gray?.length}B vs ${width}x$height');
       }
       if (dir == null) throw StateError('config 未就绪（缺 weights 目录）');
+      final inputGray = await maybeCleanLineArt(
+        enabled: f.data['lineClean'] == true,
+        gray: gray,
+        width: width,
+        height: height,
+        weightsDir: dir,
+        intraThreads: _threads,
+        open: lineCleanSessionFactory,
+        onWarning: (line) => jobLog('警告：$line', level: 'warning'),
+        onLog: jobLog,
+      );
       final backend = _backendInstance ??= await loadBackendWithFallback(
           choice: _backend,
           weightsDir: dir,
@@ -121,7 +136,7 @@ class InferenceServerCore {
             '独立进程）${rssSuffix()}'
       }));
       final out = await autoColorize(
-        gray: gray,
+        gray: inputGray,
         width: width,
         height: height,
         backend: backend,

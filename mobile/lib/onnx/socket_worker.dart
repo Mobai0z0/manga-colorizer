@@ -246,6 +246,7 @@ class _SocketBridge implements AutoWorkerHandle {
                   'height': m[3] as int,
                   // 色彩收尾方案 id（旧主进程缺省 → 服务端回退 standard）
                   if (m.length > 4 && m[4] is String) 'scheme': m[4] as String,
+                  if (m.length > 5 && m[5] is bool) 'lineClean': m[5] as bool,
                 },
                 bytes: m[1] as Uint8List));
       case 'stop':
@@ -281,7 +282,11 @@ class _SocketBridge implements AutoWorkerHandle {
       case FrameType.progress:
         _toMain.send(['progress', (f.data['p'] as num).toDouble()]);
       case FrameType.log:
-        _toMain.send(['log', f.data['line'] as String? ?? '']);
+        final line = f.data['line'] as String? ?? '';
+        _toMain.send([
+          f.data['level'] == 'warning' ? 'warn' : 'log',
+          line,
+        ]);
       case FrameType.result:
         _toMain.send(['result', f.bytes]);
       case FrameType.error:

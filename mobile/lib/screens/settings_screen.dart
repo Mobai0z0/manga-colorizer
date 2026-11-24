@@ -111,6 +111,17 @@ class SettingsPage extends StatelessWidget {
               Text(s.colorModel.description,
                   style: Theme.of(context).textTheme.bodySmall),
               const SizedBox(height: 24),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('线稿净化'),
+                subtitle: const Text('可选 MangaLineExtraction 权重需手动放入模型目录，'
+                    '文件名为 manga_line_extraction.onnx；'
+                    '权重缺失或损坏时按原稿运行。'),
+                value: s.lineClean,
+                onChanged: (value) => controller
+                    .update(controller.settings.copyWith(lineClean: value)),
+              ),
+              const SizedBox(height: 24),
               Text('模型下载源', style: Theme.of(context).textTheme.titleSmall),
               const SizedBox(height: 8),
               RadioGroup<DownloadSource>(

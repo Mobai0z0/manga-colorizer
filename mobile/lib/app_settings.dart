@@ -68,6 +68,7 @@ class AppSettings {
     this.backgroundStyle = BackgroundStyle.monet,
     this.inferenceBackend = InferenceBackend.auto,
     this.colorModel = ColorModel.mangaLightV6,
+    this.lineClean = false,
     this.disclaimerAccepted = false,
   });
 
@@ -105,6 +106,9 @@ class AppSettings {
   /// 为模型迁移留位；切换行为随新模型接入而生效）。
   final ColorModel colorModel;
 
+  /// 可选 MangaLineExtraction 线稿净化，默认关闭。
+  final bool lineClean;
+
   /// 合规免责声明是否已接受（与桌面 `disclaimer_accepted` 同语义）：
   /// 未接受时上色 / 全自动 / 参考图上色的运行入口保持禁用。
   final bool disclaimerAccepted;
@@ -126,6 +130,7 @@ class AppSettings {
       other.backgroundStyle == backgroundStyle &&
       other.inferenceBackend == inferenceBackend &&
       other.colorModel == colorModel &&
+      other.lineClean == lineClean &&
       other.disclaimerAccepted == disclaimerAccepted;
 
   @override
@@ -139,6 +144,7 @@ class AppSettings {
       backgroundStyle,
       inferenceBackend,
       colorModel,
+      lineClean,
       disclaimerAccepted,
       Object.hashAll(customHintColors));
 
@@ -153,6 +159,7 @@ class AppSettings {
     BackgroundStyle? backgroundStyle,
     InferenceBackend? inferenceBackend,
     ColorModel? colorModel,
+    bool? lineClean,
     bool? disclaimerAccepted,
   }) =>
       AppSettings(
@@ -166,6 +173,7 @@ class AppSettings {
         backgroundStyle: backgroundStyle ?? this.backgroundStyle,
         inferenceBackend: inferenceBackend ?? this.inferenceBackend,
         colorModel: colorModel ?? this.colorModel,
+        lineClean: lineClean ?? this.lineClean,
         disclaimerAccepted: disclaimerAccepted ?? this.disclaimerAccepted,
       );
 
@@ -180,6 +188,7 @@ class AppSettings {
         'backgroundStyle': backgroundStyle.name,
         'inferenceBackend': inferenceBackend.name,
         'colorModel': colorModel.id,
+        'lineClean': lineClean,
         'disclaimerAccepted': disclaimerAccepted,
       };
 
@@ -201,6 +210,7 @@ class AppSettings {
         colorModel: json['colorModel'] is String
             ? ColorModelExt.fromId(json['colorModel'] as String)
             : ColorModel.mangaLightV6,
+        lineClean: json['lineClean'] == true,
         // 仅接受布尔 true：损坏值（字符串/数字）一律回退未接受。
         disclaimerAccepted: json['disclaimerAccepted'] == true,
       );

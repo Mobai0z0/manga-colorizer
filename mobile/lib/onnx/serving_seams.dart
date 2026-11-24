@@ -9,6 +9,7 @@ import '../app_settings.dart' show InferenceBackend;
 import 'backend.dart';
 import 'backend_ffi.dart';
 import 'backend_log.dart';
+import 'line_cleaner.dart';
 import 'mnn_backend.dart';
 import 'weights.dart';
 
@@ -48,6 +49,9 @@ AutoBackendFactory mnnAutoBackendFactory = _productionMnnAutoBackendFactory;
 
 /// worker/服务侧后端工厂（可替换注入）。
 AutoBackendFactory autoBackendFactory = ortAutoBackendFactory;
+
+/// 可选线稿净化会话工厂：isolate 与独立进程共用同一注入点。
+LineCleanSessionFactory lineCleanSessionFactory = openOrtLineCleanSession;
 
 /// 按 ['dir']/config 帧携带的具体选择（'ort'|'mnn'，由调用方先解析 auto 规则）
 /// 构造后端。测试注入走 autoBackendFactory / mnnAutoBackendFactory 两个槽。
