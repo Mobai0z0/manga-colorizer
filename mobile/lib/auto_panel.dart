@@ -24,6 +24,7 @@ import 'package:share_plus/share_plus.dart';
 
 import 'onnx/auto_service.dart';
 import 'onnx/backend_api.dart';
+import 'onnx/color_tagger.dart';
 import 'onnx/serving_seams.dart' show resolveBackendChoice;
 import 'onnx/weights.dart';
 import 'image_cap.dart';
@@ -51,6 +52,12 @@ typedef AutoOnCompleted = void Function({
   required String mode,
 });
 
+Future<Uint8List> _rgbaToRgbInIsolate(Uint8List rgba) =>
+    Isolate.run(() => rgbaToRgbBytes(rgba));
+
+Future<Uint8List> _rgbaToGrayInIsolate(Uint8List rgba) =>
+    Isolate.run(() => rgbaToGray(rgba));
+
 /// 色彩方案的界面文案（id 与 kFinishSchemes/桌面 FINISH_SCHEMES 同源）。
 const Map<String, String> kSchemeLabels = {
   'standard': '标准',
@@ -59,6 +66,54 @@ const Map<String, String> kSchemeLabels = {
   'impasto': '厚涂浓郁',
   'retro-showa': '昭和复古',
 };
+
+class ReferenceColorLabelsView extends StatelessWidget {
+  const ReferenceColorLabelsView({super.key, required this.labels});
+
+  final ReferenceColorLabels labels;
+
+  static const _partNames = {
+    ReferenceColorPart.hair: '发色',
+    ReferenceColorPart.skin: '肤色',
+    ReferenceColorPart.eye: '瞳色',
+  };
+
+  static const _colorNames = {
+    'aqua': '水蓝色',
+    'blue': '蓝色',
+    'green': '绿色',
+    'brown': '棕色',
+    'orange': '橙色',
+    'yellow': '黄色',
+    'pink': '粉色',
+    'purple': '紫色',
+    'red': '红色',
+    'light': '浅色',
+    'black': '黑色',
+    'dark': '深肤色',
+    'pale': '白皙',
+    'colored': '彩色',
+  };
+
+  static String _colorName(ReferenceColorPart part, String label) {
+    if (part == ReferenceColorPart.skin && label == 'light') return '浅肤色';
+    return _colorNames[label] ?? label;
+  }
+
+  @override
+  Widget build(BuildContext context) => Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: [
+          for (final label in labels.all)
+            Chip(
+              label: Text(
+                  '${_partNames[label.part]}：${_colorName(label.part, label.label)} '
+                  '${(label.score * 100).round()}%'),
+            ),
+        ],
+      );
+}
 
 /// 下载进度节流：`WeightsStore.download` 按**网络分块**触发 onProgress，逐条
 /// setState 会拖垮 UI。只在整百分比前进时返回新值；total<=0 或百分比未前进
@@ -80,6 +135,7 @@ class AutoTab extends StatefulWidget {
     required this.controller,
     required this.logs,
     this.resolveDir,
+    this.resolveTier,
     this.downloadOne,
     this.onCompleted,
   });
@@ -95,6 +151,7 @@ class AutoTab extends StatefulWidget {
   /// 权重目录解析：生产默认 getApplicationSupportDirectory()/manga-light-colorizer
   /// （与桌面 weights 布局同名）；测试注入临时目录（path_provider 在宿主测试不可用）。
   final Future<Directory> Function()? resolveDir;
+  final Future<ResourceTier> Function()? resolveTier;
   final DownloadOne? downloadOne;
 
   /// 全自动成功回调：成功产出结果 PNG 后把结果/原图交给外部（图库入库）。
@@ -147,11 +204,18 @@ class _AutoTabState extends State<AutoTab> {
   int _refSrcW = 0, _refSrcH = 0;
   Uint8List? _refSrcPng; // 原稿预览/入库用 PNG
   Uint8List? _refRgb; // 参考图 RGB
+  int _refW = 0, _refH = 0;
   Uint8List? _refThumbPng; // 参考图小预览
   Uint8List? _refOutPng; // 融合结果 PNG
   bool _refBusy = false;
   ReferenceMethod _refMethod = ReferenceMethod.reinhard;
   double _refStrength = 1.0;
+  ResourceTier? _tier;
+  bool _taggerAllowed = false;
+  bool _taggerDownloading = false;
+  int? _taggerPct;
+  ReferenceColorLabels? _refColors;
+  String? _refColorError;
 
   static const _license =
       '模型权重 CC BY-NC-SA 4.0，需自行下载，仅限非商业使用；详见仓库 docs/licensing。';
@@ -185,10 +249,11 @@ class _AutoTabState extends State<AutoTab> {
   Future<void> _init() async {
     try {
       final dir = await (widget.resolveDir ?? _appWeightsDir)();
+      final tier = await (widget.resolveTier ?? ResourceTier.detect)();
       final source = widget.controller.settings.downloadSource;
       _appliedBackend = widget.controller.settings.inferenceBackend;
-      final store = WeightsStore(dir: dir, source: source,
-          files: _filesForChoice());
+      final store =
+          WeightsStore(dir: dir, source: source, files: _filesForChoice());
       final ok = await store.ready;
       if (!mounted) return;
       setState(() {
@@ -196,6 +261,8 @@ class _AutoTabState extends State<AutoTab> {
         _dir = dir;
         _appliedSource = source;
         _store = store;
+        _tier = tier;
+        _taggerAllowed = tier.hostTagger;
         _weightsMissing = !ok;
         _status = ok ? '权重就绪。' : '权重未下载，请先看下方说明。';
       });
@@ -373,12 +440,13 @@ class _AutoTabState extends State<AutoTab> {
           } else {
             await store.download(kTaggerWeightFile, onProgress: onTagProgress);
           }
-          widget.logs.info('weights',
-              '权重 ${kTaggerWeightFile.name} 下载完成（语义自举开启）');
+          widget.logs
+              .info('weights', '权重 ${kTaggerWeightFile.name} 下载完成（语义自举开启）');
         } on WeightsException catch (e) {
-          widget.logs.warn('weights',
+          widget.logs.warn(
+              'weights',
               'tagger ${kTaggerWeightFile.name} 下载失败（非致命，语义自举关闭）:'
-              ' ${e.message}');
+                  ' ${e.message}');
         }
       }
       if (mounted) {
@@ -485,7 +553,13 @@ class _AutoTabState extends State<AutoTab> {
   Future<void> _run() async {
     final gray = _gray;
     final dir = _dir;
-    if (gray == null || dir == null || _busy) return;
+    if (gray == null ||
+        dir == null ||
+        _busy ||
+        _refBusy ||
+        _taggerDownloading) {
+      return;
+    }
     if (!widget.controller.settings.disclaimerAccepted) {
       setState(() => _status = '请先勾选合规声明');
       return;
@@ -512,7 +586,8 @@ class _AutoTabState extends State<AutoTab> {
           idleRelease: tier.idleRelease,
           backend: backend);
       widget.logs.info('auto', '色彩方案：$_scheme');
-      final out = await widget.engine.colorize(gray, _w, _h, scheme: _scheme,
+      final out = await widget.engine.colorize(gray, _w, _h,
+          scheme: _scheme,
           lineClean: widget.controller.settings.lineClean, onProgress: (p) {
         if (!mounted) return;
         setState(() {
@@ -578,6 +653,102 @@ class _AutoTabState extends State<AutoTab> {
     return (rgba: cap.rgba, width: cap.width, height: cap.height);
   }
 
+  WeightsStore? get _taggerStore {
+    final dir = _dir;
+    if (dir == null) return null;
+    return WeightsStore(dir: dir, source: _source, files: kAnimeChTaggerFiles);
+  }
+
+  bool get _taggerReady {
+    final store = _taggerStore;
+    return store != null && store.files.every(store.readyFor);
+  }
+
+  Future<void> _downloadColorTaggers() async {
+    final store = _taggerStore;
+    if (store == null ||
+        !_taggerAllowed ||
+        _taggerDownloading ||
+        _busy ||
+        _refBusy) {
+      return;
+    }
+    setState(() {
+      _taggerDownloading = true;
+      _taggerPct = null;
+      _refColorError = null;
+    });
+    try {
+      store.dir.createSync(recursive: true);
+      for (final file in store.files) {
+        if (store.readyFor(file)) continue;
+        if (!mounted) return;
+        setState(() => _taggerPct = null);
+        int? lastPct;
+        void onProgress(int done, int total) {
+          final next = nextDownloadPercent(done, total, lastPct);
+          if (next == null || !mounted) return;
+          lastPct = next;
+          setState(() => _taggerPct = next);
+        }
+
+        final injected = widget.downloadOne;
+        if (injected != null) {
+          await injected(file, onProgress);
+        } else {
+          await store.download(file, onProgress: onProgress);
+        }
+        widget.logs.info('weights', '色签权重 ${file.name} 下载完成');
+      }
+    } on Object catch (e) {
+      if (mounted) setState(() => _refColorError = '色签下载失败（不影响上色）：$e');
+      widget.logs.warn('weights', '色签权重下载失败（不影响上色）：$e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _taggerDownloading = false;
+          _taggerPct = null;
+        });
+      }
+    }
+  }
+
+  Future<void> _readRefColors() async {
+    final rgb = _refRgb;
+    final dir = _dir;
+    final tier = _tier;
+    if (rgb == null ||
+        dir == null ||
+        tier == null ||
+        !_taggerAllowed ||
+        !_taggerReady ||
+        _refBusy ||
+        _busy ||
+        _taggerDownloading) {
+      return;
+    }
+    setState(() {
+      _refBusy = true;
+      _refColors = null;
+      _refColorError = null;
+    });
+    try {
+      final labels = await readReferenceColors(
+        rgb: rgb,
+        width: _refW,
+        height: _refH,
+        weightsDir: dir.path,
+        intraThreads: tier.intraThreads,
+      );
+      if (mounted) setState(() => _refColors = labels);
+    } on Object catch (e) {
+      if (mounted) setState(() => _refColorError = '色签读取失败（不影响上色）：$e');
+      widget.logs.warn('reference', '色签读取失败（不影响上色）：$e');
+    } finally {
+      if (mounted) setState(() => _refBusy = false);
+    }
+  }
+
   /// 参考图模式选原稿：RGBA → RGB（迁移源）+ 灰度（模型输入 + L 来源）
   /// + PNG（预览/入库），串行产出（与 _pick 同款缓冲纪律）。
   Future<void> _pickRefSource() async {
@@ -594,8 +765,8 @@ class _AutoTabState extends State<AutoTab> {
       _refOutPng = null;
     });
     try {
-      final rgb = await Isolate.run(() => rgbaToRgbBytes(picked.rgba));
-      final gray = await Isolate.run(() => rgbaToGray(picked.rgba));
+      final rgb = await _rgbaToRgbInIsolate(picked.rgba);
+      final gray = await _rgbaToGrayInIsolate(picked.rgba);
       final png =
           await encodePngFromRgba(picked.rgba, picked.width, picked.height);
       if (!mounted) return;
@@ -623,16 +794,22 @@ class _AutoTabState extends State<AutoTab> {
       _refBusy = true;
       _status = '读取参考图…';
       _refRgb = null;
+      _refW = 0;
+      _refH = 0;
       _refThumbPng = null;
       _refOutPng = null;
+      _refColors = null;
+      _refColorError = null;
     });
     try {
-      final rgb = await Isolate.run(() => rgbaToRgbBytes(picked.rgba));
+      final rgb = await _rgbaToRgbInIsolate(picked.rgba);
       final png =
           await encodePngFromRgba(picked.rgba, picked.width, picked.height);
       if (!mounted) return;
       setState(() {
         _refRgb = rgb;
+        _refW = picked.width;
+        _refH = picked.height;
         _refThumbPng = png;
         _status = '参考图已就绪。';
       });
@@ -852,6 +1029,8 @@ class _AutoTabState extends State<AutoTab> {
           Expanded(
             child: FilledButton.icon(
               onPressed: (_busy ||
+                      _refBusy ||
+                      _taggerDownloading ||
                       _gray == null ||
                       !widget.controller.settings.disclaimerAccepted)
                   ? null
@@ -948,131 +1127,164 @@ class _AutoTabState extends State<AutoTab> {
       GlassCard(
         padding: const EdgeInsets.all(12),
         child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.wallpaper, size: 20),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text('参考图上色',
-                        style: Theme.of(context).textTheme.titleSmall),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 4),
-              Text(
-                  '根据人设彩图对齐上色：模型语义色 + 参考图色调迁移融合'
-                  '（Lab 5:5），亮度保真、纸白不染色。',
-                  style: Theme.of(context).textTheme.bodySmall),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  OutlinedButton.icon(
-                    onPressed: _refBusy ? null : _pickRefSource,
-                    icon: const Icon(Icons.image_outlined),
-                    label: Text(_refSrcRgb == null ? '选原稿' : '换原稿'),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: _refBusy ? null : _pickReference,
-                    icon: const Icon(Icons.palette_outlined),
-                    label: Text(_refRgb == null ? '选参考图' : '换参考图'),
-                  ),
-                  FilledButton.icon(
-                    onPressed: (_refBusy ||
-                            _busy ||
-                            _weightsMissing ||
-                            _refSrcRgb == null ||
-                            _refRgb == null ||
-                            !widget.controller.settings.disclaimerAccepted)
-                        ? null
-                        : _runReference,
-                    icon: const Icon(Icons.colorize),
-                    label: const Text('开始上色'),
-                  ),
-                  if (_refThumbPng != null)
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(6),
-                      child: Image.memory(_refThumbPng!,
-                          width: 44, height: 44, fit: BoxFit.cover),
-                    ),
-                ],
-              ),
-              if (_weightsMissing) ...[
-                const SizedBox(height: 8),
-                Text('需要先下载模型权重（见上方引导）——参考图上色由模型提供语义色。',
-                    style: Theme.of(context).textTheme.bodySmall),
-              ],
-              const SizedBox(height: 4),
-              // 迁移算法（与桌面 ref-method 同选项，随设置持久化）
-              Wrap(
-                spacing: 8,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  ChoiceChip(
-                    label: const Text('氛围对齐'),
-                    selected: _refMethod == ReferenceMethod.reinhard,
-                    onSelected: (_) =>
-                        _applyRefMethod(ReferenceMethod.reinhard),
-                  ),
-                  ChoiceChip(
-                    label: const Text('分布对齐'),
-                    selected: _refMethod == ReferenceMethod.histogram,
-                    onSelected: (_) =>
-                        _applyRefMethod(ReferenceMethod.histogram),
-                  ),
-                ],
-              ),
-              // 迁移强度（与桌面 ref-strength 同语义，5% 步进）
-              Row(
-                children: [
-                  Text('迁移强度', style: Theme.of(context).textTheme.bodySmall),
-                  Expanded(
-                    child: Slider(
-                      value: _refStrength,
-                      min: 0,
-                      max: 1,
-                      divisions: 20,
-                      label: '${(_refStrength * 100).round()}%',
-                      onChanged: _refBusy ? null : _applyRefStrength,
-                    ),
-                  ),
-                  SizedBox(
-                    width: 40,
-                    child: Text('${(_refStrength * 100).round()}%',
-                        style: Theme.of(context).textTheme.bodySmall),
-                  ),
-                ],
-              ),
-              if (_refBusy) ...[
-                const SizedBox(height: 8),
-                const LinearProgressIndicator(minHeight: 2),
-              ],
-              if (_refOutPng != null) ...[
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text('上色结果',
-                          style: Theme.of(context).textTheme.labelSmall),
-                    ),
-                    IconButton(
-                      onPressed: _shareRef,
-                      icon: const Icon(Icons.ios_share),
-                      tooltip: '分享 / 保存',
-                    ),
-                  ],
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.wallpaper, size: 20),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text('参考图上色',
+                      style: Theme.of(context).textTheme.titleSmall),
                 ),
-                Image.memory(_refOutPng!,
-                    fit: BoxFit.contain,
-                    cacheWidth: 1024,
-                    gaplessPlayback: true),
               ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+                '根据人设彩图对齐上色：模型语义色 + 参考图色调迁移融合'
+                '（Lab 5:5），亮度保真、纸白不染色。',
+                style: Theme.of(context).textTheme.bodySmall),
+            if (_taggerAllowed && !_taggerReady) ...[
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: (_taggerDownloading || _busy || _refBusy)
+                    ? null
+                    : _downloadColorTaggers,
+                icon: const Icon(Icons.download_outlined),
+                label: const Text('下载色签(~51 MB)'),
+              ),
+              const SizedBox(height: 4),
+              Text('色签为可选组件，缺失或损坏不影响开始上色。',
+                  style: Theme.of(context).textTheme.bodySmall),
             ],
-          ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: _refBusy ? null : _pickRefSource,
+                  icon: const Icon(Icons.image_outlined),
+                  label: Text(_refSrcRgb == null ? '选原稿' : '换原稿'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: _refBusy ? null : _pickReference,
+                  icon: const Icon(Icons.palette_outlined),
+                  label: Text(_refRgb == null ? '选参考图' : '换参考图'),
+                ),
+                FilledButton.icon(
+                  onPressed: (_refBusy ||
+                          _busy ||
+                          _taggerDownloading ||
+                          _weightsMissing ||
+                          _refSrcRgb == null ||
+                          _refRgb == null ||
+                          !widget.controller.settings.disclaimerAccepted)
+                      ? null
+                      : _runReference,
+                  icon: const Icon(Icons.colorize),
+                  label: const Text('开始上色'),
+                ),
+                if (_taggerAllowed && _refRgb != null && _taggerReady)
+                  OutlinedButton.icon(
+                    onPressed: (_refBusy || _busy || _taggerDownloading)
+                        ? null
+                        : _readRefColors,
+                    icon: const Icon(Icons.label_outline),
+                    label: const Text('读取色签'),
+                  ),
+                if (_refThumbPng != null)
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(6),
+                    child: Image.memory(_refThumbPng!,
+                        width: 44, height: 44, fit: BoxFit.cover),
+                  ),
+              ],
+            ),
+            if (_taggerDownloading) ...[
+              const SizedBox(height: 8),
+              LinearProgressIndicator(
+                  value: _taggerPct == null ? null : _taggerPct! / 100.0,
+                  minHeight: 2),
+            ],
+            if (_refColorError != null) ...[
+              const SizedBox(height: 8),
+              Text(_refColorError!,
+                  style: Theme.of(context).textTheme.bodySmall),
+            ],
+            if (_refColors != null) ...[
+              const SizedBox(height: 8),
+              ReferenceColorLabelsView(labels: _refColors!),
+            ],
+            if (_weightsMissing) ...[
+              const SizedBox(height: 8),
+              Text('需要先下载模型权重（见上方引导）——参考图上色由模型提供语义色。',
+                  style: Theme.of(context).textTheme.bodySmall),
+            ],
+            const SizedBox(height: 4),
+            // 迁移算法（与桌面 ref-method 同选项，随设置持久化）
+            Wrap(
+              spacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                ChoiceChip(
+                  label: const Text('氛围对齐'),
+                  selected: _refMethod == ReferenceMethod.reinhard,
+                  onSelected: (_) => _applyRefMethod(ReferenceMethod.reinhard),
+                ),
+                ChoiceChip(
+                  label: const Text('分布对齐'),
+                  selected: _refMethod == ReferenceMethod.histogram,
+                  onSelected: (_) => _applyRefMethod(ReferenceMethod.histogram),
+                ),
+              ],
+            ),
+            // 迁移强度（与桌面 ref-strength 同语义，5% 步进）
+            Row(
+              children: [
+                Text('迁移强度', style: Theme.of(context).textTheme.bodySmall),
+                Expanded(
+                  child: Slider(
+                    value: _refStrength,
+                    min: 0,
+                    max: 1,
+                    divisions: 20,
+                    label: '${(_refStrength * 100).round()}%',
+                    onChanged: _refBusy ? null : _applyRefStrength,
+                  ),
+                ),
+                SizedBox(
+                  width: 40,
+                  child: Text('${(_refStrength * 100).round()}%',
+                      style: Theme.of(context).textTheme.bodySmall),
+                ),
+              ],
+            ),
+            if (_refBusy) ...[
+              const SizedBox(height: 8),
+              const LinearProgressIndicator(minHeight: 2),
+            ],
+            if (_refOutPng != null) ...[
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text('上色结果',
+                        style: Theme.of(context).textTheme.labelSmall),
+                  ),
+                  IconButton(
+                    onPressed: _shareRef,
+                    icon: const Icon(Icons.ios_share),
+                    tooltip: '分享 / 保存',
+                  ),
+                ],
+              ),
+              Image.memory(_refOutPng!,
+                  fit: BoxFit.contain, cacheWidth: 1024, gaplessPlayback: true),
+            ],
+          ],
+        ),
       ),
     ];
   }

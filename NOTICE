@@ -12,6 +12,14 @@ Third-party components:
   own license. This repository's code is Apache 2.0 and does not include,
   derive from, or distribute those weights.
 
+* deepghs anime_ch_{hair,skin,eye}_color reference-card taggers (optional,
+  NOT distributed with this repository) — MIT.
+  https://huggingface.co/deepghs/anime_ch_hair_color
+  https://huggingface.co/deepghs/anime_ch_skin_color
+  https://huggingface.co/deepghs/anime_ch_eye_color
+  The mobilenetv3_v0_dist ONNX weights are downloaded separately by end users
+  and remain under their own license.
+
 * Dart packages (pub.dev): args, http, image, lints, shelf — each under its
   own permissive license (see pubspec.lock).
 

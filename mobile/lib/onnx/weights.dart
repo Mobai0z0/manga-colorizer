@@ -1,5 +1,6 @@
-// 权重仓储：首启下载（Range 断点续传 + sha256 校验）。权重 CC BY-NC-SA 4.0，
-// 不随 APK 分发，由使用者自行下载；下载源可选主站/镜像/自动（自动=主站失败回退镜像）。
+// 权重仓储：首启下载（Range 断点续传 + sha256 校验）。主上色权重 CC BY-NC-SA 4.0，
+// 其余模型许可见对应条目与 NOTICE；均不随 APK 分发，由使用者自行下载。
+// 下载源可选主站/镜像/自动（自动=主站失败回退镜像）。
 import 'dart:io';
 import 'package:crypto/crypto.dart';
 
@@ -79,6 +80,39 @@ const kTaggerWeightFile = WeightFile(
       'https://hf-mirror.com/deepghs/wd14_tagger_with_embeddings/resolve/main/SmilingWolf/wd-v1-4-moat-tagger-v2/model.onnx',
 );
 
+/// M3 参考卡色签（deepghs anime_ch_*_color，MIT）：三个轻量分类器均为可选
+/// 权重，不在 [kWeightFiles] 必需集中；仅 [ResourceTier.hostTagger] 设备提供
+/// 手动下载，读取失败不影响参考图上色。
+const kAnimeChTaggerFiles = <WeightFile>[
+  WeightFile(
+    name: 'anime_ch_hair_color.onnx',
+    size: 16863428,
+    sha256: '75958879e4c317e2a8d5b66b82e8a34069c16b5ec4f779e70013e3328acf80a1',
+    url:
+        'https://huggingface.co/deepghs/anime_ch_hair_color/resolve/main/mobilenetv3_v0_dist/model.onnx',
+    mirrorUrl:
+        'https://hf-mirror.com/deepghs/anime_ch_hair_color/resolve/main/mobilenetv3_v0_dist/model.onnx',
+  ),
+  WeightFile(
+    name: 'anime_ch_skin_color.onnx',
+    size: 16832684,
+    sha256: '88ecb6613b5d4de352ba11a1719ff4ec20c4197091a9a9453b9824803956c273',
+    url:
+        'https://huggingface.co/deepghs/anime_ch_skin_color/resolve/main/mobilenetv3_v0_dist/model.onnx',
+    mirrorUrl:
+        'https://hf-mirror.com/deepghs/anime_ch_skin_color/resolve/main/mobilenetv3_v0_dist/model.onnx',
+  ),
+  WeightFile(
+    name: 'anime_ch_eye_color.onnx',
+    size: 16868552,
+    sha256: '2088bd7de852b1859ce82a4c583c4841171e41d2d84deb2900e99cb83848533c',
+    url:
+        'https://huggingface.co/deepghs/anime_ch_eye_color/resolve/main/mobilenetv3_v0_dist/model.onnx',
+    mirrorUrl:
+        'https://hf-mirror.com/deepghs/anime_ch_eye_color/resolve/main/mobilenetv3_v0_dist/model.onnx',
+  ),
+];
+
 /// MNN 后端（v0.6.x Stage 2）的 fp32 .mnn 权重：由 tool/mnn/convert_models.py
 /// 从修复图（v6_*.fix.onnx）转换（Stage 0 实测：If 内联 + pads 常量化 +
 /// InstanceNorm 分解，见 docs/mnn-research.zh.md 附录 A）。size/sha256 逐字定值，
@@ -117,8 +151,10 @@ class WeightsException implements Exception {
 /// 不读不写内存缓存，状态全部以磁盘上的正式文件 / `<name>.part` 为准。
 /// [files] 默认 ONNX 权重集（kWeightFiles）；MNN 后端传 kMnnWeightFiles。
 class WeightsStore {
-  WeightsStore({required this.dir, this.source = DownloadSource.auto,
-                this.files = kWeightFiles});
+  WeightsStore(
+      {required this.dir,
+      this.source = DownloadSource.auto,
+      this.files = kWeightFiles});
 
   /// 权重目录（应用私有存储路径，[download] 时按需创建）。
   final Directory dir;
@@ -168,7 +204,8 @@ class WeightsStore {
   Future<void> download(
     WeightFile f, {
     void Function(int done, int total)? onProgress,
-    void Function(WeightFile file, String failedUrl, String nextUrl, String reason)?
+    void Function(
+            WeightFile file, String failedUrl, String nextUrl, String reason)?
         onFallback,
   }) async {
     final urls = _urlsFor(f);
